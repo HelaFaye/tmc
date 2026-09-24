@@ -272,9 +272,15 @@ def write_obj_h(path, vox, colour_of):
 
 
 def write_obj(path, vox, colour_of, colour3=None):
-    """One cube per voxel, with interior faces culled."""
+    """The voxels' outer surface, with interior faces culled.
+
+    Neighbouring faces that lie in one plane and carry the same colour, as
+    written (3 decimals), are merged into one rectangle, and a corner shared
+    by faces of the same colour is written once. The surface and its colours
+    are exactly those of one quad per exposed voxel face; the file is several
+    times smaller, which is what a headset's triangle budget needs.
+    """
     vox, _ = prune_floaters(vox)
-    V, F, C = [], [], []
     S = set(vox)
     faces = (((1, 0, 0), [(1,0,0),(1,1,0),(1,1,1),(1,0,1)]),
              ((-1, 0, 0), [(0,0,1),(0,1,1),(0,1,0),(0,0,0)]),
@@ -282,20 +288,61 @@ def write_obj(path, vox, colour_of, colour3=None):
              ((0, -1, 0), [(0,0,0),(1,0,0),(1,0,1),(0,0,1)]),
              ((0, 0, 1), [(0,0,1),(1,0,1),(1,1,1),(0,1,1)]),
              ((0, 0, -1), [(0,0,0),(0,1,0),(1,1,0),(1,0,0)]))
+
+    # Exposed faces, grouped by plane: (face, position along its normal) ->
+    # {(u, v): colour}, where u and v are the two in-plane axes.
+    planes = {}
     for (x, y, z) in sorted(S):
         col = colour3(x, z, y) if colour3 is not None else colour_of(x, z)
-        for (d, quad) in faces:
+        col = f"{col[0]:.3f} {col[1]:.3f} {col[2]:.3f}"
+        p = (x, y, z)
+        for fi, (d, _) in enumerate(faces):
             if (x + d[0], y + d[1], z + d[2]) in S:
                 continue
-            base = len(V) + 1
+            n = fi // 2
+            u, v = (n + 1) % 3, (n + 2) % 3
+            planes.setdefault((fi, p[n]), {})[(p[u], p[v])] = col
+
+    V, F, index = [], [], {}
+
+    def vertex(pos, col):
+        key = (pos, col)
+        if key not in index:
+            V.append(key)
+            index[key] = len(V)
+        return index[key]
+
+    for (fi, depth) in sorted(planes):
+        cells = planes[(fi, depth)]
+        n = fi // 2
+        u, v = (n + 1) % 3, (n + 2) % 3
+        quad = faces[fi][1]
+        for (u0, v0) in sorted(cells, key=lambda c: (c[1], c[0])):
+            col = cells.get((u0, v0))
+            if col is None:
+                continue                      # already inside a rectangle
+            w = 1
+            while cells.get((u0 + w, v0)) == col:
+                w += 1
+            h = 1
+            while all(cells.get((u0 + i, v0 + h)) == col for i in range(w)):
+                h += 1
+            for j in range(h):
+                for i in range(w):
+                    del cells[(u0 + i, v0 + j)]
+            ids = []
             for q in quad:
-                V.append((x + q[0], y + q[1], z + q[2]))
-                C.append(col)
-            F.append((base, base + 1, base + 2, base + 3))
+                pos = [0, 0, 0]
+                pos[n] = depth + q[n]
+                pos[u] = u0 + q[u] * w
+                pos[v] = v0 + q[v] * h
+                ids.append(vertex(tuple(pos), col))
+            F.append(tuple(ids))
+
     with open(path, "w") as f:
         f.write("# fitted object; world-pixel units, +X east +Y up +Z south\n")
-        for v, c in zip(V, C):
-            f.write(f"v {v[0]} {v[1]} {v[2]} {c[0]:.3f} {c[1]:.3f} {c[2]:.3f}\n")
+        for (x, y, z), c in V:
+            f.write(f"v {x} {y} {z} {c}\n")
         for a, b, c_, d in F:
             f.write(f"f {a} {b} {c_} {d}\n")
     return len(V), len(F)
