@@ -11,6 +11,19 @@ Targets **x86-64 Linux, Windows, and macOS** (Apple Silicon and Intel).
 The port is **work in progress** — many rendering and gameplay paths are still
 rough; please file issues for anything that breaks.
 
+---
+
+## Fork: TMC VR voxel port
+
+This branch adds a voxel/VR layer on top of Picori — it reconstructs 3D
+shapes from the game's 2D art and renders a world you can stand in. No ROM
+asset is ever distributed: every model is generated on your machine from
+your own ROM.
+
+See **[docs/vr/README.md](docs/vr/README.md)** for how it works, the full
+pipeline, and credits.
+
+
 ## Supported ROMs
 
 A copy of the original game is required. This repository does **not** ship ROMs.
