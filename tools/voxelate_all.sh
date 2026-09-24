@@ -50,7 +50,12 @@ fi
 
 STAGES="${STAGES:-objects,rooms,world}"
 FORCE="${FORCE:-0}"
-HEIGHTS="$KIT/world/heights.txt"; [ -f "$HEIGHTS" ] || HEIGHTS=""
+# Authored heights are committed at vr/world/ in the repo; the standalone
+# kit layout keeps them at world/. Try the repo path first.
+HEIGHTS=""
+for h in "$KIT/vr/world/heights.txt" "$KIT/world/heights.txt"; do
+  if [ -f "$h" ]; then HEIGHTS="$h"; break; fi
+done
 LOG="$ROOT/voxelate.log"
 N=$(ls "$ROOMS"/room_*.tmcr 2>/dev/null | wc -l)
 
