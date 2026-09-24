@@ -175,34 +175,23 @@ def decompose_room(r, layer_index=0, composite=True):
             and r.layers[1]["present"]:
         order.append(1)
 
+    # Per bank, palette index -> material id and shade, as lookup tables.
+    mat_lut = np.array([pal * 16 + ramps[pal][0][i]
+                        for pal in range(16) for i in range(16)], np.int32)
+    shd_lut = np.array([ramps[pal][1][i]
+                        for pal in range(16) for i in range(16)], np.float32)
+
     for li in order:
-      layer = r.layers[li]
-      sub = layer.get("subtilemap")
-      if sub is None:
-        continue
-      cb = layer["char_base"] // 32
-      for ty in range(H):
-        for tx in range(W):
-            ent = int(sub[ty * 128 + tx])
-            tile = (ent & 0x3FF) + cb
-            pal = (ent >> 12) & 0xF
-            hflip = (ent >> 10) & 1
-            vflip = (ent >> 11) & 1
-            if tile >= len(chars):
-                continue
-            px = chars[tile]
-            if hflip:
-                px = px[:, ::-1]
-            if vflip:
-                px = px[::-1, :]
-            rmp, shade = ramps[pal]
-            for yy in range(8):
-                for xx in range(8):
-                    idx = int(px[yy, xx])
-                    if idx == 0:
-                        continue
-                    mat[ty * 8 + yy, tx * 8 + xx] = pal * 16 + rmp[idx]
-                    shd[ty * 8 + yy, tx * 8 + xx] = shade[idx]
+        layer = r.layers[li]
+        sub = layer.get("subtilemap")
+        if sub is None:
+            continue
+        idx, valid = A.subtilemap_pixels(sub, H, W, chars,
+                                         layer["char_base"] // 32)
+        # Colour 0 of each bank is transparent: it leaves what is beneath.
+        draw = valid & (idx % 16 != 0)
+        mat[draw] = mat_lut[idx[draw]]
+        shd[draw] = shd_lut[idx[draw]]
     return mat, shd
 
 

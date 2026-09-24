@@ -141,6 +141,31 @@ def render_metatile(idx, chars, pal, subtile, char_base=0):
     return out
 
 
+def subtilemap_pixels(stm, sh, sw, chars, char_base=0):
+    """Decode the top-left sh x sw subtiles of a 128x128 subtile map.
+
+    Returns (index, valid), both (sh*8, sw*8): index is bank*16 + colour, the
+    256-entry palette index of each pixel; valid is False where the entry
+    points past the character data (render_subtile draws those blank). The
+    same decode as render_subtile, for every subtile at once instead of in a
+    Python loop.
+    """
+    ent = np.asarray(stm, dtype=np.int32).reshape(0x80, 0x80)[:sh, :sw]
+    char = (ent & 0x3FF) + char_base
+    valid = char < len(chars)
+    char = np.where(valid, char, 0)[:, :, None, None]
+    # Flips as index arithmetic: row r of a vflipped subtile is row 7-r.
+    k = np.arange(8, dtype=np.int32)
+    rows = k[None, None, :, None] ^ (((ent >> 11) & 1)[:, :, None, None] * 7)
+    cols = k[None, None, None, :] ^ (((ent >> 10) & 1)[:, :, None, None] * 7)
+    px = chars[char, rows, cols]                          # (sh, sw, 8, 8)
+    idx = ((ent >> 12) & 0xF)[:, :, None, None] * 16 + px
+    valid = np.broadcast_to(valid[:, :, None, None], idx.shape)
+    # (sh, sw, 8, 8) -> (sh*8, sw*8): rows of subtiles, then rows within one.
+    flat = lambda a: a.transpose(0, 2, 1, 3).reshape(sh * 8, sw * 8)
+    return flat(idx), flat(valid)
+
+
 def room_art(room, layer_index):
     """Render a layer exactly as the engine does.
 
@@ -162,12 +187,11 @@ def room_art(room, layer_index):
 
     stm = layer.get("subtilemap")
     if stm is not None:
-        # 128x128 subtiles, row stride 0x80
-        for sy in range(room.cells_h * 2):
-            for sx in range(room.cells_w * 2):
-                ent = int(stm[sy * 0x80 + sx])
-                img[sy * 8:(sy + 1) * 8, sx * 8:(sx + 1) * 8] = \
-                    render_subtile(ent, chars, pal, cb)
+        sh, sw = room.cells_h * 2, room.cells_w * 2
+        idx, valid = subtilemap_pixels(stm, sh, sw, chars, cb)
+        rgba = pal[idx]
+        rgba[~valid] = 0
+        img[:sh * 8, :sw * 8] = rgba
         return img
 
     sub = layer["subtile"]
