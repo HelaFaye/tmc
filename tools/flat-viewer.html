@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TMC VR Kit — Flat Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #ffffff; --ink: #1c1a17; --dim: #6b6660;
+    --line: #dcd7cf; --accent: #3a6ea5; --warn: #9a5b23;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171614; --panel: #201e1b; --ink: #e8e4dd; --dim: #98918a;
+      --line: #35312c; --accent: #7fa8d4; --warn: #d69553;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171614; --panel: #201e1b; --ink: #e8e4dd; --dim: #98918a;
+    --line: #35312c; --accent: #7fa8d4; --warn: #d69553;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; overflow: hidden;
+  }
+  #view { flex: 1; position: relative; min-width: 0; }
+  #canvasWrap { position: absolute; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #side {
+    width: 340px; flex-shrink: 0; background: var(--panel);
+    border-left: 1px solid var(--line); overflow-y: auto; padding: 16px;
+  }
+  @media (max-width: 760px) {
+    body { flex-direction: column; }
+    #side { width: 100%; border-left: none; border-top: 1px solid var(--line);
+            max-height: 46%; }
+    #view { flex: 1; min-height: 240px; }
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--dim); margin: 20px 0 8px; font-weight: 600; }
+  p.sub { margin: 0 0 16px; color: var(--dim); font-size: 12px; }
+  #drop {
+    border: 1.5px dashed var(--line); border-radius: 8px; padding: 18px 12px;
+    text-align: center; color: var(--dim); font-size: 13px; cursor: pointer;
+  }
+  #drop.hot { border-color: var(--accent); color: var(--accent); }
+  #drop input { display: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 2px 0; vertical-align: top; }
+  td:first-child { color: var(--dim); padding-right: 8px; white-space: nowrap; }
+  td:last-child { text-align: right; font-family: var(--mono); }
+  textarea {
+    width: 100%; height: 130px; font-family: var(--mono); font-size: 11px;
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px; resize: vertical;
+  }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+    cursor: pointer; margin: 6px 6px 0 0;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  label.row { display: flex; align-items: center; gap: 8px; margin: 6px 0;
+              font-size: 13px; }
+  label.row input[type=range] { flex: 1; }
+  .note { font-size: 12px; color: var(--dim); margin-top: 8px; }
+  .warn { color: var(--warn); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px;
+            font-size: 11.5px; color: var(--dim); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+              margin-right: 4px; vertical-align: -1px; }
+  #hint { position: absolute; left: 12px; bottom: 10px; font-size: 11.5px;
+          color: var(--dim); pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="view">
+  <div id="canvasWrap"></div>
+  <div id="hint">drag to orbit · wheel to zoom · shift-drag to pan</div>
+</div>
+
+<div id="side">
+  <h1>TMC VR Kit — Flat Viewer</h1>
+  <p class="sub">Phase 1/2 on PC, no Vulkan and no headset. Loads the
+    <code>.tmcr</code> room dumps from <code>VrWorld_Dump()</code> and the
+    <code>.vox</code> hulls from <code>hull_carve.py</code>, classifies,
+    greedy-meshes and renders — the same three steps the C renderer will do.</p>
+
+  <div id="drop">
+    drop <b>.tmcr</b> / <b>.vox</b> here, or click
+    <input type="file" id="file" multiple accept=".tmcr,.vox">
+  </div>
+
+  <h2>Room</h2>
+  <table id="stats"><tr><td>nothing loaded</td><td></td></tr></table>
+  <div class="legend">
+    <span><i style="background:#6ea05a"></i>ground</span>
+    <span><i style="background:#3c6ebe"></i>water</span>
+    <span><i style="background:#96826e"></i>wall</span>
+    <span><i style="background:#bcaf78"></i>ledge</span>
+    <span><i style="background:#121214"></i>hole</span>
+  </div>
+
+  <h2>Classifier</h2>
+  <p class="sub" style="margin:0 0 8px">
+    <code>hex = class</code>, one per line. Only four of TMC's 88 collision
+    values carry any annotation upstream, so this table is derived, not
+    documented. Edit and re-apply — it is the same table as
+    <code>CLASS_BY_COLLISION</code> in <code>room_explore.py</code>.</p>
+  <textarea id="rules">0x00 = ground
+0x21 = hole
+0x24 = water
+0x25 = water
+0x30 = water</textarea>
+  <button id="apply">Apply</button>
+  <button id="copyPy">Copy as Python</button>
+
+  <h2>Display</h2>
+  <label class="row">layer
+    <select id="layer">
+      <option value="0">bottom</option>
+      <option value="1">top</option>
+      <option value="2">both</option>
+    </select>
+  </label>
+  <label class="row">wall height
+    <input type="range" id="wallH" min="4" max="48" value="16">
+    <span id="wallHv" style="font-family:var(--mono);width:2.5em;text-align:right">16</span>
+  </label>
+  <label class="row"><input type="checkbox" id="wire"> wireframe</label>
+  <button id="reset">Reset camera</button>
+
+  <div class="note" id="msg"></div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- constants
+const MAP_DIM = 64, MAP_CELLS = MAP_DIM * MAP_DIM, TILESET = 2048;
+const TMCR_BYTES = 8 + 2 + 12 + 2 + 2 * (MAP_CELLS * 2 + MAP_CELLS + MAP_CELLS + TILESET * 2);
+
+const CLASS_COLOR = {
+  void:  0x000000, ground: 0x6ea05a, water: 0x3c6ebe,
+  wall:  0x96826e, ledge:  0xbcaf78, hole:  0x121214,
+};
+// Heights in world pixels. wall is driven by the slider.
+let CLASS_HEIGHT = { void: 0, ground: 2, water: 1, wall: 16, ledge: 8, hole: 0 };
+const CLASS_BASE  = { void: 0, ground: 0, water: -2, wall: 0, ledge: 0, hole: -16 };
+
+let rules = { 0x00: "ground", 0x21: "hole", 0x24: "water", 0x25: "water", 0x30: "water" };
+let room = null;         // parsed .tmcr
+let voxModels = [];      // parsed .vox
+
+// ---------------------------------------------------------------- .tmcr
+function parseTmcr(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
+  if (magic !== "TMCR") throw new Error("not a TMCR file");
+  const version = dv.getUint32(4, true);
+  if (version !== 1) throw new Error("unsupported TMCR version " + version);
+  if (buf.byteLength !== TMCR_BYTES)
+    throw new Error(`expected ${TMCR_BYTES} bytes, got ${buf.byteLength}`);
+
+  let o = 8;
+  const area = u8[o++], rm = u8[o++];
+  const originX = dv.getUint16(o, true); o += 2;
+  const originY = dv.getUint16(o, true); o += 2;
+  const width   = dv.getUint16(o, true); o += 2;
+  const height  = dv.getUint16(o, true); o += 2;
+  const cellsW  = dv.getUint16(o, true); o += 2;
+  const cellsH  = dv.getUint16(o, true); o += 2;
+  const present = [u8[o++], u8[o++]];
+
+  const layers = [];
+  for (let L = 0; L < 2; L++) {
+    const tile = new Uint16Array(buf.slice(o, o + MAP_CELLS * 2)); o += MAP_CELLS * 2;
+    const coll = new Uint8Array(buf.slice(o, o + MAP_CELLS));      o += MAP_CELLS;
+    const act  = new Uint8Array(buf.slice(o, o + MAP_CELLS));      o += MAP_CELLS;
+    const tt   = new Uint16Array(buf.slice(o, o + TILESET * 2));   o += TILESET * 2;
+    layers.push({ present: !!present[L], tile, coll, act, tt });
+  }
+  return { area, room: rm, originX, originY, width, height, cellsW, cellsH, layers };
+}
+
+function classify(layer, cx, cy) {
+  const i = cy * MAP_DIM + cx;
+  const tile = layer.tile[i], coll = layer.coll[i];
+  if (tile === 0 && coll === 0) return "void";
+  const r = rules[coll];
+  if (r) return r;
+  return "wall";   // the fallback; drive its share down by naming values
+}
+
+// ---------------------------------------------------------------- .vox
+function parseVox(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  if (String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== "VOX ")
+    throw new Error("not a VOX file");
+  let o = 8;   // skip magic + version
+  let size = null, voxels = null, palette = null;
+
+  function walk(start, end) {
+    let p = start;
+    while (p + 12 <= end) {
+      const id = String.fromCharCode(u8[p], u8[p+1], u8[p+2], u8[p+3]);
+      const n  = dv.getUint32(p + 4, true);
+      const kn = dv.getUint32(p + 8, true);
+      const body = p + 12;
+      if (id === "SIZE") {
+        size = [dv.getUint32(body, true), dv.getUint32(body+4, true), dv.getUint32(body+8, true)];
+      } else if (id === "XYZI") {
+        const count = dv.getUint32(body, true);
+        voxels = [];
+        for (let i = 0; i < count; i++) {
+          const b = body + 4 + i * 4;
+          voxels.push([u8[b], u8[b+1], u8[b+2], u8[b+3]]);
+        }
+      } else if (id === "RGBA") {
+        palette = [];
+        for (let i = 0; i < 256; i++) {
+          const b = body + i * 4;
+          palette.push((u8[b] << 16) | (u8[b+1] << 8) | u8[b+2]);
+        }
+      } else if (id === "MAIN") {
+        walk(body + n, body + n + kn);
+      }
+      p = body + n + kn;
+    }
+  }
+  walk(o, buf.byteLength);
+  if (!size || !voxels) throw new Error("VOX missing SIZE or XYZI");
+  return { size, voxels, palette };
+}
+
+// ---------------------------------------------- greedy mesher (2-D per class)
+// Same algorithm as tools/room_explore.py greedy_quads and the slab pass in
+// port/vr/vr_greedy_mesh.c: merge a boolean mask into maximal rectangles.
+function greedyRects(mask, w, h) {
+  const m = mask.slice(), out = [];
+  for (let y = 0; y < h; y++) {
+    let x = 0;
+    while (x < w) {
+      if (!m[y * w + x]) { x++; continue; }
+      let rw = 1;
+      while (x + rw < w && m[y * w + x + rw]) rw++;
+      let rh = 1;
+      outer: while (y + rh < h) {
+        for (let k = 0; k < rw; k++)
+          if (!m[(y + rh) * w + x + k]) break outer;
+        rh++;
+      }
+      for (let j = 0; j < rh; j++)
+        for (let k = 0; k < rw; k++) m[(y + j) * w + x + k] = 0;
+      out.push([x, y, rw, rh]);
+      x += rw;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- three.js
+let scene, camera, renderer, worldGroup;
+let orbit = { az: -0.7, el: 0.95, dist: 700, tx: 0, ty: 0, tz: 0 };
+
+function initGL() {
+  const wrap = document.getElementById("canvasWrap");
+  scene = new THREE.Scene();
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  wrap.appendChild(renderer.domElement);
+  camera = new THREE.PerspectiveCamera(50, 1, 1, 20000);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 0.95));
+  const sun = new THREE.DirectionalLight(0xfff3e0, 0.75);
+  sun.position.set(0.4, 1, 0.25);
+  scene.add(sun);
+
+  worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  addPointerControls(renderer.domElement);
+  onResize();
+  window.addEventListener("resize", onResize);
+  animate();
+}
+
+function bgColor() {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  return dark ? 0x171614 : 0xf4f2ee;
+}
+
+function onResize() {
+  const wrap = document.getElementById("canvasWrap");
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+  renderer.setClearColor(bgColor(), 1);
+}
+
+function addPointerControls(el) {
+  let down = false, lx = 0, ly = 0, shift = false;
+  el.addEventListener("pointerdown", e => {
+    down = true; lx = e.clientX; ly = e.clientY; shift = e.shiftKey;
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointerup", e => { down = false; });
+  el.addEventListener("pointermove", e => {
+    if (!down) return;
+    const dx = e.clientX - lx, dy = e.clientY - ly;
+    lx = e.clientX; ly = e.clientY;
+    if (shift || e.shiftKey) {
+      const s = orbit.dist * 0.0016;
+      orbit.tx -= dx * s * Math.cos(orbit.az);
+      orbit.tz -= dx * s * -Math.sin(orbit.az);
+      orbit.ty += dy * s;
+    } else {
+      orbit.az -= dx * 0.006;
+      orbit.el = Math.max(0.05, Math.min(1.52, orbit.el - dy * 0.006));
+    }
+  });
+  el.addEventListener("wheel", e => {
+    e.preventDefault();
+    orbit.dist = Math.max(20, Math.min(6000, orbit.dist * (1 + Math.sign(e.deltaY) * 0.12)));
+  }, { passive: false });
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const r = orbit.dist * Math.cos(orbit.el);
+  camera.position.set(
+    orbit.tx + r * Math.sin(orbit.az),
+    orbit.ty + orbit.dist * Math.sin(orbit.el),
+    orbit.tz + r * Math.cos(orbit.az));
+  camera.lookAt(orbit.tx, orbit.ty, orbit.tz);
+  renderer.render(scene, camera);
+}
+
+// ---------------------------------------------------------------- build
+function rebuild() {
+  while (worldGroup.children.length) {
+    const c = worldGroup.children.pop();
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) c.material.dispose();
+  }
+  if (!room) return;
+
+  CLASS_HEIGHT.wall = +document.getElementById("wallH").value;
+  const wire = document.getElementById("wire").checked;
+  const layerSel = document.getElementById("layer").value;
+  const layerList = layerSel === "2" ? [0, 1] : [+layerSel];
+
+  const counts = {}, W = room.cellsW, H = room.cellsH;
+  let totalBoxes = 0, naive = 0;
+
+  for (const L of layerList) {
+    const layer = room.layers[L];
+    if (!layer.present) continue;
+    const floorY = L === 1 ? 16 : 0;   // LAYER_TOP sits a storey up
+
+    const cls = new Array(W * H);
+    for (let cy = 0; cy < H; cy++)
+      for (let cx = 0; cx < W; cx++) {
+        const k = classify(layer, cx, cy);
+        cls[cy * W + cx] = k;
+        if (L === layerList[0]) counts[k] = (counts[k] || 0) + 1;
+      }
+
+    for (const kind of Object.keys(CLASS_COLOR)) {
+      if (kind === "void") continue;
+      const mask = new Uint8Array(W * H);
+      let any = 0;
+      for (let i = 0; i < W * H; i++) if (cls[i] === kind) { mask[i] = 1; any++; }
+      if (!any) continue;
+      naive += any;
+
+      const rects = greedyRects(mask, W, H);
+      totalBoxes += rects.length;
+
+      const geoms = [];
+      const hgt = Math.max(1, CLASS_HEIGHT[kind]);
+      const base = CLASS_BASE[kind] + floorY;
+      for (const [x, y, rw, rh] of rects) {
+        const g = new THREE.BoxGeometry(rw * 16, hgt, rh * 16);
+        g.translate((x + rw / 2) * 16, base + hgt / 2, (y + rh / 2) * 16);
+        geoms.push(g);
+      }
+      const merged = mergeGeoms(geoms);
+      const mat = new THREE.MeshLambertMaterial({
+        color: CLASS_COLOR[kind], wireframe: wire,
+        transparent: kind === "water", opacity: kind === "water" ? 0.78 : 1,
+      });
+      worldGroup.add(new THREE.Mesh(merged, mat));
+    }
+  }
+
+  // Centre the room on the origin so orbiting feels sane.
+  worldGroup.position.set(-W * 8, 0, -H * 8);
+
+  // Place any loaded .vox hulls in a row along the room's south edge.
+  voxModels.forEach((m, i) => {
+    const mesh = voxMesh(m);
+    mesh.position.set(i * 24 + 8, 4, H * 16 + 24);
+    worldGroup.add(mesh);
+  });
+
+  const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
+  const unc = counts.wall || 0;
+  const rows = [
+    ["area / room", `${room.area} / ${room.room}`],
+    ["cells", `${W} x ${H}`],
+    ["extent", `${room.width} x ${room.height} px`],
+    ["boxes after merge", totalBoxes],
+    ["naive per-cell", naive],
+    ["saved", naive ? `${Math.round(100 * (1 - totalBoxes / naive))}%` : "-"],
+    ["fallback share", `${(100 * unc / total).toFixed(1)}%`],
+  ];
+  if (room.width <= 240 && room.height <= 160)
+    rows.push(["note", "single screen"]);
+  document.getElementById("stats").innerHTML =
+    rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+
+  const msg = document.getElementById("msg");
+  msg.className = "note" + (unc / total > 0.25 ? " warn" : "");
+  msg.textContent = unc / total > 0.25
+    ? `${(100 * unc / total).toFixed(0)}% of cells are hitting the wall fallback. `
+      + `Name more collision values above — that share is your classifier's error rate.`
+    : "";
+}
+
+// r128 has no BufferGeometryUtils in the core bundle; merge by hand.
+function mergeGeoms(list) {
+  let vTotal = 0, iTotal = 0;
+  for (const g of list) {
+    vTotal += g.attributes.position.count;
+    iTotal += g.index ? g.index.count : 0;
+  }
+  const pos = new Float32Array(vTotal * 3);
+  const nrm = new Float32Array(vTotal * 3);
+  const idx = new Uint32Array(iTotal);
+  let vo = 0, io = 0;
+  for (const g of list) {
+    pos.set(g.attributes.position.array, vo * 3);
+    nrm.set(g.attributes.normal.array, vo * 3);
+    const gi = g.index.array;
+    for (let i = 0; i < gi.length; i++) idx[io + i] = gi[i] + vo;
+    vo += g.attributes.position.count;
+    io += gi.length;
+    g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  out.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  return out;
+}
+
+function voxMesh(model) {
+  const geoms = [];
+  const pal = model.palette;
+  const colors = [];
+  for (const [x, y, z, ci] of model.voxels) {
+    const g = new THREE.BoxGeometry(1, 1, 1);
+    // MagicaVoxel is +Z up; our world is +Y up.
+    g.translate(x, z, y);
+    geoms.push(g);
+    const c = pal ? pal[ci - 1] : 0xcccccc;
+    for (let i = 0; i < 24; i++) colors.push(
+      ((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255);
+  }
+  if (!geoms.length) return new THREE.Object3D();
+  const merged = mergeGeoms(geoms);
+  merged.setAttribute("color",
+    new THREE.BufferAttribute(new Float32Array(colors), 3));
+  return new THREE.Mesh(merged,
+    new THREE.MeshLambertMaterial({ vertexColors: true }));
+}
+
+// ---------------------------------------------------------------- files
+function readRules() {
+  const txt = document.getElementById("rules").value;
+  const next = {};
+  for (const line of txt.split("\n")) {
+    const m = line.match(/^\s*(0x[0-9a-fA-F]+|\d+)\s*=\s*(\w+)\s*$/);
+    if (!m) continue;
+    const v = m[1].startsWith("0x") ? parseInt(m[1], 16) : parseInt(m[1], 10);
+    if (CLASS_COLOR[m[2]]) next[v] = m[2];
+  }
+  rules = next;
+}
+
+async function handleFiles(list) {
+  const msg = document.getElementById("msg");
+  for (const f of list) {
+    try {
+      const buf = await f.arrayBuffer();
+      if (f.name.endsWith(".tmcr")) {
+        room = parseTmcr(buf);
+        fitCamera();
+      } else if (f.name.endsWith(".vox")) {
+        voxModels.push(parseVox(buf));
+      }
+    } catch (e) {
+      msg.className = "note warn";
+      msg.textContent = `${f.name}: ${e.message}`;
+      return;
+    }
+  }
+  rebuild();
+}
+
+function fitCamera() {
+  if (!room) return;
+  const span = Math.max(room.cellsW, room.cellsH) * 16;
+  orbit.dist = span * 1.4;
+  orbit.tx = orbit.ty = orbit.tz = 0;
+  orbit.az = -0.7; orbit.el = 0.95;
+}
+
+// ---------------------------------------------------------------- wiring
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("file");
+drop.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => handleFiles(e.target.files));
+["dragenter", "dragover"].forEach(t =>
+  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("hot"); }));
+["dragleave", "drop"].forEach(t =>
+  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("hot"); }));
+drop.addEventListener("drop", e => handleFiles(e.dataTransfer.files));
+document.body.addEventListener("dragover", e => e.preventDefault());
+document.body.addEventListener("drop", e => {
+  e.preventDefault(); handleFiles(e.dataTransfer.files);
+});
+
+document.getElementById("apply").addEventListener("click", () => {
+  readRules(); rebuild();
+});
+document.getElementById("copyPy").addEventListener("click", () => {
+  readRules();
+  const lines = Object.entries(rules)
+    .sort((a, b) => a[0] - b[0])
+    .map(([k, v]) => `    0x${(+k).toString(16).padStart(2, "0")}: CLASS_${v.toUpperCase()},`);
+  const py = "CLASS_BY_COLLISION = {\n" + lines.join("\n") + "\n}";
+  navigator.clipboard.writeText(py).then(
+    () => { document.getElementById("msg").className = "note";
+            document.getElementById("msg").textContent =
+              "Copied. Paste over CLASS_BY_COLLISION in tools/room_explore.py."; },
+    () => {});
+});
+document.getElementById("layer").addEventListener("change", rebuild);
+document.getElementById("wire").addEventListener("change", rebuild);
+document.getElementById("wallH").addEventListener("input", e => {
+  document.getElementById("wallHv").textContent = e.target.value;
+  rebuild();
+});
+document.getElementById("reset").addEventListener("click", fitCamera);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", onResize);
+
+initGL();
+</script>
+</body>
+</html>

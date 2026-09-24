@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TMC World Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root{--bg:#14161c;--panel:#1c1f27;--ink:#e6e8ee;--dim:#9aa1b1;--accent:#7fd4a0;--line:#2a2e39}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  #wrap{position:absolute;inset:0}
+  canvas{display:block;width:100%;height:100%}
+  #ui{position:absolute;top:0;left:0;width:290px;max-height:100%;overflow:auto;
+    padding:14px;background:rgba(28,31,39,.94);border-right:1px solid var(--line)}
+  h1{font-size:15px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:12px;margin:0 0 12px}
+  fieldset{border:1px solid var(--line);border-radius:8px;margin:0 0 10px;padding:8px 10px}
+  legend{color:var(--dim);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:0 4px}
+  label{display:block;margin:4px 0;cursor:pointer}
+  input[type=radio]{margin-right:6px}
+  #drop{border:1px dashed var(--line);border-radius:8px;padding:14px;text-align:center;
+    color:var(--dim);cursor:pointer;margin-bottom:10px}
+  #drop.hot{border-color:var(--accent);color:var(--accent)}
+  #drop input{display:none}
+  button{width:100%;margin-top:6px;padding:5px;background:#262a34;
+    color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  .stat{display:flex;justify-content:space-between;font-size:12px;color:var(--dim)}
+  .stat b{color:var(--ink);font-weight:600}
+  .note{font-size:11.5px;color:var(--dim);margin-top:6px}
+  kbd{background:#262a34;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<div id="ui">
+  <h1>TMC World Viewer</h1>
+  <p class="sub">Drop the <code>.obj</code> <b>and</b> its <code>.png</code> together — a local page cannot fetch the texture by itself.</p>
+
+  <div id="drop">drop <b>.obj</b> + <b>.png</b> here, or click
+    <input id="file" type="file" accept=".obj,.png" multiple></div>
+
+  <fieldset><legend>Scale</legend>
+    <label><input type="radio" name="scale" value="0.005"> Tabletop — 1px = 5mm</label>
+    <label><input type="radio" name="scale" value="0.010" checked> Diorama — 1px = 1cm</label>
+    <label><input type="radio" name="scale" value="0.100"> Life — 1px = 10cm</label>
+    <div class="note">A 16px metatile is 8cm / 16cm / 1.6m across.</div>
+  </fieldset>
+
+  <fieldset><legend>Camera</legend>
+    <label><input type="radio" name="follow" value="orbit"> Orbit (inspect)</label>
+    <label><input type="radio" name="follow" value="static"> Static — never moves</label>
+    <label><input type="radio" name="follow" value="blink"> Blink — jumps at a threshold</label>
+    <label><input type="radio" name="follow" value="attached" checked> Attached — smoothed, dead-zoned, speed-capped</label>
+    <div class="note">Attached is the diorama default: dead zone 12px,
+      0.18s smoothing, 420px/s cap — the same constants as
+      <code>vr_anchor.h</code>. Static and Blink are here to compare against.</div>
+  </fieldset>
+
+  <fieldset><legend>Display</legend>
+    <label><input type="checkbox" id="tex" checked> Textures (art colour)</label>
+    <label><input type="checkbox" id="wire"> Wireframe</label>
+    <label><input type="checkbox" id="flat"> Flat-shade by height</label>
+    <label><input type="checkbox" id="lit"> Engine lighting (albedo)</label>
+    <div class="note">Turn textures off to read the geometry: the art hides
+      whether a face is where you expect it. <b>Engine lighting</b> swaps in
+      <code>*_albedo.png</code> and lights it for real — the drawn art already
+      contains a light that points nowhere, so lighting it would stack two.</div>
+  </fieldset>
+
+  <fieldset><legend>View</legend>
+    <div class="stat"><span>yaw / pitch</span><b id="s-ang">—</b></div>
+    <div class="stat"><span>distance</span><b id="s-dist">—</b></div>
+    <button id="reset">Reset view</button>
+    <div class="note">drag rotate · shift-drag or middle-drag pan ·
+      wheel zoom · <kbd>Q</kbd><kbd>E</kbd> rotate ·
+      <kbd>R</kbd><kbd>F</kbd> raise/lower</div>
+  </fieldset>
+
+  <fieldset><legend>Readout</legend>
+    <div class="stat"><span>meshes</span><b id="s-mesh">0</b></div>
+    <div class="stat"><span>textures</span><b id="s-tex">0</b></div>
+    <div class="stat"><span>triangles</span><b id="s-tri">0</b></div>
+    <div class="stat"><span>world size</span><b id="s-size">—</b></div>
+    <div class="stat"><span>at this scale</span><b id="s-real">—</b></div>
+    <div class="stat"><span>camera jumps</span><b id="s-jump">0</b></div>
+    <div class="stat"><span>camera lag</span><b id="s-lag">0 px</b></div>
+  </fieldset>
+
+  <div class="note"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive the
+    marker. Drag to orbit, wheel to zoom.</div>
+</div>
+
+<script>
+// ------------------------------------------------------------------ TESTABLE
+// Extracted verbatim by tools/test_viewer.js -- keep the markers.
+/* TESTABLE BEGIN */
+function parseOBJ(text) {
+  // worldgen writes "v x y z r g b" and quad faces "f a b c d" (1-indexed,
+  // no slashes). Anything else in the file is ignored rather than guessed at.
+  const pos = [], col = [], uv = [], idx = [];
+  const vx = [], vc = [], vt = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const L = lines[i];
+    if (L.charCodeAt(0) === 35) continue;           // '#'
+    const p = L.trim().split(/\s+/);
+    if (p[0] === "v") {
+      vx.push([+p[1], +p[2], +p[3]]);
+      vc.push(p.length >= 7 ? [+p[4], +p[5], +p[6]] : [0.6, 0.6, 0.6]);
+    } else if (p[0] === "vt") {
+      vt.push([+p[1], +p[2]]);
+    } else if (p[0] === "f") {
+      // Faces are "a b c d" or "a/ta b/tb ...". A vertex that appears with two
+      // different texture coords cannot share one buffer slot, so emit a fresh
+      // vertex per corner -- worldgen already writes unique vertices per quad,
+      // so this costs nothing and removes a whole class of seam bug.
+      const f = [];
+      for (let k = 1; k < p.length; k++) {
+        const q = p[k].split("/");
+        f.push([parseInt(q[0], 10) - 1,
+                q.length > 1 && q[1] !== "" ? parseInt(q[1], 10) - 1 : -1]);
+      }
+      for (let k = 1; k + 1 < f.length; k++) {
+        for (const [vi, ti] of [f[0], f[k], f[k + 1]]) {
+          const base = pos.length / 3;
+          pos.push(vx[vi][0], vx[vi][1], vx[vi][2]);
+          col.push(vc[vi][0], vc[vi][1], vc[vi][2]);
+          uv.push(ti >= 0 && vt[ti] ? vt[ti][0] : 0,
+                  ti >= 0 && vt[ti] ? vt[ti][1] : 0);
+          idx.push(base);
+        }
+      }
+    }
+  }
+  return { pos, col, uv, idx, nVerts: pos.length / 3,
+           nTris: idx.length / 3, hasUV: vt.length > 0 };
+}
+
+// Stabilized camera. The point of Static and Blink is that the camera does NOT
+// inherit the player's motion -- continuous camera translation driven by
+// gameplay is the main cause of sim sickness, so those two modes must be
+// provably free of it. Blink moves only in discrete jumps once the player
+// leaves a radius; Static never moves at all.
+function stepCamera(mode, cam, player, opts) {
+  // Mirrors VrAnchor_Tick in port/vr/vr_anchor.c, including the ATTACHED
+  // tuning constants. The viewer is the tool these choices get made with, so
+  // it has to model the policy the runtime will actually run -- a viewer that
+  // felt good while the engine did something else would be worse than no
+  // viewer at all.
+  const o = Object.assign({
+    blinkThreshold: 240,
+    deadzone: 12, smoothSec: 0.18, maxPxSec: 420, dt: 1 / 60
+  }, opts || {});
+  const out = { x: cam.x, y: cam.y, z: cam.z, jumped: false };
+  if (mode === "static") return out;
+
+  const dx = player.x - cam.x, dz = player.z - cam.z;
+  const dist = Math.hypot(dx, dz);
+
+  if (mode === "blink") {
+    if (dist > o.blinkThreshold) {
+      out.x = player.x; out.z = player.z; out.jumped = true;
+    }
+    return out;
+  }
+
+  if (mode === "attached") {
+    if (dist <= o.deadzone) return out;
+    const target = dist - o.deadzone;
+    const alpha = 1 - Math.exp(-o.dt / o.smoothSec);
+    let step = target * alpha;
+    const maxStep = o.maxPxSec * o.dt;
+    if (step > maxStep) step = maxStep;
+    const inv = step / dist;
+    out.x = cam.x + dx * inv;
+    out.z = cam.z + dz * inv;
+    return out;
+  }
+  return out;
+}
+/* TESTABLE END */
+
+let scene, camera, renderer, world, marker, hemi, sun;
+let meshes = 0, tris = 0, jumps = 0;
+let scale = 0.010, follow = "attached";
+const anchor = { x: 0, y: 0, z: 0 };
+const player = { x: 0, y: 0, z: 0 };
+const keys = {};
+// One set of view knobs shared by every camera mode. The follow modes differ
+// from orbit only in WHERE the target comes from -- the anchor rather than the
+// world centre -- so the same rotate/pan/zoom works throughout instead of
+// being an inspect-only luxury.
+const orbit = { az: 0.9, el: 0.75, r: 900, tx: 0, ty: 0, tz: 0 };
+const pan = { x: 0, y: 0, z: 0 };
+const home = { az: 0.9, el: 0.75 };
+let showTex = true, showWire = false, flatByHeight = false, engineLit = false;
+let worldY = { lo: 0, hi: 1 };
+let bounds = null;
+
+function init() {
+  const wrap = document.getElementById("wrap");
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14161c);
+  camera = new THREE.PerspectiveCamera(55, 1, 0.01, 100000);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  wrap.appendChild(renderer.domElement);
+  world = new THREE.Group();
+  scene.add(world);
+  // Total intensity kept at ~1.0: the previous 1.05 + 0.55 over-exposed
+  // every surface toward white, which reads as "textures did not load".
+  hemi = new THREE.HemisphereLight(0xffffff, 0x555566, 0.78);
+  scene.add(hemi);
+  sun = new THREE.DirectionalLight(0xffffff, 0.28);
+  sun.position.set(1, 2, 1);
+  scene.add(sun);
+  const g = new THREE.SphereGeometry(6, 12, 10);
+  marker = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xff4d6d }));
+  scene.add(marker);
+  resize();
+  window.addEventListener("resize", resize);
+  bindUI();
+  animate();
+}
+
+function resize() {
+  const wrap = document.getElementById("wrap");
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+}
+
+function addOBJ(text, name) {
+  const m = parseOBJ(text);
+  if (!m.nVerts) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(m.pos, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(m.col, 3));
+  if (m.hasUV) geo.setAttribute("uv", new THREE.Float32BufferAttribute(m.uv, 2));
+  geo.setIndex(m.idx);
+  geo.computeVertexNormals();
+  // Keep a per-vertex HEIGHT attribute so "flat-shade by height" can recolour
+  // without reparsing: reading elevation is the reason to turn the art off.
+  const hs = new Float32Array(m.nVerts);
+  for (let i = 0; i < m.nVerts; i++) hs[i] = m.pos[i * 3 + 1];
+  geo.setAttribute("height", new THREE.Float32BufferAttribute(hs, 1));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    vertexColors: true, side: THREE.DoubleSide }));
+  mesh.userData.artColors = Float32Array.from(m.col);
+  mesh.userData.baseName = name.replace(/\.obj$/i, "");
+  applyPendingTexture(mesh);
+  mesh.name = name;
+  world.add(mesh);
+  meshes++; tris += m.nTris;
+  geo.computeBoundingBox();
+  const b = geo.boundingBox;
+  bounds = bounds ? bounds.union(b) : b.clone();
+  const c = bounds.getCenter(new THREE.Vector3());
+  orbit.tx = c.x; orbit.ty = c.y; orbit.tz = c.z;
+  const s = bounds.getSize(new THREE.Vector3());
+  orbit.r = Math.max(s.x, s.z) * 1.1;
+  worldY.lo = bounds.min.y; worldY.hi = Math.max(bounds.max.y, bounds.min.y + 1);
+  applyDisplay();
+  player.x = c.x; player.z = c.z; player.y = c.y;
+  anchor.x = c.x; anchor.z = c.z; anchor.y = c.y;
+  document.getElementById("s-mesh").textContent = meshes;
+  document.getElementById("s-tri").textContent = tris.toLocaleString();
+  document.getElementById("s-size").textContent =
+    `${Math.round(s.x)} x ${Math.round(s.z)} px`;
+  updateReal();
+}
+
+function applyDisplay() {
+  world.traverse(o => {
+    if (!o.isMesh) return;
+    o.material.wireframe = showWire;
+    // With a texture, the map carries the colour and the vertex colours would
+    // multiply it into mud -- so they go white. Without one, vertex colour is
+    // all there is.
+    const wantAlb = engineLit && o.userData.alb;
+    const useMap = showTex && !flatByHeight &&
+                   (wantAlb ? o.userData.alb : o.userData.tex);
+    o.material.map = useMap || null;
+    o.material.vertexColors = true;
+    o.material.needsUpdate = true;
+    const col = o.geometry.getAttribute("color");
+    const art = o.userData.artColors;
+    const hgt = o.geometry.getAttribute("height");
+    if (!col || !art) return;
+    for (let i = 0; i < col.count; i++) {
+      if (useMap) {
+        col.setXYZ(i, 1, 1, 1);
+      } else if (showTex && !flatByHeight) {
+        col.setXYZ(i, art[i*3], art[i*3+1], art[i*3+2]);
+      } else if (flatByHeight) {
+        const t = (hgt.getX(i) - worldY.lo) / (worldY.hi - worldY.lo);
+        // cool low, warm high: elevation readable without the art
+        col.setXYZ(i, 0.25 + 0.7 * t, 0.45 + 0.25 * Math.sin(3.14 * t), 0.95 - 0.7 * t);
+      } else {
+        col.setXYZ(i, 0.72, 0.74, 0.78);
+      }
+    }
+    col.needsUpdate = true;
+  });
+}
+
+function updateReal() {
+  if (!bounds) return;
+  const s = bounds.getSize(new THREE.Vector3());
+  document.getElementById("s-real").textContent =
+    `${(s.x * scale).toFixed(1)} x ${(s.z * scale).toFixed(1)} m`;
+}
+
+function bindUI() {
+  const drop = document.getElementById("drop");
+  const file = document.getElementById("file");
+  drop.addEventListener("click", () => file.click());
+  file.addEventListener("change", e => load(e.target.files));
+  ["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => {
+    e.preventDefault(); drop.classList.add("hot"); }));
+  ["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => {
+    e.preventDefault(); drop.classList.remove("hot"); }));
+  drop.addEventListener("drop", e => load(e.dataTransfer.files));
+  document.body.addEventListener("dragover", e => e.preventDefault());
+  document.body.addEventListener("drop", e => {
+    e.preventDefault(); load(e.dataTransfer.files); });
+
+  document.querySelectorAll('input[name=scale]').forEach(r =>
+    r.addEventListener("change", e => { scale = +e.target.value; updateReal(); }));
+  document.querySelectorAll('input[name=follow]').forEach(r =>
+    r.addEventListener("change", e => {
+      follow = e.target.value; jumps = 0;
+      document.getElementById("s-jump").textContent = 0;
+    }));
+
+  const tex = document.getElementById("tex");
+  const wire = document.getElementById("wire");
+  const flat = document.getElementById("flat");
+  tex.addEventListener("change", () => { showTex = tex.checked; applyDisplay(); });
+  wire.addEventListener("change", () => { showWire = wire.checked; applyDisplay(); });
+  flat.addEventListener("change", () => { flatByHeight = flat.checked; applyDisplay(); });
+  const lit = document.getElementById("lit");
+  lit.addEventListener("change", () => {
+    engineLit = lit.checked;
+    // Real lighting needs real contrast. The flat ambient that suits
+    // pre-shaded art would leave albedo looking like paper.
+    hemi.intensity = engineLit ? 0.34 : 0.78;
+    sun.intensity = engineLit ? 0.95 : 0.28;
+    applyDisplay();
+  });
+  document.getElementById("reset").addEventListener("click", () => {
+    orbit.az = home.az; orbit.el = home.el;
+    pan.x = pan.y = pan.z = 0;
+    if (bounds) orbit.r = Math.max(bounds.getSize(new THREE.Vector3()).x, 1) * 1.1;
+  });
+
+  addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
+  addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+
+  let drag = 0, px = 0, py = 0;
+  const c = renderer.domElement;
+  c.addEventListener("contextmenu", e => e.preventDefault());
+  c.addEventListener("mousedown", e => {
+    drag = (e.button === 1 || e.button === 2 || e.shiftKey) ? 2 : 1;
+    px = e.clientX; py = e.clientY;
+  });
+  addEventListener("mouseup", () => drag = 0);
+  addEventListener("mousemove", e => {
+    if (!drag) return;
+    const dx = e.clientX - px, dy = e.clientY - py;
+    if (drag === 1) {
+      orbit.az -= dx * 0.005;
+      orbit.el = Math.max(0.05, Math.min(1.5, orbit.el - dy * 0.005));
+    } else {
+      // Pan along the screen axes, scaled by distance so the world tracks the
+      // cursor at any zoom instead of crawling when far out.
+      const k = orbit.r * 0.0016;
+      pan.x -= (Math.cos(orbit.az) * -dx + Math.sin(orbit.az) * -dy) * k;
+      pan.z -= (Math.sin(orbit.az) * -dx - Math.cos(orbit.az) * -dy) * k;
+    }
+    px = e.clientX; py = e.clientY;
+  });
+  c.addEventListener("wheel", e => {
+    e.preventDefault();
+    orbit.r = Math.max(20, orbit.r * (1 + Math.sign(e.deltaY) * 0.1));
+  }, { passive: false });
+}
+
+// A page served from file:// cannot fetch a dropped file's siblings, so the
+// .png has to be dropped alongside the .obj. Textures are matched by base
+// name (area_03.obj <-> area_03.png) and may arrive in either order.
+const pendingTex = {};
+const pendingAlb = {};
+
+function applyPendingTexture(mesh) {
+  if (!mesh.geometry.getAttribute("uv")) return;
+  const b = mesh.userData.baseName;
+  if (pendingTex[b]) mesh.userData.tex = pendingTex[b];
+  if (pendingAlb[b]) mesh.userData.alb = pendingAlb[b];
+  applyDisplay();
+}
+
+function addTexture(img, name) {
+  let base = name.replace(/\.(png|jpg|jpeg)$/i, "");
+  const isAlbedo = /_albedo$/i.test(base);
+  if (isAlbedo) base = base.replace(/_albedo$/i, "");
+  const t = new THREE.Texture(img);
+  // Pixel art: nearest filtering, no mipmaps. Linear filtering here turns a
+  // 16px tile into mush at any distance, which is the whole look gone.
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  (isAlbedo ? pendingAlb : pendingTex)[base] = t;
+  world.traverse(o => { if (o.isMesh) applyPendingTexture(o); });
+  document.getElementById("s-tex").textContent =
+    Object.keys(pendingTex).length + "+" + Object.keys(pendingAlb).length;
+}
+
+function load(files) {
+  for (const f of files) {
+    const n = f.name.toLowerCase();
+    if (n.endsWith(".obj")) {
+      const rd = new FileReader();
+      rd.onload = () => addOBJ(rd.result, f.name);
+      rd.readAsText(f);
+    } else if (n.endsWith(".png") || n.endsWith(".jpg") || n.endsWith(".jpeg")) {
+      const rd = new FileReader();
+      rd.onload = () => {
+        const img = new Image();
+        img.onload = () => addTexture(img, f.name);
+        img.src = rd.result;
+      };
+      rd.readAsDataURL(f);
+    }
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const sp = 6;
+  if (keys.w) player.z -= sp;
+  if (keys.s) player.z += sp;
+  if (keys.a) player.x -= sp;
+  if (keys.d) player.x += sp;
+  marker.position.set(player.x, player.y + 12, player.z);
+
+  if (keys.q) orbit.az -= 0.02;
+  if (keys.e) orbit.az += 0.02;
+  if (keys.r) orbit.el = Math.min(1.5, orbit.el + 0.015);
+  if (keys.f) orbit.el = Math.max(0.05, orbit.el - 0.015);
+
+  let tx, ty, tz;
+  if (follow === "orbit") {
+    tx = orbit.tx; ty = orbit.ty; tz = orbit.tz;
+  } else {
+    const r = stepCamera(follow, anchor, player, { dt: 1 / 60 });
+    document.getElementById("s-lag").textContent =
+      Math.round(Math.hypot(player.x - anchor.x, player.z - anchor.z)) + " px";
+    if (r.jumped) {
+      jumps++;
+      document.getElementById("s-jump").textContent = jumps;
+    }
+    anchor.x = r.x; anchor.z = r.z;
+    tx = anchor.x; ty = anchor.y; tz = anchor.z;
+  }
+  tx += pan.x; ty += pan.y; tz += pan.z;
+  camera.position.set(
+    tx + orbit.r * Math.cos(orbit.el) * Math.cos(orbit.az),
+    ty + orbit.r * Math.sin(orbit.el),
+    tz + orbit.r * Math.cos(orbit.el) * Math.sin(orbit.az));
+  camera.lookAt(tx, ty, tz);
+  document.getElementById("s-ang").textContent =
+    `${Math.round(orbit.az * 57.3) % 360}° / ${Math.round(orbit.el * 57.3)}°`;
+  document.getElementById("s-dist").textContent = Math.round(orbit.r) + " px";
+  renderer.render(scene, camera);
+}
+
+init();
+</script>
+</body>
+</html>
