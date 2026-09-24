@@ -177,3 +177,23 @@ android/app/build/
 
 !tools/enemy_home_regression_test.py
 !tools/npc_context_regression_test.py
+# ---------------------------------------------------------------------
+# TMC VR voxel port
+# ---------------------------------------------------------------------
+# Picori ignores *.py wholesale and allowlists the few it ships. The VR
+# pipeline is written in Python, so its tools are allowlisted here.
+!tools/*.py
+!vr/**/*.py
+
+# The local asset cache. Everything below is DERIVED FROM THE USER'S OWN
+# ROM -- decoded room art, fitted meshes, harvested sprite frames -- and
+# must never be distributed. The pipeline regenerates all of it from a
+# fresh ROM; that is the whole point of fitting rather than shipping.
+vrdump/
+geom/
+states/
+night/
+spritedump/
+animdump/
+*.tmcr
+*.obj
