@@ -49,15 +49,19 @@ python3 tools/room_explore.py worldgen vrdump --area 3 --texture --out geom
 bash tools/voxelate_all.sh
 ```
 
-Proving the output is reproducible is not automated in the repository yet.
-The intended check, `tools/verify_repro.py` (not yet committed), runs the
-generator twice and compares every byte. It prints a **pipeline digest**, a
-hash over all outputs. Two people with the same ROM should see the same
-digest; if they do not, the pipeline has picked up a non-determinism
-(unsorted glob, dict ordering, an embedded timestamp) and the promise above
-is broken until it is fixed. Its `--break` flag corrupts the second run on
-purpose, because a reproducibility check that has never failed has not been
-tested.
+```sh
+# 3. prove it is reproducible
+python3 tools/verify_repro.py vrdump --area 3
+```
+
+`verify_repro.py` runs the generator twice and compares every byte. It prints a
+**pipeline digest** — a hash over all outputs. Two people with the same ROM
+should see the same digest; if they do not, the pipeline has picked up a
+non-determinism (unsorted glob, dict ordering, an embedded timestamp) and the
+promise above is broken until it is fixed.
+
+Run it with `--break` to watch it fail. A reproducibility check that has never
+failed has not been tested.
 
 ## Why the texture atlas is the stitched area
 

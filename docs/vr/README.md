@@ -64,6 +64,8 @@ what the decompilation calls them, so a pit is a pit because the game says
 | Fitting | `tools/shapefit.py`, `mk_manifests.py`, `verify_fits.py`, `hull_carve.py`, `fit_link.py` | Turn drawn objects into solids (chests, torches, boulders, stumps, trees, lotus, buildings, stairs), check their sizes, and carve sprite hulls. |
 | Manifests | `vr/objects/*.scene`, `vr/world/*.txt` | Coordinates, material indices and authored heights only. No art. |
 | Drivers | `tools/rebuild_all.sh`, `tools/voxelate_all.sh` | Run objects, rooms and whole areas end to end. |
+| Checks | `tools/verify_repro.py`, `tools/verify_fits.py`, `tools/src/vr_meshtest/main.c`, `tools/test_viewer.js` | Output is byte-for-byte reproducible from a ROM; fitted objects are the right size; the greedy mesher's winding; the viewer's parser and camera. |
+| Viewers | `tools/flat-viewer.html`, `tools/world-viewer.html` | Open in a browser and drop in `.tmcr` dumps or generated `.obj` meshes to inspect them in 3D. |
 | Build | `xmake-vr.lua`, `requirements.txt` | The `vr` option and the Python dependencies. |
 
 ## Setup
@@ -128,8 +130,13 @@ python3 tools/harvest_rooms.py --out vrdump --jobs 8
 #    or every story state, into states/p0 .. states/p6:
 bash tools/harvest_states.sh
 
-# 2. Fit and mesh everything. Resumable; FORCE=1 rebuilds.
+# 2. Fit and mesh everything. Resumable; FORCE=1 rebuilds; JOBS sets how
+#    many rooms build at once (default: all CPUs).
 bash tools/voxelate_all.sh
+
+# 3. Prove the output is reproducible (runs the generator twice, compares
+#    every byte; --break must make it fail).
+python3 tools/verify_repro.py vrdump --area 3
 ```
 
 `voxelate_all.sh` takes its dumps from the first non-empty of `states/p0`,
@@ -208,10 +215,6 @@ Kept here because a README that only lists successes is misleading.
   produce nothing.
 - **About a third of rooms fail to capture.** The last full state-0 sweep
   captured 562 of 842 rooms; 278 failed.
-- **Not in the repository yet:** `tools/verify_repro.py` (the byte-for-byte
-  reproducibility check that `04-asset-pipeline.md` describes) and
-  `tools/src/vr_meshtest/main.c` (the test for the `vr_meshtest` target in
-  `xmake-vr.lua`).
 - **No renderer.** No Vulkan device, OpenXR session or in-game 3D view
   exists yet; `01-blueprint.md` and `02-implementation-plan.md` lay out
   that work.
