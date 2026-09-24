@@ -1706,6 +1706,39 @@ def write_placement(out, r, x0, y0, x1, y1, mode, centred):
     Path(str(out) + ".place.json").write_text(json.dumps(meta, indent=1))
 
 
+def _fit_in_process(argv):
+    """Run `shapefit.py fit <argv>` inside this process.
+
+    Returns (returncode, stdout, stderr), as subprocess.run would, so
+    cmd_scene reports a failure exactly as it did when every fit was its own
+    process. sys.argv is set for the duration because cmd_fit reads it to
+    tell an explicit --height from the default.
+    """
+    import contextlib
+    import io
+    import traceback
+    out, err = io.StringIO(), io.StringIO()
+    saved = sys.argv
+    sys.argv = [str(Path(__file__).resolve()), "fit"] + list(argv)
+    rc = 0
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            a = build_parser().parse_args(sys.argv[1:])
+            a.func(a)
+    except SystemExit as e:
+        if isinstance(e.code, int):
+            rc = e.code
+        elif e.code is not None:
+            err.write(f"{e.code}\n")
+            rc = 1
+    except Exception:
+        err.write(traceback.format_exc())
+        rc = 1
+    finally:
+        sys.argv = saved
+    return rc, out.getvalue(), err.getvalue()
+
+
 def cmd_scene(args):
     """Assemble a room: terrain plus every object fitted in its own right.
 
@@ -1747,11 +1780,10 @@ def cmd_scene(args):
               "ground": "--ground-frac", "riser": "--riser",
               "layer": "--layer"}
     verts, faces, ok, bad = [], [], 0, 0
-    bar = RE.Progress(len(entries), "scene")
+    jobs = []
     for ln, room, cells, mode, opts in entries:
         part = tmp / f"part{ln:03d}.obj"
-        cmd = [sys.executable, str(Path(__file__).resolve()), "fit",
-               str(Path(args.rooms) / room), "--cells", cells,
+        cmd = [str(Path(args.rooms) / room), "--cells", cells,
                "--mode", mode, "--out", str(part), "--place"]
         for o in opts:
             if "=" not in o:
@@ -1759,13 +1791,26 @@ def cmd_scene(args):
             k, v = o.split("=", 1)
             if k in KEYMAP:
                 cmd += [KEYMAP[k], v]
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        jobs.append(cmd)
+
+    # Fit in worker processes, each reused for many objects, rather than one
+    # fresh interpreter per object. Results come back in manifest order, so
+    # the merged scene is the same whatever --jobs is.
+    from multiprocessing import Pool
+    bar = RE.Progress(len(entries), "scene")
+    if args.jobs > 1 and len(jobs) > 1:
+        pool = Pool(min(args.jobs, len(jobs)))
+        results = pool.imap(_fit_in_process, jobs)
+    else:
+        pool, results = None, map(_fit_in_process, jobs)
+    for (ln, room, cells, mode, opts), (rc, so, se) in zip(entries, results):
+        part = tmp / f"part{ln:03d}.obj"
         meta_p = Path(str(part) + ".place.json")
-        if p.returncode != 0 or not part.exists() or not meta_p.exists():
+        if rc != 0 or not part.exists() or not meta_p.exists():
             bad += 1
             bar.update(1, f"line {ln} failed")
             print(f"  line {ln} ({room} {cells} {mode}) failed: "
-                  f"{(p.stderr or p.stdout).strip().splitlines()[-1:] or ['?']}")
+                  f"{(se or so).strip().splitlines()[-1:] or ['?']}")
             continue
         meta = json.loads(meta_p.read_text())
         # Back into room pixels: the rect's own origin, plus the room's.
@@ -1786,6 +1831,9 @@ def cmd_scene(args):
         ok += 1
         bar.update(1, f"{ok} placed")
     bar.done()
+    if pool is not None:
+        pool.close()
+        pool.join()
 
     # Terrain last, and unshifted: room_explore writes it in room pixels
     # already, origin included, so adding an offset here would slide the
@@ -4244,7 +4292,7 @@ def cmd_catalogue(args):
     print("  Name them from the sheet, then fit with `shapefit.py fit --cells ...`.")
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -4423,6 +4471,8 @@ def main():
                     help="include layer 1 (canopies, bridge decks) in terrain")
     sc.add_argument("--subdiv", type=int, default=1)
     sc.add_argument("--out", default="objects/scene.obj")
+    sc.add_argument("--jobs", type=int, default=os.cpu_count() or 2,
+                    help="fit this many objects at once")
     sc.set_defaults(func=cmd_scene)
 
 
@@ -4455,9 +4505,11 @@ def main():
     o.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     o.add_argument("--out", default="objects/openings.txt")
     o.set_defaults(func=cmd_openings)
+    return ap
 
 
-    a = ap.parse_args()
+def main():
+    a = build_parser().parse_args()
     a.func(a)
 
 
