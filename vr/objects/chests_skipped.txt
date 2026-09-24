@@ -1,0 +1,21 @@
+room_08_01.tmcr cell 5,2: blob 16px
+room_08_01.tmcr cell 9,2: blob 16px
+room_112_15.tmcr cell 36,16: blob 76px
+room_112_43.tmcr cell 6,1: blob 76px
+room_12_00.tmcr cell 27,40: blob 16px
+room_15_00.tmcr cell 37,28: blob 15px
+room_15_00.tmcr cell 23,30: blob 16px
+room_15_00.tmcr cell 51,41: blob 15px
+room_23_00.tmcr cell 46,17: blob 15px
+room_23_00.tmcr cell 54,17: blob 16px
+room_24_00.tmcr cell 2,3: blob 15px
+room_24_01.tmcr cell 12,3: blob 15px
+room_25_01.tmcr cell 13,5: blob 16px
+room_25_01.tmcr cell 27,5: blob 16px
+room_25_01.tmcr cell 57,11: blob 16px
+room_25_01.tmcr cell 32,18: blob 16px
+room_25_01.tmcr cell 33,21: blob 16px
+room_25_01.tmcr cell 41,21: blob 16px
+room_37_07.tmcr cell 3,3: blob 76px
+room_39_16.tmcr cell 8,2: blob 12px
+room_48_03.tmcr cell 3,2: all materials are background

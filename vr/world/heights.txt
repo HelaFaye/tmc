@@ -1,0 +1,14 @@
+# area material height   -- the authored layer.
+#
+# Collision says "solid" and the art depicts a thing without ever stating how
+# tall it is, so these are decisions, not measurements. One line each, with the
+# reason, so a wrong number can be argued with instead of guessed at again.
+
+# Area 4 (Minish Woods / the fields around it)
+#
+# 160 is the bare-earth material: dirt paths, and the ring of ground the Minish
+# portal symbol is painted on. It is GROUND, not an object. Fitting it as a
+# raised disc turned a mark on the floor into a 10px plinth -- the stump that
+# stands on it is a separate sprite, and the paint under it must stay flush or
+# the stump ends up on a pedestal.
+4 160 0

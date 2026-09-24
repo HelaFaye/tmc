@@ -1,0 +1,12 @@
+# Minish Woods, area 0 room 0.
+#
+# Keep these lines SHORT. Every option is a claim the drawing did not make.
+# The mushroom house was ruined by six of them stacked up -- a foot band, a
+# vertical stretch, feature displacement, relief -- each added to compensate
+# for damage done by the last. The plain fit was right on its own, and the
+# shoulder that needed a --cap-frac is now measured from the silhouette.
+#
+# room              cells        mode     options
+room_00_00.tmcr  40,0,49,10   upright  materials=113,114,112,193
+room_00_00.tmcr  28,24,37,31  upright  materials=224,225,209,208
+room_00_00.tmcr  16,52,22,58  stump    materials=209,145,208 height=14
