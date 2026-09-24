@@ -18,9 +18,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "main.h"       /* gMain, SetTask, TASK_* */
-#include "save.h"       /* SaveFile, gSave */
+#include "save.h"
+#include "flags.h"    /* TMC_VR: SetGlobalFlag, LVn_CLEAR, TABIDACHI */       /* SaveFile, gSave */
 #include "fileselect.h" /* gMapDataBottomSpecial, ResetSaveFile */
-#include "room.h"       /* gRoomControls */
+#include "room.h"
+#include "fade.h"     /* TMC_VR: gFadeControl */       /* gRoomControls */
 #include "message.h"    /* gMessage, MessageRequest (TMC_ROOMCAP_MSG hook) */
 #include "script.h"     /* gActiveScriptInfo, ScriptExecutionContext (TMC_ROOMCAP_PAN_PROBE) */
 #include "port_repro.h"
@@ -190,6 +192,43 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
         sv->saved_status.layer = (u8)l;
         gFileSelectState.saveStatus[0] = 1; /* SAVE_VALID */
         SetActiveSave(0);
+/* ==== TMC_VR PROGRESS BEGIN (managed) ==== */
+#ifdef TMC_VR
+        /* Story progress. roomcap boots a pristine save, and several areas only
+         * exist at a later game state:
+         *
+         *   Hyrule Town redirects to Festival Town while global_progress == 1
+         *   and TABIDACHI is unset (roomInit.c:4429).
+         *   Dungeon boss arenas and Dark Hyrule Castle exteriors need LVn_CLEAR.
+         *
+         * global_progress is DERIVED, not stored — UpdateGlobalProgress()
+         * (gameUtils.c:939) recomputes it from these flags, so we set the flags
+         * and let the engine do the rest.
+         *
+         *   TMC_ROOMCAP_PROGRESS=<n>   n dungeons cleared, 0..6. Any n sets
+         *                              TABIDACHI, which alone is enough to get
+         *                              the real Hyrule Town.
+         */
+        {
+            const char* pg = getenv("TMC_ROOMCAP_PROGRESS");
+            if (pg && *pg) {
+                int n = atoi(pg);
+                if (n < 0) n = 0;
+                if (n > 6) n = 6;
+                SetGlobalFlag(TABIDACHI);
+                static const u32 kLv[6] = { LV1_CLEAR, LV2_CLEAR, LV3_CLEAR,
+                                            LV4_CLEAR, LV5_CLEAR, LV6_CLEAR };
+                for (int i = 0; i < n; i++)
+                    SetGlobalFlag(kLv[i]);
+                UpdateGlobalProgress();
+                fprintf(stderr, "[roomcap] progress: %d dungeons, global_progress=%u\n",
+                        n, (unsigned)gSave.global_progress);
+            }
+        }
+#endif
+/* ==== TMC_VR PROGRESS END ==== */
+
+
         SetTask(TASK_GAME);
         booted = 1;
         fprintf(stderr, "[roomcap] frame %u: bootstrapped new game -> TASK_GAME (start 0x%02x/0x%02x)\n", frame, a, r);
@@ -567,6 +606,94 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
             fflush(stderr);
             _Exit(sv ? 0 : 4);
         }
+/* ==== TMC_VR HOOK BEGIN (managed by tools/apply_roomcap_hook.py) ==== */
+#ifdef TMC_VR
+        /* Sprite harvest. The dumper reads OBJ VRAM, so it only sees frames the
+         * engine has already DMA'd in; dumping a range cold yields blanks.
+         * VrDump_AutoTick drives the player through the range one frame per
+         * tick, letting each frame's tiles load first.
+         *   TMC_ROOMCAP_SPRITES="first,last[,dirmask]"  bit0=N 1=E 2=S 3=W
+         *   TMC_ROOMCAP_SPRITEDIR=<dir> */
+        {
+            static int sprites_started = 0;
+            const char* sp = getenv("TMC_ROOMCAP_SPRITES");
+            if (sp && *sp) {
+                extern void VrDump_StartAuto(const char*, Entity*, unsigned, unsigned, int);
+                extern int VrDump_AutoTick(void);
+                extern unsigned VrDump_AutoCount(void);
+                if (!sprites_started) {
+                    unsigned f0 = 0, f1 = 0;
+                    int mask = 0xF;
+                    sscanf(sp, "%u,%u,%i", &f0, &f1, &mask);
+                    const char* sd = getenv("TMC_ROOMCAP_SPRITEDIR");
+                    VrDump_StartAuto(sd && *sd ? sd : "spritedump",
+                                     &gPlayerEntity.base, f0, f1, mask);
+                    sprites_started = 1;
+                    fprintf(stderr, "[roomcap] sprite harvest %u..%u mask=0x%x\n",
+                            f0, f1, mask);
+                }
+                if (VrDump_AutoTick())
+                    return;
+                fprintf(stderr, "[roomcap] sprite harvest done: %u frames\n",
+                        VrDump_AutoCount());
+                fflush(stderr);
+                _Exit(0);
+            }
+        }
+
+        /* Wait out any in-flight palette fade. gBgPltt is PAL_RAM, the fade's
+         * DESTINATION (src/fade.c:146 writes gPaletteBuffer -> PAL_RAM through
+         * the active fade function), so capturing while gFadeControl.active is
+         * set records colours pulled toward the fade colour. Bounded so a
+         * sustained fade can never hang the harvest. */
+        {
+            static int fade_waits = 0;
+            if (gFadeControl.active && fade_waits < 600) {
+                fade_waits++;
+                return;
+            }
+            if (gFadeControl.active) {
+                fprintf(stderr, "[roomcap] WARNING: fade still active after %d "
+                                "frames; palette may be off\n", fade_waits);
+            }
+        }
+
+        /* World snapshot. The warp has settled, so gMapTop/gMapBottom are fully
+         * populated and gRoomControls.width/height are non-zero — the exact
+         * conditions the interactive auto-dump had to wait for. */
+        {
+            const char* vrdir = getenv("TMC_ROOMCAP_TMCR");
+            if (vrdir && *vrdir) {
+                extern void VrWorld_Capture(void);
+                extern int VrWorld_Dump(const char* dir);
+                /* Verify we actually ARRIVED. A warp to coordinates outside the
+                 * room can leave Link crossing a border, and by the settle frame
+                 * the engine has moved him elsewhere. Without this check we would
+                 * dump the wrong room — silently wrong data is worse than a
+                 * visible failure. */
+                if ((unsigned)gRoomControls.area != a ||
+                    (unsigned)gRoomControls.room != r) {
+                    fprintf(stderr,
+                            "[roomcap] tmcr ABORT: asked 0x%02x/0x%02x, landed 0x%02x/0x%02x\n",
+                            a, r, (unsigned)gRoomControls.area,
+                            (unsigned)gRoomControls.room);
+                    fflush(stderr);
+                    _Exit(6);
+                }
+                VrWorld_Capture();
+                int vok = VrWorld_Dump(vrdir);
+                fprintf(stderr,
+                        "[roomcap] tmcr -> %d (area=0x%02x room=0x%02x %ux%u cells)\n",
+                        vok, (unsigned)gRoomControls.area,
+                        (unsigned)gRoomControls.room,
+                        (unsigned)(gRoomControls.width / 16),
+                        (unsigned)(gRoomControls.height / 16));
+                fflush(stderr);
+                _Exit(vok ? 0 : 5);
+            }
+        }
+#endif
+/* ==== TMC_VR HOOK END ==== */
         const char* out = getenv("TMC_ROOMCAP_OUT");
         if (!out || !*out)
             out = "roomcap.png";
