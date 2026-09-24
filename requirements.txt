@@ -1,0 +1,10 @@
+# Python dependencies for the VR voxel pipeline (tools/*.py).
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#
+# The pipeline scripts (tools/rebuild_all.sh, tools/voxelate_all.sh,
+# tools/harvest_*.sh) pick up .venv/bin/python automatically.
+# Last tested with numpy 2.5.3 and Pillow 12.3.0.
+numpy>=2.0
+Pillow>=10.0
