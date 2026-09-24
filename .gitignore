@@ -195,5 +195,12 @@ states/
 night/
 spritedump/
 animdump/
+entsheets/
+tiles/
+world/
+verify/
+objects/
+/*.png
 *.tmcr
 *.obj
+*.patch
