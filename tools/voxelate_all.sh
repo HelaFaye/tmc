@@ -9,6 +9,7 @@
 #                                     states/p0, night/vrdump, vrdump)
 #   STAGES      which to run         (default: objects,rooms,world)
 #   FORCE=1     rebuild everything, ignoring what is already there
+#   JOBS        rooms built at once (default: number of CPUs)
 #
 # Outputs, all under $TMC_ROOT and all gitignored -- they are derived from
 # your ROM and are not distributable:
@@ -81,25 +82,25 @@ if stage objects; then
 fi
 
 # ---- rooms -----------------------------------------------------------
-if stage rooms; then
-  echo "" | tee -a "$LOG"
-  echo "-- stage 2/3: $N rooms -> geom/rooms/" | tee -a "$LOG"
-  i=0; made=0; skip=0; fail=0; lay1=0; empty=0
-  for f in "$ROOMS"/room_*.tmcr; do
-    i=$((i+1))
-    b="$(basename "$f" .tmcr)"
-    o="geom/rooms/$b.obj"
-    if [ "$FORCE" != "1" ] && [ -s "$o" ]; then skip=$((skip+1)); continue; fi
-    if "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --overlay \
-         ${HEIGHTS:+--heights "$HEIGHTS"} >>"$LOG" 2>&1; then
-      made=$((made+1))
-    elif "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --layer 1 \
-         ${HEIGHTS:+--heights "$HEIGHTS"} >>"$LOG" 2>&1; then
-      # Some captures have no layer 0 at all -- room_33_20..26 among them.
-      # That is a property of the dump, not a failure of the build, so try
-      # the other layer and only give up if that is empty too.
-      made=$((made+1)); lay1=$((lay1+1))
-    elif [ "$("$PY" -c "
+# One room per job, JOBS at a time. Each job writes its own log and prints a
+# single status word; the logs are appended to $LOG in room order afterwards,
+# so the log reads the same however the jobs were scheduled.
+build_room(){
+  local f="$1" b o lg
+  b="$(basename "$f" .tmcr)"
+  o="geom/rooms/$b.obj"
+  lg="$RLOGS/$b.log"
+  if [ "$FORCE" != "1" ] && [ -s "$o" ]; then echo "skip $b"; return; fi
+  if "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --overlay \
+       ${HEIGHTS:+--heights "$HEIGHTS"} >>"$lg" 2>&1; then
+    echo "made $b"
+  elif "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --layer 1 \
+       ${HEIGHTS:+--heights "$HEIGHTS"} >>"$lg" 2>&1; then
+    # Some captures have no layer 0 at all -- room_33_20..26 among them.
+    # That is a property of the dump, not a failure of the build, so try
+    # the other layer and only give up if that is empty too.
+    echo "lay1 $b"
+  elif [ "$("$PY" -c "
 import sys; sys.path.insert(0,'$KIT/tools')
 import room_explore as RE
 from pathlib import Path
@@ -108,19 +109,41 @@ try:
     print(int(r.cells_w) * int(r.cells_h))
 except Exception:
     print(-1)" 2>/dev/null)" = "0" ]; then
-      # Zero cells wide: the capture is EMPTY, so there is nothing to
-      # voxelate. That is a bad dump, not a broken build -- re-harvest
-      # these rooms rather than debugging the mesher.
-      empty=$((empty+1)); echo "   empty dump: $b (0 cells -- re-harvest it)"
-    else
-      fail=$((fail+1)); echo "   FAILED $b (see $LOG)"
-    fi
+    # Zero cells wide: the capture is EMPTY, so there is nothing to
+    # voxelate. That is a bad dump, not a broken build -- re-harvest
+    # these rooms rather than debugging the mesher.
+    echo "empty $b"
+  else
+    echo "fail $b"
+  fi
+}
+
+if stage rooms; then
+  JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
+  echo "" | tee -a "$LOG"
+  echo "-- stage 2/3: $N rooms -> geom/rooms/ ($JOBS at a time)" | tee -a "$LOG"
+  RLOGS="$(mktemp -d)"
+  export -f build_room
+  export PY KIT HEIGHTS FORCE RLOGS
+  i=0; made=0; skip=0; fail=0; lay1=0; empty=0
+  while read -r status b; do
+    i=$((i+1))
+    case "$status" in
+      made)  made=$((made+1)) ;;
+      lay1)  made=$((made+1)); lay1=$((lay1+1)) ;;
+      skip)  skip=$((skip+1)) ;;
+      empty) empty=$((empty+1)); echo "   empty dump: $b (0 cells -- re-harvest it)" ;;
+      *)     fail=$((fail+1)); echo "   FAILED $b (see $LOG)" ;;
+    esac
     if [ $((i % 25)) -eq 0 ] || [ "$i" -eq "$N" ]; then
       el=$(( $(date +%s) - t0 ))
       printf "\r   %4d/%-4d  built %-4d skipped %-4d failed %-3d  %ds elapsed" \
         "$i" "$N" "$made" "$skip" "$fail" "$el"
     fi
-  done
+  done < <(printf '%s\0' "$ROOMS"/room_*.tmcr |
+           xargs -0 -n1 -P "$JOBS" bash -c 'build_room "$1"' _)
+  for lg in $(ls "$RLOGS" | sort); do cat "$RLOGS/$lg" >>"$LOG"; done
+  rm -rf "$RLOGS"
   echo "" | tee -a "$LOG"
   echo "   rooms: $made built ($lay1 via layer 1), $skip already present," \
        "$empty empty dumps, $fail failed" | tee -a "$LOG"
