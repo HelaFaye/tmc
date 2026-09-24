@@ -79,7 +79,7 @@ fi
 if stage rooms; then
   echo "" | tee -a "$LOG"
   echo "-- stage 2/3: $N rooms -> geom/rooms/" | tee -a "$LOG"
-  i=0; made=0; skip=0; fail=0
+  i=0; made=0; skip=0; fail=0; lay1=0; empty=0
   for f in "$ROOMS"/room_*.tmcr; do
     i=$((i+1))
     b="$(basename "$f" .tmcr)"
@@ -88,6 +88,25 @@ if stage rooms; then
     if "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --overlay \
          ${HEIGHTS:+--heights "$HEIGHTS"} >>"$LOG" 2>&1; then
       made=$((made+1))
+    elif "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --layer 1 \
+         ${HEIGHTS:+--heights "$HEIGHTS"} >>"$LOG" 2>&1; then
+      # Some captures have no layer 0 at all -- room_33_20..26 among them.
+      # That is a property of the dump, not a failure of the build, so try
+      # the other layer and only give up if that is empty too.
+      made=$((made+1)); lay1=$((lay1+1))
+    elif [ "$("$PY" -c "
+import sys; sys.path.insert(0,'$KIT/tools')
+import room_explore as RE
+from pathlib import Path
+try:
+    r = RE.load_room(Path('$f'))
+    print(int(r.cells_w) * int(r.cells_h))
+except Exception:
+    print(-1)" 2>/dev/null)" = "0" ]; then
+      # Zero cells wide: the capture is EMPTY, so there is nothing to
+      # voxelate. That is a bad dump, not a broken build -- re-harvest
+      # these rooms rather than debugging the mesher.
+      empty=$((empty+1)); echo "   empty dump: $b (0 cells -- re-harvest it)"
     else
       fail=$((fail+1)); echo "   FAILED $b (see $LOG)"
     fi
@@ -98,7 +117,8 @@ if stage rooms; then
     fi
   done
   echo "" | tee -a "$LOG"
-  echo "   rooms: $made built, $skip already present, $fail failed" | tee -a "$LOG"
+  echo "   rooms: $made built ($lay1 via layer 1), $skip already present," \
+       "$empty empty dumps, $fail failed" | tee -a "$LOG"
 fi
 
 # ---- overworld -------------------------------------------------------
@@ -110,8 +130,15 @@ if stage world; then
   na=$(echo "$AREAS" | wc -w); j=0; wmade=0; wskip=0; wfail=0
   for a in $AREAS; do
     j=$((j+1))
-    o="geom/world/area_$a.obj"
-    if [ "$FORCE" != "1" ] && [ -s "$o" ]; then wskip=$((wskip+1)); continue; fi
+    # Strip the zero padding. worldgen parses --area with int(a, 0), where
+    # a leading zero is an octal prefix, so "01".."09" are all invalid
+    # literals and every one of those areas died. 10# forces decimal.
+    a=$((10#$a))
+    # worldgen writes a DIRECTORY (one mesh per level), not a single file,
+    # so the resume test is "is it non-empty", not "-s".
+    o="geom/world/area_$a"
+    if [ "$FORCE" != "1" ] && [ -n "$(ls -A "$o" 2>/dev/null)" ]; then
+      wskip=$((wskip+1)); continue; fi
     if "$PY" "$KIT/tools/room_explore.py" worldgen "$ROOMS" --area "$a" \
          --out "$o" --texture --albedo ${HEIGHTS:+--heights "$HEIGHTS"} \
          >>"$LOG" 2>&1; then
