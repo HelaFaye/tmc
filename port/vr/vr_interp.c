@@ -3,12 +3,13 @@
 
 #ifndef VR_INTERP_STANDALONE_TEST
 #include "entity.h"
+#include "player.h"    /* gPlayerEntity: Link is not in gEntities */
 /* gEntities is GenericEntity[MAX_ENTITIES] and entity.h already declares it.
  * GenericEntity's first member is `Entity base`, so that is what we read. */
 #define VR_ENT(i) (&gEntities[(i)].base)
 #endif
 
-VrTrackedEntity gVrTracked[VR_MAX_TRACKED];
+VrTrackedEntity gVrTracked[VR_TRACKED_SLOTS];
 
 static int64_t sLastTickXr = 0;
 static int     sHaveXrClock = 0;
@@ -79,6 +80,17 @@ void VrInterp_OnTick(int64_t tickTimeXr) {
         VrInterp_UpdateSlot(t, e->kind, e->id, e->type,
                             e->frameIndex, e->direction, x, y, z);
     }
+
+    /* Link, same axis convention as above. */
+    {
+        const Entity* e = &gPlayerEntity.base;
+        VrInterp_UpdateSlot(&gVrTracked[VR_TRACK_LINK],
+                            e->kind, e->id, e->type,
+                            e->frameIndex, e->direction,
+                            (float)e->x.HALF.HI,
+                            -(float)e->z.HALF.HI,
+                            (float)e->y.HALF.HI);
+    }
 }
 #else
 void VrInterp_OnTick(int64_t tickTimeXr) {
@@ -98,7 +110,7 @@ void VrInterp_Evaluate(int64_t predictedDisplayTimeXr, int64_t tickDurationNs) {
         if (t < 0.0f) t = 0.0f;
     }
 
-    for (int i = 0; i < VR_MAX_TRACKED; i++) {
+    for (int i = 0; i < VR_TRACKED_SLOTS; i++) {
         VrTrackedEntity* e = &gVrTracked[i];
         if (!e->valid) continue;
         for (int c = 0; c < 3; c++)

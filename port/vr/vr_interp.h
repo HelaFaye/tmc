@@ -32,7 +32,12 @@
 extern "C" {
 #endif
 
-#define VR_MAX_TRACKED 72
+#define VR_MAX_TRACKED 72                    /* gEntities[] slots */
+/* Link lives in gPlayerEntity, not in gEntities, so he gets his own slot
+ * after the pool. Without it the one entity the player watches most would
+ * never be interpolated. */
+#define VR_TRACK_LINK    VR_MAX_TRACKED
+#define VR_TRACKED_SLOTS (VR_MAX_TRACKED + 1)
 
 typedef struct {
     uint8_t kind, id, type;   /* identity tuple; slot reuse changes at least one */
@@ -45,7 +50,7 @@ typedef struct {
     float blended[3];
 } VrTrackedEntity;
 
-extern VrTrackedEntity gVrTracked[VR_MAX_TRACKED];
+extern VrTrackedEntity gVrTracked[VR_TRACKED_SLOTS];
 
 /* Call once per GAME TICK, from the 60 Hz path (port_bios.c, after the engine
  * has finished updating entities). tickTimeXr must be in the OpenXR time
