@@ -18,14 +18,19 @@ added there **in the same commit that creates it**, not later.
 ```
 baserom.gba  (never committed)
   │
-  ├─ tmc_pc + TMC_ROOMCAP  ──────────────►  vrdump/*.tmcr      room captures
-  │                                          (map, collision, palettes, VRAM)
+  ├─ tmc_pc + TMC_ROOMCAP_TMCR  ─────────►  vrdump/room_AA_RR.tmcr   room captures
+  │   (via tools/harvest_rooms.py)           (map, collision, entities,
+  │                                           palettes, BG VRAM)
   │
-  ├─ tmc_pc + TMC_ROOMCAP_SPRITEANIM  ───►  animdump/*.png     sprite frames
+  ├─ tmc_pc + TMC_ROOMCAP_SPRITES  ──────►  spritedump/*.png + .json  Link's frames
   │
-  └─ tools/room_explore.py worldgen ─────►  geom/area_NN.obj   geometry
-                       --texture           geom/area_NN.png   texture atlas
-                                            geom/area_NN.mtl
+  ├─ tools/shapefit.py scene  ───────────►  geom/<class>.obj          fitted objects
+  │
+  ├─ tools/room_explore.py voxel  ───────►  geom/rooms/*.obj          one per room
+  │
+  └─ tools/room_explore.py worldgen  ────►  area_NN.obj              geometry
+                  --texture                  area_NN.png              texture atlas
+                                             area_NN.mtl
 ```
 
 Every arrow is reproducible. Nothing downstream contains information that is
@@ -34,24 +39,25 @@ not in the ROM plus this repository.
 ## Reproducing from scratch
 
 ```sh
-# 1. capture rooms (needs your own baserom.gba in dist/USA/)
-cd dist/USA && TMC_AUTOPLAY=1 SDL_VIDEODRIVER=dummy TMC_ROOMCAP=1 ./tmc_pc
+# 1. capture rooms (needs a TMC_VR build and your own ROM in dist/USA/)
+python3 tools/harvest_rooms.py --out vrdump --jobs 8
 
-# 2. generate geometry and textures
-python3 tools/room_explore.py worldgen vrdump --texture --out geom
+# 2. generate geometry and textures for one area
+python3 tools/room_explore.py worldgen vrdump --area 3 --texture --out geom
 
-# 3. prove it is reproducible
-python3 tools/verify_repro.py vrdump
+# or everything at once
+bash tools/voxelate_all.sh
 ```
 
-`verify_repro.py` runs the generator twice and compares every byte. It prints a
-**pipeline digest** — a hash over all outputs. Two people with the same ROM
-should see the same digest; if they do not, the pipeline has picked up a
-non-determinism (unsorted glob, dict ordering, an embedded timestamp) and the
-promise above is broken until it is fixed.
-
-Run it with `--break` to watch it fail. A reproducibility check that has never
-failed has not been tested.
+Proving the output is reproducible is not automated in the repository yet.
+The intended check, `tools/verify_repro.py` (not yet committed), runs the
+generator twice and compares every byte. It prints a **pipeline digest**, a
+hash over all outputs. Two people with the same ROM should see the same
+digest; if they do not, the pipeline has picked up a non-determinism
+(unsorted glob, dict ordering, an embedded timestamp) and the promise above
+is broken until it is fixed. Its `--break` flag corrupts the second run on
+purpose, because a reproducibility check that has never failed has not been
+tested.
 
 ## Why the texture atlas is the stitched area
 

@@ -15,14 +15,17 @@ rough; please file issues for anything that breaks.
 
 ## Fork: TMC VR voxel port
 
-This branch adds a voxel/VR layer on top of Picori — it reconstructs 3D
-shapes from the game's 2D art and renders a world you can stand in. No ROM
-asset is ever distributed: every model is generated on your machine from
-your own ROM.
+This fork (branch `vr`) adds a voxel/VR layer on top of Picori. It captures
+each room's map, collision and art straight from the running game, rebuilds
+3D shapes from the 2D art, and writes meshes for rooms, whole areas and
+objects. The in-game 3D/VR renderer is not built yet; the capture and
+fitting pipeline is.
 
-See **[docs/vr/README.md](docs/vr/README.md)** for how it works, the full
-pipeline, and credits.
+No ROM asset is ever distributed. Every model is generated on your machine
+from your own ROM, and all generated output is gitignored.
 
+See **[docs/vr/README.md](docs/vr/README.md)** for setup, the pipeline, what
+is not finished yet, and credits.
 
 ## Supported ROMs
 

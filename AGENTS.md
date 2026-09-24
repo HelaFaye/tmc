@@ -24,6 +24,14 @@ Project Picori is a native PC port of **The Legend of Zelda: The Minish Cap**. I
 - `mods/` — runtime asset override mods; see `mods/README.md`.
 - `.github/workflows/` — CI/release matrix definitions.
 
+## VR Voxel Fork (branch `vr`)
+- Adds a voxel/VR layer on top of Picori; start with `docs/vr/README.md`, then `docs/vr/01`–`04` and `ERRATA-brainstorm.md`.
+- Runtime modules live in `port/vr/` behind `TMC_VR`; room capture is the `TMC_VR` block in `port/port_repro_roomcap.c`, managed by `tools/apply_roomcap_hook.py` (edit the hook there, not in the C file).
+- The offline pipeline is Python in `tools/` (numpy + Pillow, `requirements.txt`): `harvest_rooms.py` → `.tmcr` dumps → `mk_manifests.py` / `shapefit.py` / `room_explore.py` → `.obj`. `tools/voxelate_all.sh` runs it end to end.
+- Read world state from the engine (`gMapTop`/`gMapBottom`, the entity list, `gPlayerEntity`), never from the PPU or OAM. Never read `scroll_x/y`, `aff_x/y`, `oam_offset_x/y` or BG offsets for a view.
+- Never commit the ROM or anything derived from it: dumps, decoded art, sprite frames, meshes. Commit only code and manifests of coordinates and indices; add every new output directory to `.gitignore` in the same commit.
+- The `vr` xmake option is not wired into `xmake.lua` yet; see "Setup" in `docs/vr/README.md`.
+
 ## Development Commands
 ```bash
 # Recommended full build; prompts when needed and stages dist/USA or dist/EU

@@ -38,7 +38,7 @@ target_end()
 --     add_packages("openxr_loader", "vulkansdk")
 --     add_includedirs("port/vr")
 --
---     -- Modules in this kit that are complete and tested:
+--     -- The port/vr/ modules:
 --     add_files("port/vr/vr_world.c")
 --     add_files("port/vr/vr_anchor.c")
 --     add_files("port/vr/vr_greedy_mesh.c")
