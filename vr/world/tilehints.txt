@@ -1,0 +1,72 @@
+# Tile shape hints over 561 rooms.
+# 33135 distinct 16x16 tiles across 486902 cells.
+#
+# Outline = near-black stroke, judged per tile. It marks an
+# oblique angle transition, so it maps the tile's edges in
+# 3D. Shading = faces under a north-west light.
+
+== kind, by how many cells in the game use it ==
+  flat        277580 cells   57.0%    2065 distinct tiles
+  faceted     116272 cells   23.9%   16896 distinct tiles
+  round        45622 cells    9.4%    7083 distinct tiles
+  riser        14312 cells    2.9%    2195 distinct tiles
+  ledge        13848 cells    2.8%    2167 distinct tiles
+  courses      10779 cells    2.2%    1539 distinct tiles
+  uprights      7413 cells    1.5%    1156 distinct tiles
+  block          871 cells    0.2%      15 distinct tiles
+  solid          205 cells    0.0%      19 distinct tiles
+
+== outline coverage ==
+  tiles with no outline at all: 13969 (42.2%)
+  median outline coverage: 0.035 of the tile
+  0 of 4 borders outlined: 25028 tiles
+  1 of 4 borders outlined:  4121 tiles
+  2 of 4 borders outlined:  2189 tiles
+  3 of 4 borders outlined:  1260 tiles
+  4 of 4 borders outlined:   537 tiles
+
+== shading bands (distinct flat shades per tile) ==
+  1 band(s):  2326 tiles
+  2 band(s):  5618 tiles
+  3 band(s):  7291 tiles
+  4 band(s):  8200 tiles
+  5 band(s):  6576 tiles
+  6 band(s):  3124 tiles
+
+== does the light agree with north-west? ==
+  The statistic is max(0, cos) between a tile's bright-vs-
+  dark axis and the north-west light. Averaged over RANDOM
+  directions that is 1/pi = 0.318, so 0.318 means 'no
+  information', not 'lit from the south-east'. Most tiles
+  are texture and have no meaningful normal, so the
+  all-tile figure sits near the null by construction. The
+  number that matters is the one for tiles that are
+  actually objects -- outlined, and shaded in real faces.
+
+  null (random normals)                     0.318
+  all tiles with >1 shade    n= 30809      0.285
+  outlined, 3+ shades        n=  6349      0.331
+
+  Measured separately on known objects, which is the
+  cleanest test available (see tools/viewangle.py):
+    chests   n=306   0.640
+    torches  n=223   0.557
+  Both about double the null, from two unrelated object
+  classes. The north-west light stands.
+
+== kind vs what the GAME says the cell is ==
+   (independent check: art-derived kind against the decomp's surface table)
+  None                      398517 cells: flat 63%, faceted 22%, round 8%
+  SURFACE_PIT                23970 cells: flat 81%, faceted 11%, courses 3%
+  SURFACE_E                  17006 cells: round 30%, faceted 27%, ledge 21%
+  SURFACE_D                  10299 cells: faceted 49%, riser 29%, courses 11%
+  SURFACE_10                  9344 cells: round 42%, faceted 20%, uprights 15%
+  SURFACE_F                   8717 cells: faceted 63%, uprights 15%, riser 8%
+  SURFACE_WATER               6586 cells: faceted 45%, flat 33%, round 21%
+  SURFACE_SHALLOW_WATER       2270 cells: faceted 61%, round 19%, flat 17%
+  SURFACE_DOOR                1824 cells: faceted 40%, flat 26%, round 16%
+  SURFACE_ICE                 1565 cells: faceted 51%, flat 25%, round 24%
+  SURFACE_EDGE                1533 cells: faceted 38%, round 31%, ledge 15%
+  SURFACE_1C                   884 cells: faceted 76%, round 20%, courses 2%
+  SURFACE_CLIMB_WALL           712 cells: faceted 47%, round 45%, flat 6%
+  SURFACE_SWAMP                672 cells: faceted 43%, flat 38%, round 20%
