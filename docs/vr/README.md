@@ -87,8 +87,6 @@ See `THIRD-PARTY-LICENSES.md` for the full upstream list.
   their own point, and that anything outlined in black is showing an oblique
   angle transition. Also every correction that sent a wrong approach back to
   the drawing board.
-- **Claude (Opus 5)** — implementation of the tools, measurement and
-  verification.
 
 ### A note on what is *not* finished
 
