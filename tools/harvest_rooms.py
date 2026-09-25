@@ -18,8 +18,9 @@ Usage
   python3 tools/harvest_rooms.py --out vrdump --jobs 8     # harvest everything
   python3 tools/harvest_rooms.py --out vrdump --area 2     # just Hyrule Town
 
-Run from the repository root. Requires a built dist/<REGION>/tmc_pc and the
-roomcap TMCR hook (add-roomcap-tmcr.patch).
+Run from the repository root. Requires a dist/<REGION>/tmc_pc built with
+TMC_VR, which compiles in the roomcap TMCR hook (tools/apply_roomcap_hook.py).
+See docs/vr/05-rom-and-harvest.md.
 """
 
 import argparse
@@ -189,7 +190,7 @@ def main():
                 continue
         else:
             f = outdir / f"room_{a:02d}_{r:02d}.tmcr"
-            if not args.redo and f.exists() and f.stat().st_size == VALID_BYTES:
+            if not args.redo and f.exists() and f.stat().st_size >= VALID_BYTES:
                 continue
         todo.append((a, r, an, rn))
 
