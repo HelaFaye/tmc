@@ -81,10 +81,13 @@ run of the game: boot a fresh save, warp to the room, wait for it to settle,
 write `vrdump/room_AA_RR.tmcr`, exit. Look at one to be sure it is real:
 
 ```sh
-python3 tools/extract_art.py room vrdump/room_00_00.tmcr --out room.png
+python3 tools/extract_art.py composite vrdump/room_00_00.tmcr --out room.png
 ```
 
-`room.png` should show the room as the game draws it.
+`room.png` should show Minish Woods as the game draws it, trees included.
+Use `composite`, not `room`: `room` draws a single layer, and on its own
+the bottom layer shows filler tiles (red brick blocks where the trees
+stand) that the top layer always covers in game.
 
 ## 5. Capture everything
 

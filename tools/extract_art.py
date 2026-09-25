@@ -17,7 +17,8 @@ height signal at all, just flat-coloured boxes.
 Commands
 --------
   atlas    <dumps> --out art/    per-room tileset atlas PNG (2048 metatiles)
-  room     <file>  --out x.png   the room rendered as the game draws it
+  room     <file>  --out x.png   ONE layer of a room (--layer); use composite
+                                 to see it as the game draws it
   tiles    <dumps> --out tiles/  one PNG per distinct metatile, deduplicated
                                  across rooms — the input to a voxelizer
 
@@ -375,7 +376,7 @@ def main():
     a.add_argument("--layer", type=int, default=0)
     a.set_defaults(func=cmd_atlas)
 
-    r = sub.add_parser("room", help="render one room as the game draws it")
+    r = sub.add_parser("room", help="render one layer of a room (see composite)")
     r.add_argument("path"); r.add_argument("--out", default="room.png")
     r.add_argument("--layer", type=int, default=0)
     r.set_defaults(func=cmd_room)
