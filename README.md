@@ -25,7 +25,9 @@ No ROM asset is ever distributed. Every model is generated on your machine
 from your own ROM, and all generated output is gitignored.
 
 See **[docs/vr/README.md](docs/vr/README.md)** for setup, the pipeline, what
-is not finished yet, and credits.
+is not finished yet, and credits, and
+**[docs/vr/05-rom-and-harvest.md](docs/vr/05-rom-and-harvest.md)** for
+loading your ROM and capturing the rooms.
 
 ## Supported ROMs
 

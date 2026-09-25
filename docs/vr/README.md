@@ -56,7 +56,7 @@ what the decompilation calls them, so a pit is a pit because the game says
 
 | Area | Files | What it does |
 |---|---|---|
-| Design | `docs/vr/01-blueprint.md` … `04-asset-pipeline.md`, `ERRATA-brainstorm.md` | Where to hook the engine, the phased plan, the stabilised camera and scale presets, the asset rule, and the defects found in the earlier design drafts. |
+| Design and guides | `docs/vr/01-blueprint.md` … `04-asset-pipeline.md`, `05-rom-and-harvest.md`, `ERRATA-brainstorm.md` | Where to hook the engine, the phased plan, the stabilised camera and scale presets, the asset rule, and the defects found in the earlier design drafts. |
 | Room capture | `port/port_repro_roomcap.c` (`TMC_VR` blocks), `tools/apply_roomcap_hook.py`, `tools/check_hook.py` | Picori's headless room-capture harness, extended to write `.tmcr` room dumps, step Link's sprite frames, and boot at a chosen story state. |
 | Runtime modules | `port/vr/` | `vr_world` snapshots `gMapTop`/`gMapBottom`, entities, palettes and BG VRAM, and writes `.tmcr` v4. `vr_anchor` is the camera anchor with tabletop, diorama and life scales. `vr_interp` interpolates entities (Link included) between game ticks. `vr_greedy_mesh` builds meshes from voxel grids. `vr_spritedump` rasterises sprite frames. `vr_debug_panel` is an ImGui panel that drives them all. |
 | Harvest | `tools/harvest_rooms.py`, `harvest_states.sh`, `harvest_night.sh` | Warp to each of the game's 842 rooms in turn and dump it, optionally at each story state (0–6 dungeons cleared). |
@@ -135,8 +135,12 @@ roomcap hook ──▶ room dumps (.tmcr) ──▶ manifests (.scene) ──▶
  roomcap.c         harvest_states.sh                            room_explore.py voxel / worldgen
 ```
 
+Step 1 needs your ROM, a staged game and a build with the capture code;
+**[05-rom-and-harvest.md](05-rom-and-harvest.md)** walks through all of it,
+including checking the ROM, a one-area trial run and troubleshooting.
+
 ```sh
-# 1. Capture every room (needs your own ROM in dist/USA/).
+# 1. Capture every room.
 python3 tools/harvest_rooms.py --out vrdump --jobs 8
 #    or every story state, into states/p0 .. states/p6:
 bash tools/harvest_states.sh
