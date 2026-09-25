@@ -71,6 +71,17 @@ what the decompilation calls them, so a pit is a pit because the game says
 ## Setup
 
 ```sh
+git clone -b vr https://github.com/HelaFaye/tmc.git
+cd tmc
+git submodule update --init libs/VirtuaAPU
+```
+
+Do not clone with `--recurse-submodules`: `libs/tmc-Android-Experimental`
+and `libs/tmc-Modern-Launcher` are private upstream repositories that git
+cannot fetch, and the build treats both as optional. `libs/VirtuaAPU` is
+the only one the build needs (`build.py` also initialises it for you).
+
+```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt      # numpy, Pillow
 ```
