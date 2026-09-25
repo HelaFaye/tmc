@@ -12,3 +12,11 @@ room_72_23.tmcr     1,1,8,8     door      two stairway doorways and raised block
 room_00_00.tmcr     0,0,12,10   tree      Minish Woods canopies on layer 1
 room_05_05.tmcr     19,0,24,3   chest     chests: 9 rows of body, 7 of lid deck
 room_00_00.tmcr     20,0,40,12  cliff     cliffs, ledges and a fenced garden
+room_02_00.tmcr     28,19,34,25 stairs    Hyrule Town stone stairs, wider than their slope cells
+room_03_01.tmcr     17,7,23,12  stairs    dirt steps cut into a bank
+room_09_00.tmcr     11,2,17,8   stairs    temple stairs between pillars
+room_112_26.tmcr    12,2,18,7   stairs    steps rising east (SLOPE_H)
+room_38_01.tmcr     0,0,6,5     stairs    cave-mouth stair arch
+room_136_07.tmcr    3,1,9,6     stairs    dungeon stair arch between green torches
+room_36_16.tmcr     4,2,10,7    stairs    stairwell going down through the floor
+room_136_13.tmcr    5,8,11,14   stairs    steps up a corridor to a doorway
