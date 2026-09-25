@@ -1,0 +1,14 @@
+# Reference cases for tools/refcheck.py: known rooms where the right answer
+# is known, rendered side by side with the game's art after every change to
+# the depth model. Coordinates only -- no art.
+#
+# room              cells (cx0,cy0,cx1,cy1)   label     note
+room_141_00.tmcr    3,0,13,6    brazier   green braziers on brackets over the void, pit-typed cells
+room_141_00.tmcr    5,15,11,19  door      bridge exit: door top drawn over the block
+room_141_00.tmcr    6,0,10,3    stairs    stairway arch at the bridge entrance: steps rising north under an arch
+room_46_03.tmcr     1,0,8,5     door      stairway doorway in a wall, STAIRS_UP cell 4,1
+room_112_13.tmcr    0,0,7,5     door      stairway doorway with a lit torch in front
+room_72_23.tmcr     1,1,8,8     door      two stairway doorways and raised blocks
+room_00_00.tmcr     0,0,12,10   tree      Minish Woods canopies on layer 1
+room_05_05.tmcr     19,0,24,3   chest     chests: 9 rows of body, 7 of lid deck
+room_00_00.tmcr     20,0,40,12  cliff     cliffs, ledges and a fenced garden

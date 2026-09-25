@@ -200,6 +200,7 @@ entsheets/
 /world/
 /verify/
 /objects/
+refcheck/
 /*.png
 *.tmcr
 *.obj
