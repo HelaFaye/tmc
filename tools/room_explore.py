@@ -1023,6 +1023,200 @@ def cell_colours(r, layer_index, cells_h, cells_w):
     return out / 255.0
 
 
+# ---------------------------------------------------------------- canopies --
+# Tree canopies live on layer 1. Extruded like everything else, a whole
+# forest became flat plates 24px up. A crown is a rounded mass of leaf
+# clumps, and the drawing says so: its edge outlines the mass, and each
+# clump is lit from the north-west with a dark line between clumps.
+CANOPY_HUE = (60, 235)      # green through teal (Hyrule Field ~115, woods ~210)
+CANOPY_MIN_SAT = 0.4        # roofs and garden beds on layer 1 are duller
+CANOPY_MAX_FILL = 0.93      # of the bounding box: bridges and decks are boxes
+CANOPY_MIN_PX = 64
+CROWN_R = 14                # px from the drawn edge to full crown height
+CROWN_H = 14                # how far a crown rises above its base
+BUMP_H = 3                  # leaf-clump relief from the shading
+BUMP_BLUR = 5               # px: shading is measured against this local mean
+
+
+def _label(mask):
+    """4-connected components of a boolean image -> (labels, count)."""
+    lab = np.zeros(mask.shape, np.int32)
+    n = 0
+    H, W = mask.shape
+    for y0, x0 in zip(*np.nonzero(mask)):
+        if lab[y0, x0]:
+            continue
+        n += 1
+        st = [(y0, x0)]
+        lab[y0, x0] = n
+        while st:
+            y, x = st.pop()
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < H and 0 <= nx < W and mask[ny, nx] and not lab[ny, nx]:
+                    lab[ny, nx] = n
+                    st.append((ny, nx))
+    return lab, n
+
+
+def _box_blur(a, k):
+    pad = np.pad(a, k, mode="edge")
+    c = np.cumsum(np.cumsum(pad, 0), 1)
+    c = np.pad(c, ((1, 0), (1, 0)))
+    n = 2 * k + 1
+    return (c[n:, n:] - c[:-n, n:] - c[n:, :-n] + c[:-n, :-n]) / (n * n)
+
+
+def canopy_mask(r):
+    """Drawn pixels of layer 1 that are tree canopy, and the layer-1 art.
+
+    A layer-1 blob is canopy when it is leaf-coloured (hue within
+    CANOPY_HUE, median saturation at least CANOPY_MIN_SAT) and ragged
+    (fills under CANOPY_MAX_FILL of its bounding box). Checked on Minish
+    Woods, Hyrule Field and Hyrule Town: canopies pass; roofs, bridges and
+    a town garden bed do not.
+    """
+    import colorsys
+    import extract_art
+    top = extract_art.room_art(r, 1)
+    if top is None:
+        return None, None
+    drawn = top[:, :, 3] > 0
+    lab, n = _label(drawn)
+    out = np.zeros(drawn.shape, bool)
+    for k in range(1, n + 1):
+        ys, xs = np.nonzero(lab == k)
+        if len(ys) < CANOPY_MIN_PX:
+            continue
+        px = top[ys, xs, :3].astype(float) / 255.0
+        px = px[::max(1, len(px) // 400)]
+        hsv = np.array([colorsys.rgb_to_hsv(*c) for c in px])
+        hue, sat = np.median(hsv[:, 0]) * 360.0, np.median(hsv[:, 1])
+        fill = len(ys) / float((xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1))
+        if (CANOPY_HUE[0] <= hue <= CANOPY_HUE[1] and sat >= CANOPY_MIN_SAT
+                and fill < CANOPY_MAX_FILL):
+            out[ys, xs] = True
+    return out, top
+
+
+def canopy_field(r, step=2):
+    """Height and colour of the room's tree crowns, on a plan grid.
+
+    Returns (H, colour, mask) at `step`-pixel resolution in room pixels, or
+    None when the room has no canopy. H is height above the crown's base.
+
+      dome    rises with distance from the drawn edge, as a quarter circle
+              of radius CROWN_R to CROWN_H, so a lone tree is a dome and a
+              forest is rounded masses rather than one plateau
+      bumps   each leaf clump's shading against its local mean (BUMP_BLUR):
+              lit clump tops rise up to BUMP_H, the dark lines between
+              clumps sink as far
+      45deg   a crown point drawn at row y at height h stands at z = y + h
+              (drawn = height + depth, viewangle.py), so crowns move south
+              over their trunks. Colour stays where it was drawn, so seen
+              from the game's camera the crown still looks like the art.
+    """
+    mask, top = canopy_mask(r)
+    if mask is None or not mask.any():
+        return None
+    Hh, Ww = mask.shape
+    # distance from the drawn edge, 4-neighbour steps, capped at CROWN_R
+    dist = np.where(mask, CROWN_R, 0).astype(np.int32)
+    edge = mask & ~(np.roll(mask, 1, 0) & np.roll(mask, -1, 0)
+                    & np.roll(mask, 1, 1) & np.roll(mask, -1, 1))
+    dist[edge] = 1
+    for _ in range(CROWN_R):
+        nb = np.minimum.reduce([np.roll(dist, 1, 0), np.roll(dist, -1, 0),
+                                np.roll(dist, 1, 1), np.roll(dist, -1, 1)])
+        dist = np.where(mask, np.minimum(dist, nb + 1), 0)
+    t = np.clip(dist / float(CROWN_R), 0, 1)
+    dome = CROWN_H * np.sqrt(1.0 - (1.0 - t) ** 2)
+    lum = top[:, :, :3].astype(float).mean(axis=2)
+    rel = lum - _box_blur(np.where(mask, lum, 0.0), BUMP_BLUR) \
+        / np.maximum(_box_blur(mask.astype(float), BUMP_BLUR), 1e-6)
+    bump = BUMP_H * np.clip(rel / 40.0, -1.0, 1.0)
+    h = np.where(mask, np.maximum(1.0, dome + bump), 0.0)
+
+    # 45 degrees: move each drawn pixel south by its height, keeping the
+    # highest where several land on one plan pixel.
+    Hp = np.zeros((Hh + CROWN_H + BUMP_H + 2, Ww), float)
+    Cp = np.zeros(Hp.shape + (3,), float)
+    ys, xs = np.nonzero(mask)
+    zs = ys + np.round(h[ys, xs]).astype(int)
+    order = np.argsort(h[ys, xs])            # low first, so high wins
+    Hp[zs[order], xs[order]] = h[ys, xs][order]
+    Cp[zs[order], xs[order]] = top[ys, xs, :3][order] / 255.0
+    got = Hp > 0
+    # A steep crown edge moves more than a pixel per row and leaves gaps:
+    # fill each from the pixel above it in the same column.
+    for _ in range(CROWN_H + BUMP_H):
+        up = np.roll(got, 1, 0)
+        fill = ~got & up & np.roll(got, -1, 0)
+        if not fill.any():
+            break
+        Hp[fill] = np.roll(Hp, 1, 0)[fill]
+        Cp[fill] = np.roll(Cp, 1, 0)[fill]
+        got = got | fill
+    Hp = Hp[:Hh]; Cp = Cp[:Hh]; got = got[:Hh]
+    # down to the step grid: max height, mean colour
+    gh, gw = Hh // step, Ww // step
+    Hs = Hp[:gh * step, :gw * step].reshape(gh, step, gw, step).max(axis=(1, 3))
+    Ms = got[:gh * step, :gw * step].reshape(gh, step, gw, step).any(axis=(1, 3))
+    wsum = got[:gh * step, :gw * step].reshape(gh, step, gw, step).sum(axis=(1, 3))
+    Cs = (Cp[:gh * step, :gw * step].reshape(gh, step, gw, step, 3).sum(axis=(1, 3))
+          / np.maximum(wsum, 1)[..., None])
+    return np.round(Hs).astype(int), Cs, Ms
+
+
+def emit_canopy(quad, cf, ox, oz, base, step=2):
+    """Emit the crowns from canopy_field as a closed surface.
+
+    Top faces at base + H per plan cell; walls wherever a neighbour is lower,
+    down to the neighbour or to the base at the crown's edge; and an
+    underside at the base, so a crown seen from below is not hollow.
+    Returns the number of quads.
+    """
+    H, C, M = cf
+    rows, cols = H.shape
+    n = 0
+    for gy in range(rows):
+        for gx in range(cols):
+            if not M[gy, gx]:
+                continue
+            h = base + int(H[gy, gx])
+            x0 = ox + gx * step; x1 = x0 + step
+            z0 = oz + gy * step; z1 = z0 + step
+            c = C[gy, gx]
+            quad([(x0, h, z0), (x1, h, z0), (x1, h, z1), (x0, h, z1)], c)
+            n += 1
+            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, nz = gx + dx, gy + dz
+                if 0 <= nx < cols and 0 <= nz < rows and M[nz, nx]:
+                    b = base + int(H[nz, nx])
+                else:
+                    b = base
+                if b >= h:
+                    continue
+                side = c * 0.8
+                if dx == 1:
+                    p_ = [(x1, h, z0), (x1, h, z1), (x1, b, z1), (x1, b, z0)]
+                elif dx == -1:
+                    p_ = [(x0, h, z1), (x0, h, z0), (x0, b, z0), (x0, b, z1)]
+                elif dz == 1:
+                    p_ = [(x0, h, z1), (x1, h, z1), (x1, b, z1), (x0, b, z1)]
+                else:
+                    p_ = [(x1, h, z0), (x0, h, z0), (x0, b, z0), (x1, b, z0)]
+                quad(p_, side)
+                n += 1
+    under = np.array([0.12, 0.2, 0.14])
+    for x, y, w, hg in greedy_quads(M):
+        x0 = ox + x * step; x1 = x0 + w * step
+        z0 = oz + y * step; z1 = z0 + hg * step
+        quad([(x0, base, z1), (x1, base, z1), (x1, base, z0), (x0, base, z0)], under)
+        n += 1
+    return n
+
+
 def overlay_skirt_bottom(hh, H, occ, cy, cx, dy, dx, rows, cols,
                          reach, fixed):
     """How far down the apron of a lifted surface should go.
@@ -1242,9 +1436,25 @@ def cmd_voxel(args):
                         H0_for_overlay, r.cells_h, r.cells_w,
                         args.overlay_reach)
         n1 = 0
+        # Tree crowns get their own surface (canopy_field); the flat plate
+        # below stays for bridges, decks and roofs. A cell is crown when most
+        # of what layer 1 draws in it is canopy.
+        crown = np.zeros((r.cells_h, r.cells_w), bool)
+        cf = canopy_field(r) if getattr(args, "canopy", False) else None
+        if cf is not None:
+            cmask, _top = canopy_mask(r)
+            drawn1 = _top[:, :, 3] > 0
+            for cy in range(r.cells_h):
+                for cx in range(r.cells_w):
+                    dcell = drawn1[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+                    if dcell.any():
+                        ccell = cmask[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+                        crown[cy, cx] = ccell.sum() * 2 > dcell.sum()
+            n1 += emit_canopy(quad, cf, r.origin_x, r.origin_y,
+                              CLASS_HEIGHT[CLASS_GROUND] + lift)
         for cy in range(r.cells_h):
             for cx in range(r.cells_w):
-                if not occupied[cy, cx]:
+                if not occupied[cy, cx] or crown[cy, cx]:
                     continue
                 hh = CLASS_HEIGHT.get(c1[cy, cx], 0) + lift
                 x0 = r.origin_x + cx * 16; x1 = x0 + 16
@@ -1276,8 +1486,8 @@ def cmd_voxel(args):
                         p_ = [(x1,hh,z0),(x0,hh,z0),(x0,b,z0),(x1,b,z0)]
                     quad(p_, c)
                     n1 += 1
-        print(f"  overlay layer 1: {int(occupied.sum())} cells, {n1} quads, "
-              f"lifted {lift}px")
+        print(f"  overlay layer 1: {int(occupied.sum())} cells "
+              f"({int(crown.sum())} tree crown), {n1} quads, lifted {lift}px")
 
     out = Path(args.out)
     with out.open("w") as f:
@@ -2232,6 +2442,9 @@ def main():
     p_vx.add_argument("--overlay", action="store_true",
                       help="also emit layer 1 (canopies, bridge decks) lifted")
     p_vx.add_argument("--overlay-lift", type=int, default=24)
+    p_vx.add_argument("--canopy", action="store_true",
+                      help="shape tree crowns as domed, bumpy surfaces "
+                           "(work in progress: large meshes)")
     p_vx.add_argument("--overlay-skirt", type=int, default=12)
     p_vx.add_argument("--overlay-reach", type=int, default=24,
                    help="max drop a lifted surface may bridge down to the "
