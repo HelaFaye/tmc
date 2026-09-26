@@ -30,6 +30,12 @@ Usage
   python3 tools/find_stairs.py vrdump                       # print the list
   python3 tools/find_stairs.py vrdump --out objects/stairs.txt
   python3 tools/find_stairs.py vrdump --sheet stairs.png    # labelled crops
+  python3 tools/find_stairs.py vrdump --kind steps --sheet steps.png
+
+For flights of steps it also measures each step from the drawing (see
+measure_steps): steps=N, and per step the drawn pitch in pixels split into
+tread (lit) and riser (dark) -- by the 45-degree rule, depth and height.
+--sheet draws the step boundaries it found in red, for checking.
 """
 import argparse
 import sys
@@ -70,11 +76,95 @@ def runs(mask):
     return out
 
 
+def composite_rgb(r):
+    """Both layers as the game draws them, as a float RGB array."""
+    import extract_art as A
+    img = A.room_art(r, 0)
+    if img is None:
+        return None
+    img = img.copy()
+    top = A.room_art(r, 1)
+    if top is not None:
+        m = top[:, :, 3] > 0
+        img[m] = top[m]
+    return img[:, :, :3].astype(float)
+
+
+# Step boundaries. Chosen against six flights counted by eye, and checked by
+# drawing the result on every flight (--sheet). A boundary is a row (a column
+# for an east-west flight) that is DARKER than its surroundings across the
+# whole width of the stairs:
+#   STEP_WINDOW  rows of local average the darkness is measured against, so
+#                a flight that darkens toward the bottom still reads
+#   STEP_DEPTH   how much darker than that average (0..255 luminance)
+#   STEP_MINGAP  closest two boundaries may be; nearer ones are one line
+STEP_WINDOW, STEP_DEPTH, STEP_MINGAP = 15, 12, 4
+
+
+def measure_steps(img, rect, rise):
+    """Boundaries between the steps of one flight, read off the drawing.
+
+    Takes the median across the width of the flight at every row, so stone
+    texture that varies from column to column cancels and only lines that run
+    the whole width survive -- the dark nose line of each step, and the
+    edges to the landing above and the floor below.
+
+    Returns dict(edges=[world-pixel rows or columns, from the room origin],
+    bands=[(start, end, tread_px, riser_px)], steps=len(bands)). Each band is
+    one step as drawn; by the 45-degree rule (drawn = height + depth, see
+    viewangle.py) its lit part is the tread's depth and its dark part is the
+    riser's height.
+    """
+    x0, y0, x1, y1 = rect
+    # A flight under two cells long along its rise is read with a cell of
+    # margin on each end: the slope strip can be narrower than the drawn
+    # steps (the town gate's sideways steps sit inside one cell).
+    if rise == "ew" and x1 - x0 < 1:
+        x0, x1 = max(0, x0 - 1), min(img.shape[1] // 16 - 1, x1 + 1)
+    if rise != "ew" and y1 - y0 < 1:
+        y0, y1 = max(0, y0 - 1), min(img.shape[0] // 16 - 1, y1 + 1)
+    reg = img[y0 * 16:(y1 + 1) * 16, x0 * 16:(x1 + 1) * 16].mean(axis=2)
+    if rise == "ew":
+        reg = reg.T                 # steps run along x: read columns
+        start = x0 * 16
+    else:
+        start = y0 * 16
+    if reg.shape[0] < 4 or reg.shape[1] < 1:
+        return dict(edges=[], bands=[], steps=0)
+    p = np.median(reg, axis=1)
+    w = STEP_WINDOW
+    base = np.convolve(np.pad(p, w // 2, mode="edge"), np.ones(w) / w,
+                       mode="valid")[:len(p)]
+    d = p - base
+    dips = [i for i in range(1, len(d) - 1)
+            if d[i] < -STEP_DEPTH and d[i] <= d[i - 1] and d[i] <= d[i + 1]]
+    edges = []
+    for i in dips:
+        if edges and i - edges[-1] < STEP_MINGAP:
+            if d[i] < d[edges[-1]]:
+                edges[-1] = i
+        else:
+            edges.append(i)
+    bands = []
+    for a, b in zip(edges, edges[1:]):
+        seg = d[a + 1:b + 1]
+        lit = int((seg > 0).sum())
+        bands.append((start + a + 1, start + b + 1, lit, len(seg) - lit))
+    # Steps in one flight are drawn close to evenly. A band more than twice
+    # the median pitch means a boundary was missed or the reading picked up
+    # something beside the stairs: report it, don't trust it.
+    pitches = [b - a for a, b, _, _ in bands]
+    irregular = bool(pitches) and max(pitches) > 2 * float(np.median(pitches))
+    return dict(edges=[start + e + 1 for e in edges], bands=bands,
+                steps=len(bands), irregular=irregular)
+
+
 def find(room_path):
     r = RE.load_room(room_path)
     found = []
     if not r.cells_w:
         return found
+    img = None
     for li in (0, 1):
         L = r.layers[li]
         if not L["present"]:
@@ -88,9 +178,15 @@ def find(room_path):
             for cells in runs(mask):
                 ys = [c[0] for c in cells]
                 xs = [c[1] for c in cells]
-                found.append(dict(room=room_path.name, layer=li, kind=kind,
-                                  rise=rise, n=len(cells),
-                                  rect=(min(xs), min(ys), max(xs), max(ys))))
+                it = dict(room=room_path.name, layer=li, kind=kind,
+                          rise=rise, n=len(cells),
+                          rect=(min(xs), min(ys), max(xs), max(ys)))
+                if kind == "steps":
+                    if img is None:
+                        img = composite_rgb(r)
+                    if img is not None:
+                        it["measure"] = measure_steps(img, it["rect"], rise)
+                found.append(it)
     return found
 
 
@@ -119,8 +215,22 @@ def sheet(items, dumps, out, per_row=5):
                     outline=(255, 0, 255))
         crop = crop.resize((224, 224), Image.NEAREST)
         d = ImageDraw.Draw(crop)
+        m = it.get("measure")
+        if m:
+            for e in m["edges"]:
+                if it["rise"] == "ew":
+                    xx = (e - ox) * 2
+                    d.line([xx, (y0c * 16 - oy) * 2, xx, ((y1c + 1) * 16 - oy) * 2],
+                           fill=(255, 40, 40), width=2)
+                else:
+                    yy = (e - oy) * 2
+                    d.line([(x0c * 16 - ox) * 2, yy, ((x1c + 1) * 16 - ox) * 2, yy],
+                           fill=(255, 40, 40), width=2)
         d.rectangle([0, 0, 224, 11], fill=(0, 0, 0))
-        d.text((2, 0), f"{it['kind']} {name[5:-5]} {x0c},{y0c}", fill=(255, 255, 0))
+        label = f"{it['kind']} {name[5:-5]} {x0c},{y0c}"
+        if m:
+            label += f"  {m['steps']} steps" + ("  CHECK" if m.get("irregular") else "")
+        d.text((2, 0), label, fill=(255, 255, 0))
         tiles.append(crop)
     rows = (len(tiles) + per_row - 1) // per_row
     W = Image.new("RGB", (224 * per_row, 224 * rows), (20, 20, 20))
@@ -154,6 +264,15 @@ def main():
     for it in items:
         x0, y0, x1, y1 = it["rect"]
         opt = f"layer={it['layer']}" + (f" rise={it['rise']}" if it["rise"] else "")
+        m = it.get("measure")
+        if m and m["steps"]:
+            # pitch = drawn px per step; tread/riser split by shading
+            opt += (f" steps={m['steps']}"
+                    f" pitch={'/'.join(str(b - a) for a, b, _, _ in m['bands'])}"
+                    f" tread={'/'.join(str(t) for _, _, t, _ in m['bands'])}"
+                    f" riser={'/'.join(str(r_) for _, _, _, r_ in m['bands'])}")
+            if m.get("irregular"):
+                opt += " check=uneven"
         rect = f"{x0},{y0},{x1},{y1}"
         lines.append(f"{it['room']:<18} {rect:<14} {it['kind']:<13} "
                      f"{opt}   # {it['n']} cells")
