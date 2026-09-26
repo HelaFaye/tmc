@@ -105,7 +105,7 @@ def composite_rgb(r):
 #   STEP_COLOUR  how far (RGB distance) the lit colour of a step beyond the
 #                slope cells may be from the flight's treads
 STEP_WINDOW, STEP_DEPTH, STEP_MINGAP, STEP_GROW, STEP_STRONG, STEP_COLOUR = \
-    15, 12, 4, 1.75, 0.6, 40.0
+    15, 12, 3, 1.75, 0.6, 40.0
 
 
 def measure_steps(img, rect, rise):
@@ -151,9 +151,9 @@ def measure_steps(img, rect, rise):
             if d[i] < -STEP_DEPTH and d[i] <= d[i - 1] and d[i] <= d[i + 1]]
     def merge(ix):
         # Darkest first; keep a line only if no kept line is within
-        # STEP_MINGAP. Merging in order instead chained lines 3px apart
-        # (135, 138, 141 in room 104_00) into one and lost a step whose
-        # real boundaries were 6px apart.
+        # STEP_MINGAP. Merging in order instead chained nearby lines into
+        # one: in room 104_00 the lines at 135, 138 and 141 are all step
+        # boundaries (the lower steps there are 3px apart) and were lost.
         out = []
         for i in sorted(ix, key=lambda j: d[j]):
             if all(abs(i - k) >= STEP_MINGAP for k in out):
