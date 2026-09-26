@@ -1099,7 +1099,7 @@ def canopy_mask(r):
     return out, top
 
 
-def canopy_field(r, step=2):
+def canopy_field(r, step=2, lift=0):
     """Height and colour of the room's tree crowns, on a plan grid.
 
     Returns (H, colour, mask) at `step`-pixel resolution in room pixels, or
@@ -1113,8 +1113,9 @@ def canopy_field(r, step=2):
               clumps sink as far
       45deg   a crown point drawn at row y at height h stands at z = y + h
               (drawn = height + depth, viewangle.py), so crowns move south
-              over their trunks. Colour stays where it was drawn, so seen
-              from the game's camera the crown still looks like the art.
+              over their trunks. h is the WHOLE height, `lift` (where the
+              crown's base sits) included. Colour stays where it was drawn,
+              so projecting the art from the game's camera lands on it.
     """
     mask, top = canopy_mask(r)
     if mask is None or not mask.any():
@@ -1139,11 +1140,11 @@ def canopy_field(r, step=2):
 
     # 45 degrees: move each drawn pixel south by its height, keeping the
     # highest where several land on one plan pixel.
-    Hp = np.zeros((Hh + CROWN_H + BUMP_H + 2, Ww), float)
+    Hp = np.zeros((Hh + lift + CROWN_H + BUMP_H + 2, Ww), float)
     Cp = np.zeros(Hp.shape + (3,), float)
     ys, xs = np.nonzero(mask)
-    zs = ys + np.round(h[ys, xs]).astype(int)
-    order = np.argsort(h[ys, xs])            # low first, so high wins
+    zs = ys + lift + np.round(h[ys, xs]).astype(int)
+    order = np.argsort(h[ys, xs], kind="stable")   # low first, so high wins
     Hp[zs[order], xs[order]] = h[ys, xs][order]
     Cp[zs[order], xs[order]] = top[ys, xs, :3][order] / 255.0
     got = Hp > 0
@@ -1157,7 +1158,9 @@ def canopy_field(r, step=2):
         Hp[fill] = np.roll(Hp, 1, 0)[fill]
         Cp[fill] = np.roll(Cp, 1, 0)[fill]
         got = got | fill
-    Hp = Hp[:Hh]; Cp = Cp[:Hh]; got = got[:Hh]
+    # keep the full shifted extent: crowns at the room's south edge now
+    # stand past it, which is where they are
+    Hh = Hp.shape[0]
     # down to the step grid: max height, mean colour
     gh, gw = Hh // step, Ww // step
     Hs = Hp[:gh * step, :gw * step].reshape(gh, step, gw, step).max(axis=(1, 3))
@@ -1165,54 +1168,117 @@ def canopy_field(r, step=2):
     wsum = got[:gh * step, :gw * step].reshape(gh, step, gw, step).sum(axis=(1, 3))
     Cs = (Cp[:gh * step, :gw * step].reshape(gh, step, gw, step, 3).sum(axis=(1, 3))
           / np.maximum(wsum, 1)[..., None])
-    return np.round(Hs).astype(int), Cs, Ms
+    # Heights in 2px steps: finer is below what the bumps mean, and equal
+    # neighbours merge into far fewer faces.
+    return (2 * np.round(Hs / 2.0)).astype(int), Cs, Ms
 
 
-def emit_canopy(quad, cf, ox, oz, base, step=2):
+def crown_cells(r, cmask, top):
+    """Cells whose layer-1 drawing is mostly canopy: these get crowns, and
+    the flat overlay plate is skipped for them."""
+    crown = np.zeros((r.cells_h, r.cells_w), bool)
+    drawn1 = top[:, :, 3] > 0
+    for cy in range(r.cells_h):
+        for cx in range(r.cells_w):
+            dcell = drawn1[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+            if dcell.any():
+                ccell = cmask[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+                crown[cy, cx] = ccell.sum() * 2 > dcell.sum()
+    return crown
+
+
+def emit_canopy(quad, cf, ox, oz, base, step=2, uvf=None, merge=False):
     """Emit the crowns from canopy_field as a closed surface.
 
     Top faces at base + H per plan cell; walls wherever a neighbour is lower,
     down to the neighbour or to the base at the crown's edge; and an
     underside at the base, so a crown seen from below is not hollow.
-    Returns the number of quads.
+
+    uvf(points) -> uv list gives textured output its coordinates. With
+    merge, tops at one height become greedy rectangles and walls with the
+    same top and bottom along a row or column become one face -- right when
+    a texture supplies the detail, wrong for vertex colour, where each cell
+    carries its own. Returns the number of quads.
     """
     H, C, M = cf
     rows, cols = H.shape
     n = 0
-    for gy in range(rows):
-        for gx in range(cols):
-            if not M[gy, gx]:
-                continue
-            h = base + int(H[gy, gx])
+
+    def put(pts, c):
+        quad(pts, c, uvf(pts)) if uvf else quad(pts, c)
+
+    # Height of each cell and of what lies past each of its four sides.
+    Hb = np.where(M, base + H, 0)
+    def nb(dy, dx):
+        out = np.full(Hb.shape, base)
+        ys = slice(max(0, dy), rows + min(0, dy))
+        yd = slice(max(0, -dy), rows + min(0, -dy))
+        xs = slice(max(0, dx), cols + min(0, dx))
+        xd = slice(max(0, -dx), cols + min(0, -dx))
+        src = np.where(M, Hb, base)
+        out[yd, xd] = src[ys, xs]
+        return out
+
+    if merge:
+        for hv in sorted(set(int(v) for v in np.unique(H[M]))):
+            h = base + hv
+            for x, y, w, hg in greedy_quads(M & (H == hv)):
+                x0 = ox + x * step; x1 = x0 + w * step
+                z0 = oz + y * step; z1 = z0 + hg * step
+                put([(x0, h, z0), (x1, h, z0), (x1, h, z1), (x0, h, z1)],
+                    C[y:y + hg, x:x + w].reshape(-1, 3).mean(0))
+                n += 1
+    else:
+        for gy, gx in zip(*np.nonzero(M)):
+            h = int(Hb[gy, gx])
             x0 = ox + gx * step; x1 = x0 + step
             z0 = oz + gy * step; z1 = z0 + step
-            c = C[gy, gx]
-            quad([(x0, h, z0), (x1, h, z0), (x1, h, z1), (x0, h, z1)], c)
+            put([(x0, h, z0), (x1, h, z0), (x1, h, z1), (x0, h, z1)], C[gy, gx])
             n += 1
-            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, nz = gx + dx, gy + dz
-                if 0 <= nx < cols and 0 <= nz < rows and M[nz, nx]:
-                    b = base + int(H[nz, nx])
-                else:
-                    b = base
-                if b >= h:
+
+    # Walls. For each side, a cell shows a wall when what lies past it is
+    # lower. Runs along the wall's own direction with the same top and
+    # bottom merge into one face when `merge` is set.
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        low = nb(dy, dx)
+        wall = M & (low < Hb)
+        along_x = dx == 0              # north/south walls run along x
+        lines = range(rows) if along_x else range(cols)
+        for li in lines:
+            k = 0
+            length = cols if along_x else rows
+            while k < length:
+                gy, gx = (li, k) if along_x else (k, li)
+                if not wall[gy, gx]:
+                    k += 1
                     continue
-                side = c * 0.8
-                if dx == 1:
-                    p_ = [(x1, h, z0), (x1, h, z1), (x1, b, z1), (x1, b, z0)]
-                elif dx == -1:
-                    p_ = [(x0, h, z1), (x0, h, z0), (x0, b, z0), (x0, b, z1)]
-                elif dz == 1:
-                    p_ = [(x0, h, z1), (x1, h, z1), (x1, b, z1), (x0, b, z1)]
+                h, b = int(Hb[gy, gx]), int(low[gy, gx])
+                e = k + 1
+                if merge:
+                    while e < length:
+                        ey, ex = (li, e) if along_x else (e, li)
+                        if not (wall[ey, ex] and int(Hb[ey, ex]) == h
+                                and int(low[ey, ex]) == b):
+                            break
+                        e += 1
+                if along_x:
+                    x0 = ox + k * step; x1 = ox + e * step
+                    z = oz + (gy + (1 if dy == 1 else 0)) * step
+                    p_ = ([(x0, h, z), (x1, h, z), (x1, b, z), (x0, b, z)] if dy == 1
+                          else [(x1, h, z), (x0, h, z), (x0, b, z), (x1, b, z)])
                 else:
-                    p_ = [(x1, h, z0), (x0, h, z0), (x0, b, z0), (x1, b, z0)]
-                quad(p_, side)
+                    z0 = oz + k * step; z1 = oz + e * step
+                    x = ox + (gx + (1 if dx == 1 else 0)) * step
+                    p_ = ([(x, h, z0), (x, h, z1), (x, b, z1), (x, b, z0)] if dx == 1
+                          else [(x, h, z1), (x, h, z0), (x, b, z0), (x, b, z1)])
+                put(p_, C[gy, gx] * 0.8)
                 n += 1
+                k = e
     under = np.array([0.12, 0.2, 0.14])
     for x, y, w, hg in greedy_quads(M):
         x0 = ox + x * step; x1 = x0 + w * step
         z0 = oz + y * step; z1 = z0 + hg * step
-        quad([(x0, base, z1), (x1, base, z1), (x1, base, z0), (x0, base, z0)], under)
+        put([(x0, base, z1), (x1, base, z1), (x1, base, z0), (x0, base, z0)], under)
         n += 1
     return n
 
@@ -1439,19 +1505,16 @@ def cmd_voxel(args):
         # Tree crowns get their own surface (canopy_field); the flat plate
         # below stays for bridges, decks and roofs. A cell is crown when most
         # of what layer 1 draws in it is canopy.
+        # Vertex-coloured output: 4px crown cells, each with its own colour
+        # (2px quadruples the mesh for detail colour cannot show).
         crown = np.zeros((r.cells_h, r.cells_w), bool)
-        cf = canopy_field(r) if getattr(args, "canopy", False) else None
+        cf = (canopy_field(r, step=4, lift=CLASS_HEIGHT[CLASS_GROUND] + lift)
+              if getattr(args, "canopy", False) else None)
         if cf is not None:
             cmask, _top = canopy_mask(r)
-            drawn1 = _top[:, :, 3] > 0
-            for cy in range(r.cells_h):
-                for cx in range(r.cells_w):
-                    dcell = drawn1[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
-                    if dcell.any():
-                        ccell = cmask[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
-                        crown[cy, cx] = ccell.sum() * 2 > dcell.sum()
+            crown = crown_cells(r, cmask, _top)
             n1 += emit_canopy(quad, cf, r.origin_x, r.origin_y,
-                              CLASS_HEIGHT[CLASS_GROUND] + lift)
+                              CLASS_HEIGHT[CLASS_GROUND] + lift, step=4)
         for cy in range(r.cells_h):
             for cx in range(r.cells_w):
                 if not occupied[cy, cx] or crown[cy, cx]:
@@ -2120,6 +2183,7 @@ def cmd_worldgen(args):
                         if (w * h) / max(1, a) > args.colocated:
                             clash += 1
         tex = area_texture(rs, args.layer) if args.texture else None
+        project = not getattr(args, "footprint", False)
         verts, faces, vcols, uvs = [], [], [], []
 
         def quad(p, c, uv=None):
@@ -2147,6 +2211,22 @@ def cmd_worldgen(args):
             u0 = (x0 - tx) / TW; u1 = (x1 - tx) / TW
             v0 = 1.0 - (z0 - ty) / TH; v1 = 1.0 - (z1 - ty) / TH
             return [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+
+        def uv_proj(pts, base):
+            """UVs by projecting the art from the game's camera.
+
+            A point at height y over (x, z) takes the pixel drawn at
+            (x, z - (y - base)), base being the floor the room was drawn
+            on. A raised top takes the drawing that many rows north, which
+            is where its top is drawn; a south-facing wall takes the band
+            drawn above its base, which is its front face -- the art the
+            footprint rule pasted onto block tops.
+            """
+            if tex is None:
+                return None
+            _, tx, ty, TW, TH = tex
+            return [((x - tx) / TW, 1.0 - ((z - (y - base)) - ty) / TH)
+                    for x, y, z in pts]
 
         def uv_side(ax0, ax1, az0, az1):
             """UVs for a vertical face.
@@ -2214,9 +2294,10 @@ def cmd_worldgen(args):
                         yv = height + lift
                         c = (col[y:y+hh, x:x+w].reshape(-1, 3).mean(0)
                              if col is not None else np.array([.6, .6, .6]))
-                        quad([(x0, yv, z0), (x1, yv, z0),
-                              (x1, yv, z1), (x0, yv, z1)], c,
-                             uv_top(x0, x1, z0, z1))
+                        pts = [(x0, yv, z0), (x1, yv, z0),
+                               (x1, yv, z1), (x0, yv, z1)]
+                        quad(pts, c, uv_proj(pts, lift) if project
+                             else uv_top(x0, x1, z0, z1))
                         tops += 1
                 for cy in range(rows_):
                     for cx in range(cols_):
@@ -2245,7 +2326,8 @@ def cmd_worldgen(args):
                                 p = [(x0,a,z1),(x1,a,z1),(x1,b,z1),(x0,b,z1)]
                             else:
                                 p = [(x1,a,z0),(x0,a,z0),(x0,b,z0),(x1,b,z0)]
-                            quad(p, c, uv_side(x0, x1, z0, z1))
+                            quad(p, c, uv_proj(p, lift) if project
+                                 else uv_side(x0, x1, z0, z1))
                 # Layer 1: the world's second level -- canopies, bridge decks,
                 # roofs. It carries its own collision data, so generating from
                 # layer 0 alone drops it entirely.
@@ -2267,9 +2349,25 @@ def cmd_worldgen(args):
                     floaters += report_floaters(
                         occ, hh_ov, H0_ov, r.cells_h, r.cells_w,
                         args.overlay_reach, f"area {r.area} room {r.room} overlay")
+                    # Tree crowns (--canopy): shaped surfaces instead of
+                    # flat plates, projected like the terrain. Bridges,
+                    # decks and roofs keep their plates for now.
+                    crown = np.zeros((r.cells_h, r.cells_w), bool)
+                    if getattr(args, "canopy", False):
+                        cbase = CLASS_HEIGHT[CLASS_GROUND] + args.overlay_lift
+                        cf = canopy_field(r, step=4, lift=cbase)
+                        if cf is not None:
+                            cmask, _top = canopy_mask(r)
+                            crown = crown_cells(r, cmask, _top)
+                            q = emit_canopy(
+                                quad, cf, ox, oy, lift + cbase, step=4,
+                                uvf=(lambda pts, _b=lift: uv_proj(pts, _b))
+                                if tex is not None else None,
+                                merge=tex is not None)
+                            tops += q
                     for cy in range(r.cells_h):
                         for cx in range(r.cells_w):
-                            if not occ[cy, cx]:
+                            if not occ[cy, cx] or crown[cy, cx]:
                                 continue
                             hh = CLASS_HEIGHT.get(c1[cy, cx], 0) + lift + args.overlay_lift
                             ax0 = ox + cx * CELL; ax1 = ax0 + CELL
@@ -2399,6 +2497,12 @@ def main():
     p_wg.add_argument("--floor-height", type=int, default=64)
     p_wg.add_argument("--outside", type=int, default=-16)
     p_wg.add_argument("--colocated", type=float, default=0.25)
+    p_wg.add_argument("--canopy", action="store_true",
+                      help="shape tree crowns (see canopy_field)")
+    p_wg.add_argument("--footprint", action="store_true",
+                      help="texture as before: tops from their plan position, "
+                           "walls from their footprint, instead of projecting "
+                           "the art from the game's camera")
     p_wg.add_argument("--texture", action="store_true",
                       help="emit .mtl + .png and UV-map the geometry")
     p_wg.add_argument("--lod", action="store_true",

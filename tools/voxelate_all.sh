@@ -10,6 +10,7 @@
 #   STAGES      which to run         (default: objects,rooms,world)
 #   FORCE=1     rebuild everything, ignoring what is already there
 #   JOBS        rooms built at once (default: number of CPUs)
+#   CANOPY=0    tree crowns as flat plates instead of shaped crowns
 #
 # Outputs, all under $TMC_ROOT and all gitignored -- they are derived from
 # your ROM and are not distributable:
@@ -50,6 +51,8 @@ fi
 [ -z "$ROOMS" ] && { echo "!! no room dumps; set TMC_ROOMS" >&2; exit 1; }
 
 STAGES="${STAGES:-objects,rooms,world}"
+# Shaped tree crowns (room_explore.py --canopy) unless CANOPY=0.
+CANOPY_FLAG="--canopy"; [ "${CANOPY:-1}" = "0" ] && CANOPY_FLAG=""
 FORCE="${FORCE:-0}"
 # Authored heights are committed at vr/world/ in the repo; the standalone
 # kit layout keeps them at world/. Try the repo path first.
@@ -92,7 +95,7 @@ build_room(){
   lg="$RLOGS/$b.log"
   if [ "$FORCE" != "1" ] && [ -s "$o" ]; then echo "skip $b"; return; fi
   if "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --overlay \
-       ${HEIGHTS:+--heights "$HEIGHTS"} >>"$lg" 2>&1; then
+       ${CANOPY_FLAG} ${HEIGHTS:+--heights "$HEIGHTS"} >>"$lg" 2>&1; then
     echo "made $b"
   elif "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --layer 1 \
        ${HEIGHTS:+--heights "$HEIGHTS"} >>"$lg" 2>&1; then
@@ -124,7 +127,7 @@ if stage rooms; then
   echo "-- stage 2/3: $N rooms -> geom/rooms/ ($JOBS at a time)" | tee -a "$LOG"
   RLOGS="$(mktemp -d)"
   export -f build_room
-  export PY KIT HEIGHTS FORCE RLOGS
+  export PY KIT HEIGHTS FORCE RLOGS CANOPY_FLAG
   i=0; made=0; skip=0; fail=0; lay1=0; empty=0
   while read -r status b; do
     i=$((i+1))
@@ -168,7 +171,8 @@ if stage world; then
     if [ "$FORCE" != "1" ] && [ -n "$(ls -A "$o" 2>/dev/null)" ]; then
       wskip=$((wskip+1)); continue; fi
     if "$PY" "$KIT/tools/room_explore.py" worldgen "$ROOMS" --area "$a" \
-         --out "$o" --texture --albedo ${HEIGHTS:+--heights "$HEIGHTS"} \
+         --out "$o" --texture --albedo --overlay ${CANOPY_FLAG} \
+         ${HEIGHTS:+--heights "$HEIGHTS"} \
          >>"$LOG" 2>&1; then
       wmade=$((wmade+1))
     else

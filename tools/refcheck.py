@@ -9,13 +9,13 @@ way every time.
 Each case is a rectangle of cells in one room (vr/reference.txt). For each,
 the sheet shows three panels side by side:
 
+
     art       the room as the game draws it (both layers composited)
-    game cam  the mesh seen from the game's own camera: looking down from the
-              south at 45 degrees, one world unit per pixel. A model whose
-              shapes and colours agree with the drawing looks like the art
-              here; a front face pasted on top as a picture shows up shifted
-              north by its height.
-    3/4       the mesh from the south-west, where depth is visible.
+    SW, SE    the mesh from the south-west and the south-east, where depth
+              is visible. Surfaces are coloured by projecting the art from
+              the game's camera (a point at height y over (x, z) takes the
+              pixel drawn at (x, z - y)), so a front face shows the band
+              drawn above its base and a raised top shows its drawn top.
 
 The mesh is `room_explore.py voxel` output, so this checks what the
 pipeline actually builds.
@@ -94,9 +94,11 @@ def camera(yaw_deg, pitch_deg):
 def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
     """Z-buffered flat-shaded raster of quads, cropped to a world-space box.
 
-    tex = (art, origin_x, origin_y): colour each pixel from the room's art at
-    its plan position, the way worldgen --texture does (tops from where they
-    stand, sides from their footprint). Without it, the mesh's own colours.
+    tex = (art, origin_x, origin_y): colour each pixel by projecting the art
+    from the game's camera: a surface point at height y over (x, z) takes
+    the pixel drawn at (x, z - y). A top lifted h takes the drawing h rows
+    north, where its top is drawn; a south-facing wall takes the band drawn
+    above its base, which is its front face. Without tex, mesh colours.
 
     box = (x0, x1, z0, z1) in world pixels: the case rectangle. Everything is
     projected, then the image is cropped to where that rectangle's floor
@@ -161,6 +163,8 @@ def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
             # wall samples the cell it belongs to, not its neighbour.
             wx = w0 * T[0, 0] + w1 * T[1, 0] + w2 * T[2, 0] - 0.5 * n[0]
             wz = w0 * T[0, 2] + w1 * T[1, 2] + w2 * T[2, 2] - 0.5 * n[2]
+            wy = w0 * T[0, 1] + w1 * T[1, 1] + w2 * T[2, 1] - 0.5 * n[1]
+            wz = wz - wy                     # project from the game camera
             ax = np.clip((wx - tox).astype(int), 0, art.shape[1] - 1)
             az = np.clip((wz - toz).astype(int), 0, art.shape[0] - 1)
             img[by0:by1 + 1, bx0:bx1 + 1][win] = \
@@ -182,6 +186,8 @@ def main():
     ap.add_argument("--cases", default=str(HERE.parent / "vr" / "reference.txt"))
     ap.add_argument("--only", default="", help="substring of the case label")
     ap.add_argument("--out", default="refcheck")
+    ap.add_argument("--canopy", action="store_true",
+                    help="build tree crowns with voxel --canopy")
     ap.add_argument("--subdiv", type=int, default=4,
                     help="voxel detail passed to room_explore voxel (4 = 4px)")
     ap.add_argument("--zoom", type=int, default=2)
@@ -205,7 +211,7 @@ def main():
             obj = tmp / (room.stem + ".obj")
             cmd = [sys.executable, str(HERE / "room_explore.py"), "voxel",
                    str(room), "--out", str(obj), "--overlay",
-                   "--subdiv", str(a.subdiv)]
+                   "--subdiv", str(a.subdiv)] + (["--canopy"] if a.canopy else [])
             if a.heights and Path(a.heights).exists():
                 cmd += ["--heights", a.heights]
             p = subprocess.run(cmd, capture_output=True, text=True)
@@ -234,12 +240,15 @@ def main():
         # the vertical axis is scaled by sqrt(2). Cropped to the floor of the
         # case rectangle only (tall=0), so it lines up pixel for pixel with
         # the art panel: anything standing up must appear where it is drawn.
+        # With the art projected from the game's camera, the model seen from
+        # that camera always reproduces the art, so it cannot check anything.
+        # Two 3/4 views instead: from the south-west and the south-east.
         tex = (art, r.origin_x, r.origin_y)
-        game = render(V, C, Fn, camera(0, 45), box, scale=(1.0, math.sqrt(2)), tall=0, tex=tex)
-        three = render(V, C, Fn, camera(35, 35), box, scale=(1.0, 1.0), tex=tex)
+        game = render(V, C, Fn, camera(35, 35), box, scale=(1.0, 1.0), tex=tex)
+        three = render(V, C, Fn, camera(-35, 35), box, scale=(1.0, 1.0), tex=tex)
         z = a.zoom
         panels = [label_panel(im.resize((im.width * z, im.height * z), Image.NEAREST), t)
-                  for im, t in ((art_img, "art"), (game, "game cam"), (three, "3/4"))]
+                  for im, t in ((art_img, "art"), (game, "from south-west"), (three, "from south-east"))]
         h = max(p.height for p in panels)
         sheet = Image.new("RGB", (sum(p.width for p in panels) + 8 * 2, h + 18), BG)
         x = 0
