@@ -36,6 +36,13 @@ cell places the model for its drawing on top of its height.
              flight (or its drawn risers), and the flight is built as the
              steps find_stairs.py counts, spaced as drawn.
 
+  doorways   A door cell (SURFACE_DOOR_13) in a wall stands as tall as its
+             drawn arch -- the cell above, marked SURFACE_DOOR or just wall
+             -- and so does the wall beside it; the opening measured from
+             the drawn dark interior is carved into it one cell deep, with
+             steps rising inside a stairway door. The top layer's arch
+             plates over a doorway are dropped: they are the arch's front.
+
   overlay    Where the top layer is drawn above the bottom one (outdoors),
              its cells are tiles too, cut out along the layer's
              transparency -- roofs, bridge decks, fence and planter tops
@@ -107,7 +114,8 @@ def room_roles(r, cls, H, blocks):
 def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     """The terrain's cell heights, built exactly as `voxel` builds them,
     plus the upper landings of flights of steps when path is given
-    (stair_levels). Returns (cls, H, blocks, flights)."""
+    (stair_levels), and walls raised to their doorways (find_doors).
+    Returns (cls, H, blocks, flights, doors)."""
     cls = RE.classify_room(r, layer)
     H = np.array(RE.heightfield(r, cls, layer), dtype=np.int64)
     if relief:
@@ -120,7 +128,10 @@ def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     flights = []
     if path is not None and layer == 0:
         H, flights = stair_levels(path, r, cls, H)
-    return cls, H, bl, flights
+    doors = []
+    if layer == 0:
+        H, doors = find_doors(r, cls, H, layer)
+    return cls, H, bl, flights, doors
 
 
 # ----------------------------------------------------------------- stairs --
@@ -293,6 +304,143 @@ def stair_quads(fl, ox, oz, lift):
     return quads
 
 
+# -------------------------------------------------------------- doorways --
+# A doorway is a door cell (action 0x28, SURFACE_DOOR_13) in a wall, solid,
+# entered from the floor to its south; a stairway doorway also has its arch
+# in the cell above (action 0x29, SURFACE_DOOR): 75 such pairs and ~200
+# single door cells in the game. The heightfield made each a painted wall
+# 16px tall with the top layer's arch floating over it. Here the wall
+# stands as tall as the drawn door, and the opening is carved into it.
+DOOR_ACT, ARCH_ACT = 0x28, 0x29
+DOOR_DARK = 60          # luminance: the drawn interior of an opening
+DOOR_DEPTH = 16         # px: how far the opening goes into the wall
+DOOR_STAIRS = (0x91, 0x92, 0x9a, 0x9b, 0x4d6)   # stair-arch tile types
+DOOR_RUN = 4            # cells either side raised with the doorway
+
+
+def find_doors(r, cls, H, layer=0):
+    """Doorways of a room, measured from the drawing; raises their walls.
+
+    Per doorway: the wall height is the drawn door, 16px per door cell --
+    two where an arch stands over the opening, marked SURFACE_DOOR or just
+    wall -- or the wall beside it if taller; the
+    blocked cells either side in the same rows, up to DOOR_RUN, are raised
+    to it -- the arch and its wall are drawn that tall. The opening is the
+    dark interior drawn in the door cell: its columns, and its height up
+    from the foot, at least 5/8 of the wall. Where the drawing has no dark interior (a lit arch, a
+    closed door) a centred opening of 8px by the height less 4px.
+
+    Returns (H, [door dicts]).
+    """
+    L = r.layers[layer]
+    h, w = r.cells_h, r.cells_w
+    act = L["act"][:h, :w]
+    tt = L["tiletype"][np.clip(L["tile"], 0, len(L["tiletype"]) - 1)][:h, :w]
+    walk = (cls == RE.CLASS_GROUND)
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    art = RE.room_art_rgb(r, layer)
+    lum = None if art is None else art[:, :, :3].astype(float).mean(axis=2)
+    H = np.array(H, dtype=np.int64)
+    doors = []
+    for cy in range(h - 1):
+        for cx in range(w):
+            if act[cy, cx] != DOOR_ACT or not blocked[cy, cx] or not walk[cy + 1, cx]:
+                continue
+            # the arch: the cell above, marked SURFACE_DOOR or simply wall --
+            # single door cells draw their arch in the wall cell over them
+            top_row = (cy - 1 if cy > 0 and (act[cy - 1, cx] == ARCH_ACT
+                                             or blocked[cy - 1, cx]) else cy)
+            k = cy - top_row + 1
+            rows_ = range(top_row, cy + 1)
+            side = [int(H[y, x]) for y in rows_ for x in (cx - 1, cx + 1)
+                    if 0 <= x < w and blocked[y, x]]
+            hw = max([16 * k] + side)
+            foot = (cy + 1) * 16
+            xa, xb, ho = 4, 12, max(8, hw - 4)
+            if lum is not None and lum.shape[0] >= foot and lum.shape[1] >= cx * 16 + 16:
+                cell = lum[foot - 16 * k:foot, cx * 16:cx * 16 + 16]
+                dark = cell < DOOR_DARK
+                cols = np.where(dark[-16:].any(axis=0))[0]
+                if len(cols) >= 4:
+                    xa, xb = int(cols.min()), int(cols.max()) + 1
+                    rows_d = np.where(dark[:, xa:xb].mean(axis=1) > 0.5)[0]
+                    if len(rows_d):
+                        ho = int(16 * k - rows_d.min())
+            # A stairway door draws its steps lit inside the opening, so the
+            # dark reaches only a few pixels up; the arch still has to clear
+            # a head. Never less than 5/8 of the wall.
+            ho = int(min(max(ho, (hw * 5) // 8), hw - 2))
+            for y in rows_:
+                H[y, cx] = hw
+                for d in (-1, 1):
+                    for i in range(1, DOOR_RUN + 1):
+                        x = cx + d * i
+                        if not (0 <= x < w) or not blocked[y, x] or act[y, x] == DOOR_ACT:
+                            break
+                        if H[y, x] < hw:
+                            H[y, x] = hw
+            doors.append(dict(cx=cx, cy=cy, top=top_row, hw=hw, ho=ho, xa=xa, xb=xb,
+                              base=int(H[cy + 1, cx]),
+                              stairs=int(tt[cy, cx]) in DOOR_STAIRS))
+    return H, doors
+
+
+def door_quads(d, ox, oz, lift):
+    """The front of a doorway with its opening carved in.
+
+    Every face takes the art as drawn on the wall's front: a point at
+    height y shows the row y above the foot, in its own column -- the
+    jambs and lintel their stone, the back wall and the jambs' insides the
+    dark interior. The opening's floor is the doorway's floor, with three
+    steps rising into it for a stairway door.
+    """
+    cx, cy = d["cx"], d["cy"]
+    foot = (cy + 1) * 16
+    base = d["base"] + lift
+    hw, ho = d["hw"] + lift, d["ho"] + d["base"] + lift
+    X0 = ox + cx * 16
+    xa, xb = X0 + d["xa"], X0 + d["xb"]
+    X1 = X0 + 16
+    zf = oz + foot
+    zb = zf - DOOR_DEPTH
+
+    def fr(pts):                        # as drawn on the front
+        return [(x - ox, foot - (y - base)) for x, y, z in pts]
+
+    q = []
+
+    def front(x0, x1, y0, y1, z):
+        if x1 > x0 and y1 > y0:
+            p = [(x0, y1, z), (x1, y1, z), (x1, y0, z), (x0, y0, z)]
+            q.append((p, fr(p)))
+    front(X0, xa, base, hw, zf)                 # left jamb
+    front(xb, X1, base, hw, zf)                 # right jamb
+    front(xa, xb, ho, hw, zf)                   # lintel
+    front(xa, xb, base, ho, zb)                 # back of the opening
+    # inside of the jambs, facing into the opening
+    p = [(xa, ho, zb), (xa, ho, zf), (xa, base, zf), (xa, base, zb)]
+    q.append((p, [(xa - ox + 0.5, foot - (y - base)) for _x, y, _z in p]))
+    p = [(xb, ho, zf), (xb, ho, zb), (xb, base, zb), (xb, base, zf)]
+    q.append((p, [(xb - ox - 0.5, foot - (y - base)) for _x, y, _z in p]))
+    # ceiling, facing down
+    p = [(xa, ho, zb), (xa, ho, zf), (xb, ho, zf), (xb, ho, zb)]
+    q.append((p, [(x - ox, foot - (ho - base) + 0.5) for x, _y, _z in p]))
+    # floor, or steps rising into a stairway door
+    n = 3 if d["stairs"] else 1
+    rise = min(6, max(0, d["ho"] - 24)) if d["stairs"] else 0
+    prev = base
+    for i in range(n):
+        za, zz = zf - (i + 1) * DOOR_DEPTH // n, zf - i * DOOR_DEPTH // n
+        y = base + (rise * (i + 1)) // n if n > 1 else base
+        p = [(xa, y, za), (xb, y, za), (xb, y, zz), (xa, y, zz)]
+        q.append((p, [(x - ox, z - oz) for x, _y, z in p]))
+        if y > prev:
+            p = [(xa, y, zz), (xb, y, zz), (xb, prev, zz), (xa, prev, zz)]
+            q.append((p, fr(p)))
+        prev = y
+    return q
+
+
 def tile_key(pixels, role):
     return hashlib.sha1(pixels.tobytes()).hexdigest()[:12] + role[0]
 
@@ -438,8 +586,9 @@ def side_face(cx, cy, dx, dz, top, bottom, ox, oz):
     return [(X0, a, Z1), (X0, a, Z0), (X0, b, Z0), (X0, b, Z1)], rtl
 
 
-def drop_faces(H, solid, ox, oz, lift, outside):
-    """Vertical faces wherever a cell drops to a lower neighbour."""
+def drop_faces(H, solid, ox, oz, lift, outside, skip=()):
+    """Vertical faces wherever a cell drops to a lower neighbour; not the
+    south face of the cells in skip (doorways, built by door_quads)."""
     quads = []
     rows, cols = H.shape
     for cy in range(rows):
@@ -451,7 +600,7 @@ def drop_faces(H, solid, ox, oz, lift, outside):
                 ny, nx = cy + dz, cx + dx
                 nh = (int(H[ny, nx]) if 0 <= ny < rows and 0 <= nx < cols
                       and solid[ny, nx] else outside)
-                if nh < hh:
+                if nh < hh and not (dz == 1 and (cx, cy) in skip):
                     quads.append(side_face(cx, cy, dx, dz, hh + lift, nh + lift,
                                            ox, oz))
     return quads
@@ -627,7 +776,7 @@ def build_area(job):
             if art is None:
                 continue
             art = np.ascontiguousarray(art[:, :, :3].astype(np.uint8))
-            cls, H, bl, flights = room_heights(
+            cls, H, bl, flights, doors = room_heights(
                 r, a.layer, blocks=not a.no_blocks, relief=a.relief,
                 path=None if a.no_stairs else dump_path.get((r.area, r.room)))
             role = room_roles(r, cls, H, bl)
@@ -647,6 +796,11 @@ def build_area(job):
             ov = None
             if not a.no_overlay and len(r.layers) > 1 and r.layers[1]["present"]:
                 decks, cf, top, occ, _c1 = room_overlay(r, H, canopy=not a.no_canopy)
+                # the top layer's arch over a doorway is part of the arch's
+                # front, already drawn there; lifted, it floated
+                arch = {(d["cx"] + dx_, y_) for d in doors for dx_ in (-1, 0, 1)
+                        for y_ in range(d["top"], d["cy"] + 1)}
+                decks = [dk for dk in decks if (dk[0], dk[1]) not in arch]
                 for cx, cy, hh in decks:
                     pix = np.ascontiguousarray(
                         top[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].astype(np.uint8))
@@ -656,7 +810,8 @@ def build_area(job):
                         lib[k] = (len(lib), pix, "deck")
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ)
-            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov, flights))
+            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
+                           flights, doors))
 
     # voxelate: one model per drawing, packed into the area's atlas
     n = len(lib)
@@ -680,7 +835,7 @@ def build_area(job):
     nfaces = ncell = 0
     with open(out / "placements.txt", "w") as place:
         place.write("# key room cx cy x y z role -- tile model origin, world pixels\n")
-        for r, lift, art, H, solid, cells, ov, flights in placed:
+        for r, lift, art, H, solid, cells, ov, flights, doors in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
             for k, cx, cy, y, ro in cells:
@@ -695,7 +850,10 @@ def build_area(job):
             m.obj(name)
             for k, cx, cy, y, ro in cells:
                 m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16))
-            m.quads(drop_faces(H, solid, ox, oz, lift, a.outside))
+            skip = {(d["cx"], d["cy"]) for d in doors}
+            m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip))
+            for d in doors:
+                m.quads(door_quads(d, ox, oz, lift))
             for fl in flights:
                 m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
@@ -708,7 +866,7 @@ def build_area(job):
     with open(out / "stairs.txt", "w") as st:
         st.write("# room cx0,cy0,cx1,cy1 rise steps up base top -- flights of "
                  "steps; up/base/top are '-' where the landings are one level\n")
-        for r, lift, _art, _H, _solid, _cells, _ov, flights in placed:
+        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             for fl in flights:
                 raised = fl.get("up") is not None
