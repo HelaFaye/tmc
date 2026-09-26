@@ -150,14 +150,15 @@ def measure_steps(img, rect, rise):
     dips = [i for i in range(1, len(d) - 1)
             if d[i] < -STEP_DEPTH and d[i] <= d[i - 1] and d[i] <= d[i + 1]]
     def merge(ix):
+        # Darkest first; keep a line only if no kept line is within
+        # STEP_MINGAP. Merging in order instead chained lines 3px apart
+        # (135, 138, 141 in room 104_00) into one and lost a step whose
+        # real boundaries were 6px apart.
         out = []
-        for i in ix:
-            if out and i - out[-1] < STEP_MINGAP:
-                if d[i] < d[out[-1]]:
-                    out[-1] = i
-            else:
+        for i in sorted(ix, key=lambda j: d[j]):
+            if all(abs(i - k) >= STEP_MINGAP for k in out):
                 out.append(i)
-        return out
+        return sorted(out)
 
     # Inside the slope cells and outside them are merged separately, so a
     # line at the cell edge is never swallowed by a darker one just past it
