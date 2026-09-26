@@ -512,10 +512,12 @@ BUILDING_MAX = 60      # cells: a larger roof blob is not one building
 
 
 def leafy_cells(top, h, w):
-    """Cells whose top-layer drawing is mostly leaf-coloured, judged pixel
-    by pixel (hue in CANOPY_HUE, saturation at least CANOPY_MIN_SAT). The
-    blob test canopy_mask uses cannot separate a mushroom cap from the
-    forest canopy its drawing touches."""
+    """(green, teal): cells whose top-layer drawing is mostly green (hue
+    60-170), or mostly blue-teal (170 to CANOPY_HUE's top), saturation at
+    least CANOPY_MIN_SAT, judged pixel by pixel. Green is leaves. Teal is
+    leaves in Minish Woods and roofs in Hyrule Town, which neither colour,
+    texture nor the canopy blob test tells apart; find_buildings decides by
+    where it is."""
     a = np.asarray(top).astype(float)
     rgb = a[:, :, :3] / 255.0
     mx, mn = rgb.max(axis=2), rgb.min(axis=2)
@@ -525,15 +527,19 @@ def leafy_cells(top, h, w):
                    np.where(mx == g_, (b_ - r_) / d + 2, (r_ - g_) / d + 4)) * 60.0
     sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-9), 0)
     drawn = a[:, :, 3] > 0
-    leaf = drawn & (hue >= RE.CANOPY_HUE[0]) & (hue <= RE.CANOPY_HUE[1]) \
-        & (sat >= RE.CANOPY_MIN_SAT)
-    out = np.zeros((h, w), bool)
+    ok = drawn & (sat >= RE.CANOPY_MIN_SAT)
+    g = ok & (hue >= RE.CANOPY_HUE[0]) & (hue < 170)
+    t = ok & (hue >= 170) & (hue <= RE.CANOPY_HUE[1])
+    green = np.zeros((h, w), bool)
+    teal = np.zeros((h, w), bool)
     for cy in range(h):
         for cx in range(w):
-            dn = drawn[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].sum()
+            sl = (slice(cy * 16, cy * 16 + 16), slice(cx * 16, cx * 16 + 16))
+            dn = drawn[sl].sum()
             if dn:
-                out[cy, cx] = leaf[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].sum() * 2 > dn
-    return out
+                green[cy, cx] = g[sl].sum() * 2 > dn
+                teal[cy, cx] = t[sl].sum() * 2 > dn
+    return green, teal
 
 
 def find_buildings(r, cls, H, doors, cf=None):
@@ -541,7 +547,10 @@ def find_buildings(r, cls, H, doors, cf=None):
 
     The roof is the top-layer blob drawn at or just above a door's arch,
     over cells the bottom layer blocks (the house's own footprint) and not
-    leaf-coloured (leafy_cells), within BUILDING_REACH of its doors; doors
+    leaf-coloured (leafy_cells: green never; teal only when the cell over
+    the door is teal -- a blue roof, not the forest behind a mushroom
+    cap -- and self-contained, not running on past the window as forest
+    does), within BUILDING_REACH of its doors; doors
     under one roof make one building. Under BUILDING_MIN cells or
     BUILDING_FILL drawn it is a hole's lip, over BUILDING_MAX not one
     building. Its columns are
@@ -570,32 +579,41 @@ def find_buildings(r, cls, H, doors, cf=None):
         for cx in range(w_):
             drawn[cy, cx] = alpha[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].any()
     blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
-    roof = (drawn & ((L1["tile"][:h_, :w_] != 0) | (L1["collision"][:h_, :w_] != 0))
-            & blocked & ~leafy_cells(top, h_, w_))
-    lab, _n = RE._label(roof)
+    green, teal = leafy_cells(top, h_, w_)
+    cand = drawn & ((L1["tile"][:h_, :w_] != 0) | (L1["collision"][:h_, :w_] != 0)) & blocked
+    lab, _n = RE._label(cand & ~green & ~teal)
+    # a teal roof: the cell over the door is teal, so teal is roof here
+    lab_t, _nt = RE._label(cand & ~green)
     H = np.array(H, dtype=np.int64)
     groups = {}
     for i, d in enumerate(doors):
-        ids = {int(lab[y, x]) for y in range(max(0, d["top"] - 3), d["top"] + 1)
+        over = [(y, d["cx"]) for y in (d["top"] - 1, d["top"]) if y >= 0]
+        use_t = any(teal[c] and cand[c] for c in over)
+        L_ = lab_t if use_t else lab
+        ids = {int(L_[y, x]) for y in range(max(0, d["top"] - 3), d["top"] + 1)
                for x in range(d["cx"] - 2, d["cx"] + 3)
-               if 0 <= x < w_ and lab[y, x]}
+               if 0 <= x < w_ and L_[y, x]}
         if ids:
-            groups.setdefault(min(ids), (set(), []))
-            groups[min(ids)][0].update(ids)
-            groups[min(ids)][1].append(i)
+            key = ("t" if use_t else "n", min(ids))
+            groups.setdefault(key, (set(), [], use_t))
+            groups[key][0].update(ids)
+            groups[key][1].append(i)
     out, covered = [], set()
-    for _k, (ids, di) in groups.items():
-        comp = np.isin(lab, list(ids))
+    for _k, (ids, di, use_t) in groups.items():
+        comp = np.isin(lab_t if use_t else lab, list(ids))
         ds = [doors[i] for i in di]
         dx_lo = min(d["cx"] for d in ds) - BUILDING_REACH[0]
         dx_hi = max(d["cx"] for d in ds) + BUILDING_REACH[0]
         foot0 = max(d["cy"] for d in ds) + 1
         win = np.zeros_like(comp)
         win[max(0, foot0 - BUILDING_REACH[1]):foot0, max(0, dx_lo):dx_hi + 1] = True
+        whole = int(comp.sum())
         comp &= win
         ncell = int(comp.sum())
         if ncell < BUILDING_MIN or ncell > BUILDING_MAX:
             continue
+        if use_t and whole > 2 * ncell:
+            continue          # teal running on past the house: forest
         cmask = np.zeros(alpha.shape, bool)
         big = np.kron(comp, np.ones((16, 16), bool))
         cmask[:big.shape[0], :big.shape[1]] = big[:alpha.shape[0], :alpha.shape[1]]
