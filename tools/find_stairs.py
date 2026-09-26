@@ -104,8 +104,9 @@ def composite_rgb(r):
 #                boundary beyond the slope cells must be
 #   STEP_COLOUR  how far (RGB distance) the lit colour of a step beyond the
 #                slope cells may be from the flight's treads
-STEP_WINDOW, STEP_DEPTH, STEP_MINGAP, STEP_GROW, STEP_STRONG, STEP_COLOUR = \
-    15, 12, 3, 1.75, 0.6, 40.0
+#   STEP_TOP_MAX how tall (px) the top step's top may be drawn
+STEP_WINDOW, STEP_DEPTH, STEP_MINGAP, STEP_GROW, STEP_STRONG, STEP_COLOUR, STEP_TOP_MAX = \
+    15, 12, 3, 1.75, 0.6, 40.0, 16
 
 
 def measure_steps(img, rect, rise):
@@ -212,18 +213,57 @@ def measure_steps(img, rect, rise):
                 break
     else:
         edges = found
+    # The top step. Its top is usually the biggest, best-lit surface of the
+    # flight -- taller than the spacing test allows and brighter than the
+    # colour test allows (room 104_00: a 9-row pale slab over 3px steps).
+    # So above the flight, one more band counts as the top step when it is
+    # closed off by a strong line within STEP_TOP_MAX and is brighter than
+    # the flight's faces, whatever its colour. Only upward (north, or west
+    # for a flight rising east-west): below a flight lies floor, which the
+    # same test would take for a step.
+    if len(edges) >= 2:
+        dark_rows = [i for a, b in zip(edges, edges[1:])
+                     for i in range(a + 1, b + 1) if d[i] <= 0]
+        face_lum = float(np.mean(p[dark_rows])) if dark_rows else float(p.mean())
+        strong = STEP_STRONG * float(np.median(d[edges]))
+        up = [i for i in dips if i < edges[0] - STEP_MINGAP + 1 and d[i] <= strong]
+        if up:
+            i = max(up)
+            band = p[i + 1:edges[0] + 1]
+            if (edges[0] - i <= STEP_TOP_MAX and len(band)
+                    and float(band.max()) > face_lum):
+                edges.insert(0, i)
+
+    # A step is a top (lit tread) and the face (dark riser) below it. A band
+    # between two lines that is all face belongs to the step above it: the
+    # top step in room 104_00 has a dark line at the top of its face as well
+    # as the bottom, and was counted as two steps.
     bands = []
     for a, b in zip(edges, edges[1:]):
         seg = d[a + 1:b + 1]
         lit = int((seg > 0).sum())
-        bands.append((start + a + 1, start + b + 1, lit, len(seg) - lit))
-    # Steps in one flight are drawn close to evenly. A band more than twice
-    # the median pitch means a boundary was missed or the reading picked up
-    # something beside the stairs: report it, don't trust it.
+        if lit == 0 and bands:
+            s0, _, t0, f0 = bands[-1]
+            bands[-1] = (s0, start + b + 1, t0, f0 + len(seg))
+        else:
+            bands.append((start + a + 1, start + b + 1, lit, len(seg) - lit))
+    # Steps in one flight are drawn close to evenly, except the top step,
+    # which may be taller. A band more than twice the median pitch below the
+    # top means a boundary was missed or the reading picked up something
+    # beside the stairs: report it, don't trust it.
     pitches = [b - a for a, b, _, _ in bands]
-    irregular = bool(pitches) and max(pitches) > 2 * float(np.median(pitches))
+    rest = pitches[1:] if len(pitches) > 2 else pitches
+    irregular = bool(rest) and max(rest) > 2 * float(np.median(rest))
+    # Every step has a top (its lit tread) and a face (its dark riser). A
+    # band with no lit rows is a face with no visible top, and the other way
+    # round, so the two are counted separately.
+    lo_i, hi_i = (edges[0] + 1, edges[-1] + 1) if edges else (0, 0)
     return dict(edges=[start + e + 1 for e in edges], bands=bands,
-                steps=len(bands), irregular=irregular)
+                rows=[(start + i, bool(d[i] > 0)) for i in range(lo_i, hi_i)],
+                rise=rise,
+                steps=len(bands), irregular=irregular,
+                tops=sum(1 for _, _, t, _ in bands if t > 0),
+                faces=sum(1 for _, _, _, f in bands if f > 0))
 
 
 def find(room_path):
@@ -284,6 +324,21 @@ def sheet(items, dumps, out, per_row=5):
         d = ImageDraw.Draw(crop)
         m = it.get("measure")
         if m:
+            # tops green, faces red, over the flight's own width
+            tint = Image.new("RGBA", crop.size, (0, 0, 0, 0))
+            td = ImageDraw.Draw(tint)
+            for pos, lit in m.get("rows", []):
+                col = (60, 255, 60, 90) if lit else (255, 50, 50, 90)
+                if it["rise"] == "ew":
+                    xx = (pos - ox) * 2
+                    td.rectangle([xx, (y0c * 16 - oy) * 2, xx + 1,
+                                  ((y1c + 1) * 16 - oy) * 2 - 1], fill=col)
+                else:
+                    yy = (pos - oy) * 2
+                    td.rectangle([(x0c * 16 - ox) * 2, yy,
+                                  ((x1c + 1) * 16 - ox) * 2 - 1, yy + 1], fill=col)
+            crop = Image.alpha_composite(crop.convert("RGBA"), tint).convert("RGB")
+            d = ImageDraw.Draw(crop)
             for e in m["edges"]:
                 if it["rise"] == "ew":
                     xx = (e - ox) * 2
@@ -296,7 +351,8 @@ def sheet(items, dumps, out, per_row=5):
         d.rectangle([0, 0, 224, 11], fill=(0, 0, 0))
         label = f"{it['kind']} {name[5:-5]} {x0c},{y0c}"
         if m:
-            label += f"  {m['steps']} steps" + ("  CHECK" if m.get("irregular") else "")
+            label += (f"  {m['steps']} st {m['tops']}t/{m['faces']}f"
+                      + ("  CHECK" if m.get("irregular") else ""))
         d.text((2, 0), label, fill=(255, 255, 0))
         tiles.append(crop)
     rows = (len(tiles) + per_row - 1) // per_row
@@ -334,7 +390,7 @@ def main():
         m = it.get("measure")
         if m and m["steps"]:
             # pitch = drawn px per step; tread/riser split by shading
-            opt += (f" steps={m['steps']}"
+            opt += (f" steps={m['steps']} tops={m['tops']} faces={m['faces']}"
                     f" pitch={'/'.join(str(b - a) for a, b, _, _ in m['bands'])}"
                     f" tread={'/'.join(str(t) for _, _, t, _ in m['bands'])}"
                     f" riser={'/'.join(str(r_) for _, _, _, r_ in m['bands'])}")
