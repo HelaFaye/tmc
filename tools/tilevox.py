@@ -1012,6 +1012,12 @@ def find_uprights(r, cls, H, art):
     H = np.array(H, dtype=np.int64)
     A = art[:h * 16, :w * 16]
     fm = flame_mask(A)
+    # torches have a tile type and are built as blocks (room_explore
+    # BLOCK_TYPES); uprights are the flames that have none
+    L0 = r.layers[0]
+    tt = L0["tiletype"][np.clip(L0["tile"], 0, len(L0["tiletype"]) - 1)][:h, :w]
+    typed = np.kron(np.isin(tt, RE.TORCH_TYPES), np.ones((16, 16), bool))
+    fm &= ~typed[:fm.shape[0], :fm.shape[1]]
     lab, n = RE._label(fm)
     ups = []
     for k in range(1, n + 1):
@@ -1246,6 +1252,21 @@ def side_face(cx, cy, dx, dz, top, bottom, ox, oz):
     return [(X0, a, Z1), (X0, a, Z0), (X0, b, Z0), (X0, b, Z1)], rtl
 
 
+def pit_face(cx, cy, dx, dz, top, bottom, ox, oz):
+    """The part of a face below the floor, down into a pit: the game never
+    draws a pit's walls, so it wears the pit's own drawing -- the cell it
+    drops into -- rather than the band above the thing's foot, which
+    stacked copies of a fire box down the column it stands on."""
+    pts, _uv = side_face(cx, cy, dx, dz, top, bottom, ox, oz)
+    nx0, nz0 = (cx + dx) * 16, (cy + dz) * 16
+    ltr = [(nx0, nz0), (nx0 + 16, nz0), (nx0 + 16, nz0 + 16), (nx0, nz0 + 16)]
+    return pts, ltr
+
+
+def inside_room(y, x, rows, cols):
+    return 0 <= y < rows and 0 <= x < cols
+
+
 def drop_faces(H, solid, ox, oz, lift, outside, skip=()):
     """Vertical faces wherever a cell drops to a lower neighbour; not the
     south face of the cells in skip (doorways, built by door_quads)."""
@@ -1261,8 +1282,15 @@ def drop_faces(H, solid, ox, oz, lift, outside, skip=()):
                 nh = (int(H[ny, nx]) if 0 <= ny < rows and 0 <= nx < cols
                       and solid[ny, nx] else outside)
                 if nh < hh and not (dz == 1 and (cx, cy) in skip):
-                    quads.append(side_face(cx, cy, dx, dz, hh + lift, nh + lift,
-                                           ox, oz))
+                    # above the floor, the drawn front; below it, the pit's
+                    # own drawing (pit_face)
+                    split = min(hh, max(nh, 0)) if nh < 0 and inside_room(ny, nx, rows, cols) else nh
+                    if split < hh:
+                        quads.append(side_face(cx, cy, dx, dz, hh + lift, split + lift,
+                                               ox, oz))
+                    if split > nh:
+                        quads.append(pit_face(cx, cy, dx, dz, split + lift, nh + lift,
+                                              ox, oz))
     return quads
 
 

@@ -1146,7 +1146,8 @@ def relief_field(r, cls, step, layer_index=0):
 
 
 # ------------------------------------------------------------------ blocks --
-# The dungeons' bevelled blocks -- tile types 0x360..0x367, one block per
+# The dungeons' bevelled blocks -- tile types 0x360..0x367 (and torches,
+# below), one block per
 # cell in six colours (0x365 alone is 590 cells in 46 rooms), set singly, in
 # rows and in whole block mazes -- are drawn as their TOP, a square cap
 # filling most of the cell, over a short darker band that is their front
@@ -1161,7 +1162,10 @@ def relief_field(r, cls, step, layer_index=0):
 # being built counts, and only where it is blocked. The larger bevelled
 # platforms (0x369..0x376, 0x381..0x38f) are pieces of multi-cell shapes,
 # not blocks, and are left to the terrain rules.
-BLOCK_TYPES = tuple(range(0x360, 0x368))
+# Torches (0x76 TORCH, 0x77 TORCH_LIT) are the same shape: a box drawn
+# from above -- the fire boxes of the desert dungeon -- with a flame in it.
+TORCH_TYPES = (0x76, 0x77)
+BLOCK_TYPES = tuple(range(0x360, 0x368)) + TORCH_TYPES
 BLOCK_H = 16                # px: a block is a cube
 BLOCK_BAND = (2, 8, 4)      # front band rows: min, max, default
 
