@@ -24,10 +24,19 @@ cell places the model for its drawing on top of its height.
              heightfield the terrain uses: collision classes, measured
              faces, blocks, sprite footprints flattened), rooms stacked into
              levels as worldgen does. Vertical faces where a cell drops to a
-             lower neighbour are built here too, one voxel row at a time,
-             each row coloured by the art the game draws there (drawn row =
-             z - height, the 45-degree rule) -- so a wall's front shows its
-             drawn front, not its top stretched down.
+             lower neighbour are built here too, textured with the rows
+             the game draws above the cell's foot (drawn row = z - height,
+             the 45-degree rule) -- so a wall's front shows its drawn front,
+             not its top stretched down, and its undrawn flanks wear the
+             same band.
+
+  overlay    Where the top layer is drawn above the bottom one (outdoors),
+             its cells are tiles too, cut out along the layer's
+             transparency -- roofs, bridge decks, fence and planter tops
+             -- lifted OVERLAY_LIFT like the terrain overlay, with aprons
+             down to the ground where it comes close. Tree crowns keep the
+             terrain's crown shape (room_explore.canopy_field), textured
+             from where their leaves are drawn.
 
 Outputs, per area, under --out (default geom/tiles; gitignored -- derived
 from your ROM):
@@ -58,7 +67,7 @@ import room_explore as RE  # noqa: E402
 
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
-RELIEF = {"floor": 1, "wall": 2, "block": 1, "water": 0, "pit": 0}
+RELIEF = {"floor": 1, "wall": 2, "block": 1, "water": 0, "pit": 0, "deck": 1}
 RELIEF_STEP = 2         # px: relief is measured on blocks this size
 FLAT_SPREAD = 12.0      # luminance spread below which a drawing is flat
 
@@ -107,28 +116,38 @@ def tile_key(pixels, role):
 
 # -------------------------------------------------------------- voxelate --
 
-def tile_relief(px, R, step=None):
+def tile_relief(px, R, step=None, mask=None):
     """Relief 0..R per pixel from the drawing's own shading.
 
     Measured on step x step blocks: per pixel, dithering and outlines turn
     the relief into noise -- 160 quads a cell in Minish Woods -- where 2px
     blocks keep the grass tufts and stones and cost 40. The texture stays
-    at full resolution either way.
+    at full resolution either way. With a mask, only drawn pixels count:
+    a cut-out tile's transparent pixels are not dark ones.
     """
     step = step or RELIEF_STEP
     if R <= 0:
         return np.zeros(px.shape[:2], np.int64)
     lum = px[:, :, :3].astype(float).mean(axis=2)
     n = 16 // step
-    b = lum.reshape(n, step, n, step).mean(axis=(1, 3))
-    lo, hi = np.percentile(b, 10), np.percentile(b, 90)
+    if mask is None:
+        b = lum.reshape(n, step, n, step).mean(axis=(1, 3))
+        seen = np.ones((n, n), bool)
+    else:
+        wsum = mask.reshape(n, step, n, step).sum(axis=(1, 3))
+        b = (np.where(mask, lum, 0.0).reshape(n, step, n, step).sum(axis=(1, 3))
+             / np.maximum(wsum, 1))
+        seen = wsum > 0
+        if not seen.any():
+            return np.zeros(lum.shape, np.int64)
+    lo, hi = np.percentile(b[seen], 10), np.percentile(b[seen], 90)
     if hi - lo < FLAT_SPREAD:
         return np.zeros(lum.shape, np.int64)
     t = np.rint(np.clip((b - lo) / (hi - lo), 0.0, 1.0) * R).astype(np.int64)
     return np.kron(t, np.ones((step, step), np.int64))
 
 
-def tile_quads(px, R):
+def tile_quads(px, R, mask=None):
     """The voxel model of one drawing: [(4 corners, 4 texels)], y up from 0.
 
     Columns of 1 + relief voxels, one per pixel. Colour comes from the
@@ -139,10 +158,16 @@ def tile_quads(px, R):
     stands above its neighbour, or above the floor at the tile's edge,
     merged along its row; its texels run along the pixels it borders, so
     each column's side shows that column's pixel.
+
+    mask (16x16 bool) keeps only the pixels a layer actually draws: a
+    top-layer tile is cut out along its transparency, so a fence or a roof
+    edge has the drawn silhouette instead of a square plate.
     """
-    h = 1 + tile_relief(px, R)
+    h = 1 + tile_relief(px, R, mask=mask)
+    if mask is not None:
+        h = np.where(mask, h, 0)
     quads = []
-    for y in sorted(set(int(v) for v in np.unique(h))):
+    for y in sorted(set(int(v) for v in np.unique(h)) - {0}):
         for x, z, w, d in RE.greedy_quads(h == y):
             quads.append(([(x, y, z), (x + w, y, z), (x + w, y, z + d), (x, y, z + d)],
                           [(x, z), (x + w, z), (x + w, z + d), (x, z + d)]))
@@ -199,16 +224,36 @@ def tile_quads(px, R):
 
 # ----------------------------------------------------------------- faces --
 
-def drop_faces(H, solid, ox, oz, lift, outside):
-    """Vertical faces where a cell drops to a lower neighbour.
+def side_face(cx, cy, dx, dz, top, bottom, ox, oz):
+    """One vertical face of cell (cx, cy) from height top down to bottom.
 
-    Texels are in room-art pixels. A south face d voxels tall takes the d
-    rows drawn above its foot, bottom row at the foot (drawn row = z -
-    height) -- the drawn front of the thing: a door frame, a cliff face --
-    one quad, since that mapping is linear. Faces the game never draws
-    (north, east, west) stretch the cell's own edge row or column, an
-    extrusion of its top.
+    Texels are in room-art pixels. Every face takes the d rows drawn above
+    the cell's foot, bottom row at the foot (drawn row = z - height), one
+    quad, since that mapping is linear. For a south face that IS the drawn
+    front of the thing: a door frame, a cliff face. The game draws no
+    north, east or west faces, so those wear the same front band, running
+    left to right as seen from outside -- bark on a trunk's flank, rock on
+    a cliff's end. Stretching the cell's edge pixel instead, as a first
+    version did, streaked every flank.
     """
+    x0, z0 = cx * 16, cy * 16
+    X0, X1, Z0, Z1 = ox + x0, ox + x0 + 16, oz + z0, oz + z0 + 16
+    a, b, d = top, bottom, top - bottom
+    foot = z0 + 16
+    tt, tb = foot - d, foot
+    if dz == 1:
+        pts = [(X0, a, Z1), (X1, a, Z1), (X1, b, Z1), (X0, b, Z1)]
+    elif dz == -1:
+        pts = [(X1, a, Z0), (X0, a, Z0), (X0, b, Z0), (X1, b, Z0)]
+    elif dx == 1:
+        pts = [(X1, a, Z1), (X1, a, Z0), (X1, b, Z0), (X1, b, Z1)]
+    else:
+        pts = [(X0, a, Z0), (X0, a, Z1), (X0, b, Z1), (X0, b, Z0)]
+    return pts, [(x0, tt), (x0 + 16, tt), (x0 + 16, tb), (x0, tb)]
+
+
+def drop_faces(H, solid, ox, oz, lift, outside):
+    """Vertical faces wherever a cell drops to a lower neighbour."""
     quads = []
     rows, cols = H.shape
     for cy in range(rows):
@@ -216,34 +261,99 @@ def drop_faces(H, solid, ox, oz, lift, outside):
             if not solid[cy, cx]:
                 continue
             hh = int(H[cy, cx])
-            x0, z0 = cx * 16, cy * 16
-            X0, X1, Z0, Z1 = ox + x0, ox + x0 + 16, oz + z0, oz + z0 + 16
             for dx, dz in ((0, 1), (0, -1), (1, 0), (-1, 0)):
                 ny, nx = cy + dz, cx + dx
                 nh = (int(H[ny, nx]) if 0 <= ny < rows and 0 <= nx < cols
                       and solid[ny, nx] else outside)
-                if nh >= hh:
-                    continue
-                a, b = hh + lift, nh + lift
-                d = hh - nh
-                if dz == 1:
-                    foot = z0 + 16
-                    quads.append(([(X0, a, Z1), (X1, a, Z1), (X1, b, Z1), (X0, b, Z1)],
-                                  [(x0, foot - d), (x0 + 16, foot - d),
-                                   (x0 + 16, foot), (x0, foot)]))
-                elif dz == -1:
-                    t = z0 + 0.5
-                    quads.append(([(X1, a, Z0), (X0, a, Z0), (X0, b, Z0), (X1, b, Z0)],
-                                  [(x0 + 16, t), (x0, t), (x0, t), (x0 + 16, t)]))
-                elif dx == 1:
-                    sx = x0 + 15.5
-                    quads.append(([(X1, a, Z0), (X1, a, Z1), (X1, b, Z1), (X1, b, Z0)],
-                                  [(sx, z0), (sx, z0 + 16), (sx, z0 + 16), (sx, z0)]))
-                else:
-                    sx = x0 + 0.5
-                    quads.append(([(X0, a, Z1), (X0, a, Z0), (X0, b, Z0), (X0, b, Z1)],
-                                  [(sx, z0 + 16), (sx, z0), (sx, z0), (sx, z0 + 16)]))
+                if nh < hh:
+                    quads.append(side_face(cx, cy, dx, dz, hh + lift, nh + lift,
+                                           ox, oz))
     return quads
+
+
+# ---------------------------------------------------------------- overlay --
+# Layer 1 is the world's second level: canopies, bridge decks, roofs, the
+# tops of fences drawn over Link. Only where it is drawn ABOVE layer 0
+# (room_explore.overlay_overhead); indoors it is floor detail and is already
+# in the composited floor tiles.
+OVERLAY_LIFT = 24       # px above the cell's class height, as the terrain
+OVERLAY_REACH = 24      # skirt reaches the ground when it is this close
+OVERLAY_SKIRT = 12      # otherwise it hangs this far
+
+
+def room_overlay(r, H, canopy=True):
+    """(deck cells, crown field or None, top RGBA art, occupancy, c1).
+
+    Deck cells are layer-1 cells that draw something and are not tree
+    crown: [(cx, cy, height)]. Crowns keep the terrain's shape
+    (canopy_field), which a flat tile cannot carry.
+    """
+    import extract_art
+    if not RE.overlay_overhead(r):
+        return [], None, None, None, None
+    top = extract_art.room_art(r, 1)
+    if top is None:
+        return [], None, None, None, None
+    top = np.asarray(top)
+    L1 = r.layers[1]
+    h, w = r.cells_h, r.cells_w
+    c1 = RE.classify_room(r, 1)
+    occ = (L1["tile"][:h, :w] != 0) | (L1["collision"][:h, :w] != 0)
+    crown = np.zeros((h, w), bool)
+    cf = None
+    if canopy:
+        cmask, _top = RE.canopy_mask(r)
+        if cmask is not None and cmask.any():
+            crown = RE.crown_cells(r, cmask, np.asarray(_top))
+            cf = RE.canopy_field(r, step=2,
+                                 lift=RE.CLASS_HEIGHT[RE.CLASS_GROUND] + OVERLAY_LIFT)
+    decks = []
+    for cy in range(h):
+        for cx in range(w):
+            if not occ[cy, cx] or crown[cy, cx]:
+                continue
+            a = top[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+            if a.shape[:2] != (16, 16) or not (a[:, :, 3] > 0).any():
+                continue
+            decks.append((cx, cy, RE.CLASS_HEIGHT.get(c1[cy, cx], 0) + OVERLAY_LIFT))
+    return decks, cf, top, occ, c1
+
+
+def deck_skirts(decks, occ, H, ox, oz, lift):
+    """Aprons under the edges of lifted decks, down to the ground where it
+    comes close (a roof on its wall, a bridge on its bank), otherwise
+    hanging OVERLAY_SKIRT -- room_explore.overlay_skirt_bottom decides."""
+    quads = []
+    rows, cols = H.shape
+    Hi = np.asarray(H, dtype=np.int64)
+    for cx, cy, hh in decks:
+        for dx, dz in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            ny, nx = cy + dz, cx + dx
+            if 0 <= ny < rows and 0 <= nx < cols and occ[ny, nx]:
+                continue
+            bottom, _sup = RE.overlay_skirt_bottom(
+                hh, Hi, occ, cy, cx, dz, dx, rows, cols,
+                OVERLAY_REACH, OVERLAY_SKIRT)
+            if bottom < hh:
+                quads.append(side_face(cx, cy, dx, dz, hh + lift, bottom + lift,
+                                       ox, oz))
+    return quads
+
+
+def crown_quads(cf, ox, oz, lift):
+    """The terrain's crown surface, textured by projecting the room art from
+    the game's camera: a crown point at height y over (x, z) takes the pixel
+    drawn at (x, z - y), where its leaves are drawn."""
+    out = []
+    base = RE.CLASS_HEIGHT[RE.CLASS_GROUND] + OVERLAY_LIFT
+
+    def uvf(pts):
+        return [(x - ox, (z - oz) - (y - lift)) for x, y, z in pts]
+
+    def quad(pts, c, uv=None):
+        out.append((pts, uv))
+    RE.emit_canopy(quad, cf, ox, oz, lift + base, step=2, uvf=uvf, merge=True)
+    return out
 
 
 # ------------------------------------------------------------------ write --
@@ -321,7 +431,7 @@ def build_area(job):
 
     # identify: every cell's drawing and role, keyed; heights as the terrain
     lib = {}                      # key -> (index, pixels, role)
-    placed = []                   # (r, lift, art, H, solid, [(key, cx, cy, y)])
+    placed = []                   # (r, lift, art, H, solid, cells, overlay)
     for li, lv in enumerate(levels):
         lift = li * a.floor_height
         for r in lv:
@@ -345,7 +455,19 @@ def build_area(job):
                     if k not in lib:
                         lib[k] = (len(lib), pix, ro)
                     cells.append((k, cx, cy, int(H[cy, cx]) + lift, ro))
-            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells))
+            ov = None
+            if not a.no_overlay and len(r.layers) > 1 and r.layers[1]["present"]:
+                decks, cf, top, occ, _c1 = room_overlay(r, H, canopy=not a.no_canopy)
+                for cx, cy, hh in decks:
+                    pix = np.ascontiguousarray(
+                        top[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].astype(np.uint8))
+                    pix[pix[:, :, 3] == 0] = 0
+                    k = tile_key(pix, "deck")
+                    if k not in lib:
+                        lib[k] = (len(lib), pix, "deck")
+                    cells.append((k, cx, cy, hh + lift, "deck"))
+                ov = (decks, cf, occ)
+            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov))
 
     # voxelate: one model per drawing, packed into the area's atlas
     n = len(lib)
@@ -357,8 +479,9 @@ def build_area(job):
                   "tiles.png", ATLAS_COLS * 16, arows * 16)
     for k, (i, pix, ro) in lib.items():
         ty, tx = divmod(i, ATLAS_COLS)
-        atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix
-        models[k] = tile_quads(pix, RELIEF[ro])
+        atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix[:, :, :3]
+        models[k] = tile_quads(pix, RELIEF[ro],
+                               pix[:, :, 3] > 0 if pix.shape[2] == 4 else None)
         lib_obj.obj(f"t_{k}")
         lib_obj.quads(models[k], toff=(tx * 16, ty * 16))
     lib_obj.close()
@@ -368,7 +491,7 @@ def build_area(job):
     nfaces = ncell = 0
     with open(out / "placements.txt", "w") as place:
         place.write("# key room cx cy x y z role -- tile model origin, world pixels\n")
-        for r, lift, art, H, solid, cells in placed:
+        for r, lift, art, H, solid, cells, ov in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
             for k, cx, cy, y, ro in cells:
@@ -384,6 +507,11 @@ def build_area(job):
             for k, cx, cy, y, ro in cells:
                 m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16))
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside))
+            if ov is not None:
+                decks, cf, occ = ov
+                m.quads(deck_skirts(decks, occ, H, ox, oz, lift))
+                if cf is not None:
+                    m.quads(crown_quads(cf, ox, oz, lift))
             nfaces += m.faces
             m.close()
     return area, len(rooms), ncell, n, nfaces
@@ -400,6 +528,10 @@ def main():
                     help="also write each room assembled, for viewing")
     ap.add_argument("--relief", action="store_true",
                     help="cell heights from room_explore --relief")
+    ap.add_argument("--no-overlay", action="store_true",
+                    help="leave out the top layer (canopies, decks, roofs)")
+    ap.add_argument("--no-canopy", action="store_true",
+                    help="tree crowns as flat deck tiles instead of shaped crowns")
     ap.add_argument("--no-blocks", action="store_true",
                     help="leave dungeon blocks to the measured heights")
     ap.add_argument("--relief-step", type=int, default=RELIEF_STEP,
