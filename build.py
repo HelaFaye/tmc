@@ -11,6 +11,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -472,11 +473,11 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
                   slim: bool = False, multi_region: bool = True) -> Optional[Path]:
     """Build tmc_pc for `version` and stage it under dist/<version>/.
 
-    `slim=True` produces a minimal dist (just the binary). The
+    `slim=True` produces a minimal dist (the binary only). The
     embedded extractor + embedded sounds.json fallback in tmc_pc
     handle first-launch asset extraction and audio metadata from a
     bare `tmc_pc + baserom.gba` install, so the dist no longer
-    needs to ship `assets/` or a separate `sounds.json`. Trade-off:
+    needs to ship ROM assets or a separate `sounds.json`. Trade-off:
     first launch takes ~3-5 s with a progress bar instead of being
     instant. After that first run, `assets/` lives next to the
     binary and warm launches are instant either way.
@@ -611,6 +612,8 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
     if PLATFORM != "Windows":
         dst_bin.chmod(dst_bin.stat().st_mode | 0o111)
     ok(f"Binary    →  dist/{version}/{EXE_NAME}")
+    old_rules = dist_dir / "assets" / "rando" / "picori.logic"
+    old_rules.unlink(missing_ok=True)
 
     # Linux: bundle libSDL3 + libgomp so the tarball runs on systems
     # that don't ship SDL3 yet (Steam Deck SteamOS, older Ubuntu/Fedora).
@@ -653,25 +656,32 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
                 ok(f"{src_lib.name} →  dist/{version}/")
 
     if slim:
-        # In slim mode the binary is the entire dist. tmc_pc's
-        # embedded extractor will create assets/ on first run, and
+        # tmc_pc's embedded extractor will create ROM assets/ on first run, and
         # the embedded sounds.json fallback (compiled into the
         # binary by tools/generate_sounds_embed.py) handles audio.
-        info("Slim mode — assets/, assets_src/, and sounds.json are NOT copied.")
+        info("Slim mode — ROM assets/, assets_src/, and sounds.json are NOT copied.")
         info("tmc_pc will self-extract assets on first launch using the embedded extractor.")
         return dst_bin
 
-    # Runtime assets (build/<version>/assets/) and editable assets (build/<version>/assets_src/)
-    for src_name in ("assets", "assets_src"):
-        src = REPO_ROOT / "build" / version / src_name
-        dst = dist_dir / src_name
-        if src.exists():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-            ok(f"{src_name}/  →  dist/{version}/{src_name}/")
-        else:
-            warn(f"build/{version}/{src_name}/ not found — skipping")
+    # Keep user files in assets/rando/ across the ROM asset refresh.
+    rando_dst = dist_dir / "assets" / "rando"
+    with tempfile.TemporaryDirectory(prefix="tmc-rando-assets-") as backup_dir:
+        rando_backup = Path(backup_dir) / "rando"
+        if rando_dst.is_dir():
+            shutil.copytree(rando_dst, rando_backup)
+        for src_name in ("assets", "assets_src"):
+            src = REPO_ROOT / "build" / version / src_name
+            dst = dist_dir / src_name
+            if src.exists():
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+                ok(f"{src_name}/  →  dist/{version}/{src_name}/")
+            else:
+                warn(f"build/{version}/{src_name}/ not found — skipping")
+        if rando_backup.is_dir():
+            shutil.copytree(rando_backup, rando_dst, dirs_exist_ok=True)
+    old_rules.unlink(missing_ok=True)
 
     sounds_src = REPO_ROOT / "assets" / "sounds.json"
     if sounds_src.exists():
@@ -698,7 +708,7 @@ def parse_args() -> argparse.Namespace:
         "--slim",
         action="store_true",
         help=(
-            "Produce a minimal dist/<version>/ containing only tmc_pc. "
+            "Produce a minimal dist/<version>/ containing tmc_pc. "
             "Skips the standalone asset_extractor invocation, the "
             "assets/ + assets_src/ copy, and the on-disk sounds.json copy. "
             "tmc_pc self-extracts assets on first launch (3-5 s) and uses "

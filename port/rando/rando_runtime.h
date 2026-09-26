@@ -1,8 +1,7 @@
 /*
- * port/rando/rando_runtime.h — `.logic` `!eventdefine` runtime features.
+ * port/rando/rando_runtime.h — native randomizer runtime features.
  *
- * The logic engine (rando_logic) parses `!eventdefine` entries; this module
- * makes the game honor them natively:
+ * This module applies the active seed's runtime settings:
  *  - Rando_Runtime_OnNewFile(): one-shot grants applied when a NEW rando
  *    file is committed (start inventory, wind crests, dungeon portals,
  *    instant text). Mutates gSave only; the caller persists the save.
@@ -16,6 +15,7 @@
 #define PORT_RANDO_RANDO_RUNTIME_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +24,7 @@ extern "C" {
 /* Apply new-file grants to gSave. No-op unless Rando_IsActive(). */
 void Rando_Runtime_OnNewFile(void);
 
-/* Recompute cached eventdefine-driven runtime state for the active seed. */
+/* Recompute cached runtime state for the active seed. */
 void Rando_Runtime_Refresh(void);
 
 /* Incoming-damage multiplier: `dmgMulti` (2/3/4) or `heroMode` (x2);
@@ -59,6 +59,13 @@ void Rando_PlayCancelSfx(void);
 /* Query a chest's localFlag by room property 3 (tile entities list).
  * Returns 0xFF if not found. */
 unsigned Rando_GetChestLocalFlag(unsigned area, unsigned room, unsigned chestIndex);
+/* Resolve a native chest ordinal or ground-item local flag to room-local
+ * coordinates. Small chests return tiles; big chests and ground items pixels. */
+bool Rando_Runtime_GetCheckPosition(uint32_t key, bool chest, unsigned* x, unsigned* y, bool* tile_coords);
+/* Validate Picori Chest_ ordinals and bind Ground_ flags to the active ROM.
+ * Call after parsing, before Rando_Keymap_Apply. Missing pickup keys reject
+ * the seed. */
+bool Rando_Runtime_BindLogicChests(void);
 unsigned Rando_GetDungeonKeyCount(unsigned dungeon_idx);
 bool Rando_GetDungeonHasBigKey(unsigned dungeon_idx);
 /* GiveItem origin routing for rando-shuffled dungeon items (see rando.h

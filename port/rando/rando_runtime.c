@@ -3,15 +3,21 @@
  */
 
 #include "common.h"
+#include "area.h"
 #include "flags.h"
+#include "game.h"
 #include "item.h"
+#include "player.h"
+#include "room.h"
 #include "save.h"
 #include "sound.h"
 #include "transitions.h"
 #include "pauseMenu.h"
 #include "windcrest.h"
 #include "main.h"
+#include "object.h"
 #include "rando/rando.h"
+#include "rando/rando_logic.h"
 #include "rando/rando_runtime.h"
 #include "rando/rando_newfile.h"
 #include "port_softslots.h"
@@ -28,22 +34,29 @@ static const u8 kSeenItems[] = {
     ITEM_NONE,         ITEM_MAP,       ITEM_KINSTONE_BAG,    ITEM_SHELLS,      ITEM_DUNGEON_MAP, ITEM_COMPASS,
     ITEM_BIG_KEY,      ITEM_SMALL_KEY, ITEM_RUPEE1,          ITEM_RUPEE5,      ITEM_RUPEE20,     ITEM_RUPEE50,
     ITEM_RUPEE100,     ITEM_RUPEE200,  ITEM_KINSTONE,        ITEM_BOMBS5,      ITEM_ARROWS5,     ITEM_HEART,
-    ITEM_FAIRY,        ITEM_SHELLS30,  ITEM_HEART_CONTAINER, ITEM_HEART_PIECE, ITEM_WALLET,      ITEM_BOMBBAG,
+    ITEM_FAIRY,        ITEM_SHELLS30,  ITEM_HEART_CONTAINER, ITEM_HEART_PIECE, ITEM_WALLET,
     ITEM_LARGE_QUIVER, ITEM_BOMBS10,   ITEM_BOMBS30,         ITEM_ARROWS10,    ITEM_ARROWS30,
 };
 
-static const u16 kDigFlags[] = {
-    FLAG_BANK_1 + KUMOUE_01_T4,      FLAG_BANK_1 + KUMOUE_01_T5,      FLAG_BANK_1 + KUMOUE_01_T6,
-    FLAG_BANK_1 + KUMOUR_01_K0,      FLAG_BANK_1 + KUMOUR_01_K1,      FLAG_BANK_1 + KUMOUR_01_K2,
-    FLAG_BANK_1 + KUMOUR_01_K3,      FLAG_BANK_2 + KOBITOYAMA_00_R00, FLAG_BANK_2 + KOBITOYAMA_00_R02,
-    FLAG_BANK_2 + KOBITOYAMA_00_R05, FLAG_BANK_2 + KOBITOYAMA_00_R07,
-};
+/* New-file tables store USA-baseline bit IDs. Only LocalFlags1 has
+ * region-dependent ordinals in the fat PC binary. */
+static u32 BaselineSaveFlagIndex(u32 index) {
+#if defined(PC_PORT) && defined(MULTI_REGION)
+    if (index >= FLAG_BANK_1 && index < FLAG_BANK_2) {
+        return FLAG_BANK_1 + Port_RemapBaselineLocalFlag(FLAG_BANK_1, index - FLAG_BANK_1);
+    }
+#endif
+    return index;
+}
 
 static void ApplyStartInventory(u64 seed) {
     RandomizerSettings settings = Rando_GetSettings();
     u32 granted = 0;
     if (settings.start_sword) {
         SetInventoryValue(ITEM_SMITH_SWORD, 1);
+        if (gSave.stats.equipped[SLOT_A] != ITEM_SMITH_SWORD && gSave.stats.equipped[SLOT_B] != ITEM_SMITH_SWORD) {
+            PutItemOnSlot(ITEM_SMITH_SWORD);
+        }
         granted++;
     }
     if (granted != 0) {
@@ -74,21 +87,21 @@ static void ApplyStorySkip(void) {
     SetGlobalFlag(TABIDACHI);
     SetGlobalFlag(OUTDOOR);
     SetGlobalFlag(ENTRANCE_0);
-    SetLocalFlagByBank(FLAG_BANK_1, MORI_00_KOBITO);
-    SetLocalFlagByBank(FLAG_BANK_1, MORI_ENTRANCE_1ST);
-    SetLocalFlagByBank(FLAG_BANK_1, SOUGEN_01_ZELDA);
-    SetLocalFlagByBank(FLAG_BANK_1, SOUGEN_06_WAKAGI_1);
-    SetLocalFlagByBank(FLAG_BANK_1, SOUGEN_06_WAKAGI_2);
-    SetLocalFlagByBank(FLAG_BANK_1, SOUGEN_06_WAKAGI_3);
-    SetLocalFlagByBank(FLAG_BANK_1, SOUGEN_06_AKINDO);
-    SetLocalFlagByBank(FLAG_BANK_1, CASTLE_04_MEZAME);
-    SetLocalFlagByBank(FLAG_BANK_1, MACHI_01_DEMO);
-    SetLocalFlagByBank(FLAG_BANK_2, MHOUSE15_OP1ST);
-    SetLocalFlagByBank(FLAG_BANK_2, M_PRIEST_TALK);
-    SetLocalFlagByBank(FLAG_BANK_2, M_ELDER_TALK1ST);
-    SetLocalFlagByBank(FLAG_BANK_2, M_PRIEST_MOVE);
-    SetLocalFlagByBank(FLAG_BANK_2, KOBITO_MORI_1ST);
-    SetLocalFlagByBank(FLAG_BANK_5, LV1_0B_WALK);
+    SetLocalFlagByBankB(FLAG_BANK_1, MORI_00_KOBITO);
+    SetLocalFlagByBankB(FLAG_BANK_1, MORI_ENTRANCE_1ST);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_01_ZELDA);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_WAKAGI_1);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_WAKAGI_2);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_WAKAGI_3);
+    SetLocalFlagByBankB(FLAG_BANK_1, SOUGEN_06_AKINDO);
+    SetLocalFlagByBankB(FLAG_BANK_1, CASTLE_04_MEZAME);
+    SetLocalFlagByBankB(FLAG_BANK_1, MACHI_01_DEMO);
+    SetLocalFlagByBankB(FLAG_BANK_2, MHOUSE15_OP1ST);
+    SetLocalFlagByBankB(FLAG_BANK_2, M_PRIEST_TALK);
+    SetLocalFlagByBankB(FLAG_BANK_2, M_ELDER_TALK1ST);
+    SetLocalFlagByBankB(FLAG_BANK_2, M_PRIEST_MOVE);
+    SetLocalFlagByBankB(FLAG_BANK_2, KOBITO_MORI_1ST);
+    SetLocalFlagByBankB(FLAG_BANK_5, LV1_0B_WALK);
     fprintf(stderr, "[RANDO] story skip: intro flags set (post-Ezlo start)\n");
 }
 
@@ -99,12 +112,12 @@ static void ApplyWorldOpen(void) {
         SetGlobalFlag(WARP_EVENT_END);
         SetGlobalFlag(TINGLE_TALK1ST);
         SetGlobalFlag(MIZUKAKI_START);
-        SetLocalFlagByBank(FLAG_BANK_1, BEANDEMO_00);
-        SetLocalFlagByBank(FLAG_BANK_1, BEANDEMO_01);
-        SetLocalFlagByBank(FLAG_BANK_1, BEANDEMO_02);
-        SetLocalFlagByBank(FLAG_BANK_1, BEANDEMO_03);
-        SetLocalFlagByBank(FLAG_BANK_1, BEANDEMO_04);
-        SetLocalFlagByBank(FLAG_BANK_1, YAMA_04_BOMBWALL0);
+        SetLocalFlagByBankB(FLAG_BANK_1, BEANDEMO_00);
+        SetLocalFlagByBankB(FLAG_BANK_1, BEANDEMO_01);
+        SetLocalFlagByBankB(FLAG_BANK_1, BEANDEMO_02);
+        SetLocalFlagByBankB(FLAG_BANK_1, BEANDEMO_03);
+        SetLocalFlagByBankB(FLAG_BANK_1, BEANDEMO_04);
+        SetLocalFlagByBankB(FLAG_BANK_1, YAMA_04_BOMBWALL0);
         fprintf(stderr, "[RANDO] world open: speed-up flags applied\n");
     }
 }
@@ -115,13 +128,13 @@ static void ApplyBaselineNewFile(u64 seed) {
     size_t i;
 
     for (i = 0; i < count; i++) {
-        WriteBit(gSave.flags, flags[i]);
+        WriteBit(gSave.flags, BaselineSaveFlagIndex(flags[i]));
     }
 
-    SetLocalFlagByBank(FLAG_BANK_10, LV6_SOTO_01_00);
-    SetLocalFlagByBank(FLAG_BANK_10, LV6_SOTO_01_01);
-    SetLocalFlagByBank(FLAG_BANK_10, LV6_SOTO_01_02);
-    SetLocalFlagByBank(FLAG_BANK_10, LV6_35_00);
+    SetLocalFlagByBankB(FLAG_BANK_10, LV6_SOTO_01_00);
+    SetLocalFlagByBankB(FLAG_BANK_10, LV6_SOTO_01_01);
+    SetLocalFlagByBankB(FLAG_BANK_10, LV6_SOTO_01_02);
+    SetLocalFlagByBankB(FLAG_BANK_10, LV6_35_00);
 
     // Skip cucco rounds, leaving 1 round
     SetGlobalFlag(ANJU_LV_BIT0);
@@ -147,19 +160,7 @@ static void ApplyBaselineNewFile(u64 seed) {
 }
 
 static void ApplyLocationDisableFlags(void) {
-    WriteBit(gSave.flags, FLAG_BANK_2 + BILL09_YADO2F_POEMN);
-    WriteBit(gSave.flags, FLAG_BANK_8 + LV4_0a_TSUBO);
-    WriteBit(gSave.flags, FLAG_BANK_2 + MHOUSE2_02_KEY);
-    WriteBit(gSave.flags, FLAG_BANK_3 + MOGURA_51_00);
-    WriteBit(gSave.flags, FLAG_BANK_3 + MOGURA_51_01);
-    WriteBit(gSave.flags, FLAG_BANK_1 + HIKYOU_00_M2);
-    WriteBit(gSave.flags, FLAG_BANK_1 + HIKYOU_00_T1);
-    WriteBit(gSave.flags, FLAG_BANK_1 + LOST_00_ENTER);
-    WriteBit(gSave.flags, FLAG_BANK_1 + MIZUUMI_00_H01);
-    WriteBit(gSave.flags, FLAG_BANK_8 + LV4_34_01);
-    for (size_t i = 0; i < (sizeof(kDigFlags) / sizeof(kDigFlags[0])); i++) {
-        WriteBit(gSave.flags, kDigFlags[i]);
-    }
+    WriteBit(gSave.flags, BaselineSaveFlagIndex(FLAG_BANK_1 + LOST_00_ENTER));
 }
 
 static void ApplyOpenWorld(void) {
@@ -173,7 +174,7 @@ static void ApplyOpenWorld(void) {
 
     flags = Rando_NewFile_WorldOpenFlags(&count);
     for (i = 0; i < count; i++) {
-        WriteBit(gSave.flags, flags[i]);
+        WriteBit(gSave.flags, BaselineSaveFlagIndex(flags[i]));
     }
 
     gSave.areaVisitFlags[0] |= RANDO_NEWFILE_VISIT_MASK;
@@ -255,6 +256,12 @@ void Rando_Runtime_OnNewFile(void) {
     ApplyWorldOpen();
     ApplyStartInventory(seed);
     ApplyOpenWorld();
+    /* Upstream's new-file blobs precollect these rewards, but Picori's
+     * native check table still shuffles them. Keep their pickups alive. */
+    ClearBit(gSave.flags, BaselineSaveFlagIndex(FLAG_BANK_1 + MORI_00_H1));
+    ClearBit(gSave.flags, BaselineSaveFlagIndex(FLAG_BANK_1 + YAMA_04_R00));
+    ClearBit(gSave.flags, BaselineSaveFlagIndex(FLAG_BANK_1 + SOUGEN_06_R1));
+    ClearBit(gSave.flags, BaselineSaveFlagIndex(FLAG_BANK_1 + SOUGEN_05_R0));
     ApplyCrests(seed);
     ApplyInstantText();
     Rando_Runtime_Refresh();
@@ -273,6 +280,168 @@ unsigned Rando_GetChestLocalFlag(unsigned area, unsigned room, unsigned chestInd
         index++;
     }
     return 0xFF;
+}
+
+bool Rando_Runtime_GetCheckPosition(uint32_t key, bool chest, unsigned* x, unsigned* y, bool* tile_coords) {
+    if (x == NULL || y == NULL || tile_coords == NULL || (key & 0xFF000000u) != 0)
+        return false;
+
+    unsigned area = (key >> 16) & 0xFFu;
+    unsigned room = (key >> 8) & 0xFFu;
+    unsigned index = key & 0xFFu;
+    if (area >= 0x90u || room >= MAX_ROOMS)
+        return false;
+
+    if (chest) {
+        const TileEntity* tiles = (const TileEntity*)GetRoomProperty(area, room, 3);
+        if (tiles == NULL)
+            return false;
+        unsigned ordinal = 0;
+        for (unsigned i = 0; i < 256 && tiles[i].type != 0; ++i) {
+            if (tiles[i].type != SMALL_CHEST && tiles[i].type != BIG_CHEST)
+                continue;
+            if (ordinal++ == index) {
+                if (tiles[i].type == BIG_CHEST) {
+                    *x = tiles[i].tilePos;
+                    *y = (unsigned)tiles[i]._6 | ((unsigned)tiles[i]._7 << 8);
+                    *tile_coords = false;
+                } else {
+                    *x = tiles[i].tilePos & 0x3Fu;
+                    *y = (tiles[i].tilePos >> 6) & 0x3Fu;
+                    *tile_coords = true;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (index == 0 || index == 0xFFu)
+        return false;
+    /* Smith's two floor rewards are created at room load, not in ROM data. */
+    if (area == 0x22u && room == 0x11u) {
+        unsigned first_flag = 0xE0u, second_flag = 0xE1u;
+#if defined(PC_PORT) && defined(MULTI_REGION)
+        first_flag = Port_RemapBaselineLocalFlag(GetFlagBankOffset(area), first_flag);
+        second_flag = Port_RemapBaselineLocalFlag(GetFlagBankOffset(area), second_flag);
+#endif
+        if (index == first_flag || index == second_flag) {
+            *x = index == first_flag ? 0x60u : 0x80u;
+            *y = 0x48u;
+            *tile_coords = false;
+            return true;
+        }
+    }
+    bool found = false;
+    unsigned found_x = 0, found_y = 0;
+    for (unsigned property = 0; property < 3; ++property) {
+        const EntityData* entities = (const EntityData*)GetRoomProperty(area, room, property);
+        if (entities == NULL)
+            continue;
+        for (unsigned i = 0; i < 512 && entities[i].kind != 0xFF; ++i) {
+            if ((entities[i].kind & 0x0Fu) != OBJECT || entities[i].id != GROUND_ITEM ||
+                ((entities[i].spritePtr >> 16) & 0xFFu) != index)
+                continue;
+            if (found && (found_x != entities[i].xPos || found_y != entities[i].yPos))
+                return false;
+            found = true;
+            found_x = entities[i].xPos;
+            found_y = entities[i].yPos;
+        }
+    }
+    if (!found)
+        return false;
+    *x = found_x;
+    *y = found_y;
+    *tile_coords = false;
+    return true;
+}
+
+/* Picori location keys use the same chest ordinal / ground flag that the
+ * pickup hooks emit. Check them against the active ROM before rolling a seed. */
+bool Rando_Runtime_BindLogicChests(void) {
+    if (!RandoLogic_IsLoaded())
+        return false;
+
+    unsigned bound = 0;
+    unsigned failed = 0;
+    static uint16_t ground_locations[RANDO_LOGIC_MAX_LOCATIONS];
+    static uint32_t ground_keys[RANDO_LOGIC_MAX_LOCATIONS];
+    unsigned ground_count = 0;
+    for (uint32_t location = 0; location < RandoLogic_GetLocationCountRaw(); ++location) {
+        const char* name = RandoLogic_GetLocationName(location);
+        bool chest = strncmp(name, "Chest_", 6) == 0;
+        bool ground = strncmp(name, "Ground_", 7) == 0;
+        if (!chest && !ground)
+            continue;
+
+        uint32_t key = RandoLogic_GetLocationKeyAt(location);
+        unsigned area = (key >> 16) & 0xFFu;
+        unsigned room = (key >> 8) & 0xFFu;
+        unsigned index = key & 0xFFu;
+        bool valid = key != UINT32_MAX && (key & 0xFF000000u) == 0 && area < 0x90u && room < MAX_ROOMS;
+
+        if (valid && chest) {
+            unsigned flag = Rando_GetChestLocalFlag(area, room, index);
+            valid = flag != 0 && flag != 0xFFu && Rando_RoomChestIndex(area, room, flag) == (int)index;
+        } else if (valid && ground) {
+            unsigned named_area = 0, named_room = 0, baseline_flag = 0;
+            valid = valid && sscanf(name, "Ground_%x_%x_%x", &named_area, &named_room, &baseline_flag) == 3 &&
+                    named_area == area && named_room == room && baseline_flag > 0 && baseline_flag < 0x100u;
+            unsigned flag = baseline_flag;
+#if defined(PC_PORT) && defined(MULTI_REGION)
+            if (valid)
+                flag = Port_RemapBaselineLocalFlag(GetFlagBankOffset(area), flag);
+#endif
+            valid = valid && flag > 0 && flag < 0x100u;
+            if (valid) {
+                bool found = false;
+                for (unsigned property = 0; property < 3 && !found; ++property) {
+                    const EntityData* entities = (const EntityData*)GetRoomProperty(area, room, property);
+                    if (entities == NULL)
+                        continue;
+                    for (unsigned i = 0; i < 512 && entities[i].kind != 0xFF; ++i) {
+                        if ((entities[i].kind & 0x0Fu) == OBJECT && entities[i].id == GROUND_ITEM &&
+                            ((entities[i].spritePtr >> 16) & 0xFFu) == flag) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                valid = found && ground_count < RANDO_LOGIC_MAX_LOCATIONS;
+                if (valid) {
+                    ground_locations[ground_count] = (uint16_t)location;
+                    ground_keys[ground_count++] = (area << 16) | (room << 8) | flag;
+                }
+            }
+        }
+        if (valid && chest)
+            ++bound;
+        else if (!valid) {
+            fprintf(stderr, "[RANDO] native check unavailable: %s (%02X-%02X-%02X)\n",
+                    name, area, room, index);
+            ++failed;
+        }
+    }
+    if (failed == 0) {
+        /* Move all ground keys out of the 24-bit namespace first. A regional
+         * flag remap can permute two flags in the same room; replacing them
+         * one at a time would report a false collision. */
+        for (unsigned i = 0; i < ground_count; ++i) {
+            if (!RandoLogic_SetRuntimeKeyAt(ground_locations[i], 0x7F000000u | ground_locations[i]))
+                ++failed;
+        }
+        if (failed == 0) {
+            for (unsigned i = 0; i < ground_count; ++i) {
+                if (RandoLogic_SetRuntimeKeyAt(ground_locations[i], ground_keys[i]))
+                    ++bound;
+                else
+                    ++failed;
+            }
+        }
+    }
+    fprintf(stderr, "[RANDO] native keys: validated %u, failed %u\n", bound, failed);
+    return failed == 0;
 }
 
 unsigned Rando_GetDungeonKeyCount(unsigned dungeon_idx) {

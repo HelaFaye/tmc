@@ -4431,7 +4431,7 @@ u32 sub_unk3_HyruleTown_0(void) {
     if (gSave.global_progress != 1) {
 #endif
 #ifdef PC_PORT
-        gCurrentRoomProperties = (void**)(((void**)gAreaTable[2])[0]);
+        sub_0804AFB0((void**)(((void**)gAreaTable[2])[0]));
 #else
         gCurrentRoomProperties = (void**)*Area_HyruleTown;
 #endif
@@ -5037,11 +5037,11 @@ extern EntityData gUnk_080F2E94;
 extern EntityData gUnk_080F2EC4;
 
 #ifdef PC_PORT
-/* Randomizer: The `.logic` file declares two floor items in the smith
+/* Randomizer: Picori rules declare two floor items in the smith
  * house (Smith_Floor_Item1/2, vanilla the starting sword + shield) that the
  * GBA randomizer creates by rewriting two furniture records in the room's
  * entity data. Natively, spawn the equivalent ground items at room load when
- * a real .logic seed is active and has those locations. Flags 0xE0/0xE1 are
+ * a rule-backed seed is active and has those locations. Flags 0xE0/0xE1 are
  * unused across every LOCAL_BANK_2 area's entity data; ItemOnGround_Init
  * deletes an already-collected item via CheckFlags, and the pickup routes
  * through the standard area-room-flag location hook (rando_keymap.c binds
