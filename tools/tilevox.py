@@ -90,17 +90,40 @@ import room_explore as RE  # noqa: E402
 
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
-RELIEF = {"floor": 1, "wall": 2, "block": 1, "water": 0, "pit": 0, "deck": 1}
+RELIEF = {"floor": 1, "wall": 2, "block": 1, "water": 0, "pit": 0, "deck": 1,
+          "grass": 5}
+RELIEF_STEPS = {"grass": 1}     # per role; others use RELIEF_STEP
 RELIEF_STEP = 2         # px: relief is measured on blocks this size
 FLAT_SPREAD = 12.0      # luminance spread below which a drawing is flat
 
 
 # --------------------------------------------------------------- identify --
 
-def room_roles(r, cls, H, blocks):
+# Tall grass is collision 0x5F, a walkable surface (1,852 cells in 69
+# rooms); most of its neighbours 0x51-0x5E are desert sand, so the drawing
+# must also be green. It gets blades: relief per pixel rather than per 2px
+# block, up to GRASS_H, so each drawn blade stands as its own column.
+GRASS_COLL = 0x5F
+GRASS_H = 5
+GRASS_GREEN = 0.5       # share of green pixels (hue 60-180, saturation 0.3)
+
+
+def is_green(px):
+    rgb = px[:, :, :3].astype(float) / 255.0
+    mx, mn = rgb.max(axis=2), rgb.min(axis=2)
+    d = np.where(mx - mn > 1e-9, mx - mn, 1.0)
+    r_, g_, b_ = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    hue = np.where(mx == r_, ((g_ - b_) / d) % 6,
+                   np.where(mx == g_, (b_ - r_) / d + 2, (r_ - g_) / d + 4)) * 60.0
+    sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-9), 0)
+    return float(((hue >= 60) & (hue <= 180) & (sat >= 0.3)).mean()) >= GRASS_GREEN
+
+
+def room_roles(r, cls, H, blocks, art=None):
     """Per cell role, or None where nothing is built (void)."""
     h, w = r.cells_h, r.cells_w
     role = np.empty((h, w), dtype=object)
+    coll = r.layers[0]["collision"][:h, :w]
     for cy in range(h):
         for cx in range(w):
             c = cls[cy, cx]
@@ -114,6 +137,9 @@ def room_roles(r, cls, H, blocks):
                 role[cy, cx] = "pit"
             elif H[cy, cx] > 0:
                 role[cy, cx] = "wall"
+            elif (coll[cy, cx] == GRASS_COLL and art is not None
+                  and is_green(art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16])):
+                role[cy, cx] = "grass"
             else:
                 role[cy, cx] = "floor"
     return role
@@ -707,7 +733,7 @@ def tile_relief(px, R, step=None, mask=None):
     return np.kron(t, np.ones((step, step), np.int64))
 
 
-def tile_quads(px, R, mask=None):
+def tile_quads(px, R, mask=None, step=None):
     """The voxel model of one drawing: [(4 corners, 4 texels)], y up from 0.
 
     Columns of 1 + relief voxels, one per pixel. Colour comes from the
@@ -723,7 +749,7 @@ def tile_quads(px, R, mask=None):
     top-layer tile is cut out along its transparency, so a fence or a roof
     edge has the drawn silhouette instead of a square plate.
     """
-    h = 1 + tile_relief(px, R, mask=mask)
+    h = 1 + tile_relief(px, R, step=step, mask=mask)
     if mask is not None:
         h = np.where(mask, h, 0)
     quads = []
@@ -1015,7 +1041,7 @@ def build_area(job):
             blds, covered = [], set()
             if overlay is not None and overlay[2] is not None and not a.no_buildings:
                 H, blds, covered = find_buildings(r, cls, H, doors, overlay[1])
-            role = room_roles(r, cls, H, bl)
+            role = room_roles(r, cls, H, bl, art)
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
@@ -1073,7 +1099,8 @@ def build_area(job):
         ty, tx = divmod(i, ATLAS_COLS)
         atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix[:, :, :3]
         models[k] = tile_quads(pix, RELIEF[ro],
-                               pix[:, :, 3] > 0 if pix.shape[2] == 4 else None)
+                               pix[:, :, 3] > 0 if pix.shape[2] == 4 else None,
+                               RELIEF_STEPS.get(ro))
         lib_obj.obj(f"t_{k}")
         lib_obj.quads(models[k], toff=(tx * 16, ty * 16))
     lib_obj.close()
