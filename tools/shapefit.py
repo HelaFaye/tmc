@@ -2346,7 +2346,63 @@ def cmd_tiles(args):
         print(f"    {n:5d}  {nm}")
 
 
-def build_chest(mask, lid_frac=0.42, squash=100):
+def chest_latch(art, mask, lid_row):
+    """Where the latch is drawn, and what the chest looks like without it.
+
+    The latch hangs from the lid across the seam onto the body, and it is on
+    the FRONT only. The body is built one course per drawn row, each course
+    carrying its row's colours through the whole depth, so without this the
+    latch came out on the back of the chest as well -- which, seen from
+    behind and above in a headset, reads as a latch on the top.
+
+    Found from the drawing, not from a template: the seam is the body row
+    with the fewest bright pixels that still has some, and the latch is the
+    narrow, central bright run crossing it, plus its one-pixel outline. The
+    back of the chest takes each of those pixels from the nearest column
+    outside the latch in the same row, so the bands and planks carry on
+    across where the latch was.
+
+    Returns {(row, col): col to sample instead}; empty if no latch is found.
+    """
+    H, W = mask.shape
+    ys, xs = np.where(mask)
+    if not len(ys):
+        return {}
+    x0, x1, base = int(xs.min()), int(xs.max()), int(ys.max())
+    w = x1 - x0 + 1
+    cx = (x0 + x1) / 2.0
+    lum = art[:, :, :3].astype(float).mean(axis=2)
+    bright = mask & (lum > 150)
+    best = None
+    for y in range(lid_row, base + 1):
+        cols = np.where(bright[y, x0:x1 + 1])[0] + x0
+        if not len(cols):
+            continue
+        if best is None or len(cols) < len(best[1]):
+            best = (y, cols)
+    if best is None:
+        return {}
+    seam, cols = best
+    lo, hi = int(cols.min()), int(cols.max())
+    if (hi - lo + 1 != len(cols) or hi - lo + 1 > max(2, w // 4)
+            or abs((lo + hi) / 2.0 - cx) > w / 6.0):
+        return {}
+    rows = [seam]
+    for step in (-1, 1):
+        y = seam + step
+        while lid_row <= y <= base and bright[y, lo:hi + 1].any():
+            rows.append(y)
+            y += step
+    lo2, hi2 = max(x0, lo - 1), min(x1, hi + 1)
+    left, right = max(x0, lo2 - 1), min(x1, hi2 + 1)
+    out = {}
+    for y in rows:
+        for x in range(lo2, hi2 + 1):
+            out[(y, x)] = left if x < cx else right
+    return out
+
+
+def build_chest(mask, lid_frac=0.42, squash=100, art=None):
     """A chest: flat faces, a barrel lid, and no arguing with the silhouette.
 
     At 16x16 the sprite is too small to carry its own lid curvature -- the
@@ -2377,17 +2433,21 @@ def build_chest(mask, lid_frac=0.42, squash=100):
     lid_row = top + max(1, int(round((base - top + 1) * lid_frac)))
     body_h = base - lid_row + 1
     vox, rowof = set(), {}
+    latch = chest_latch(art, mask, lid_row) if art is not None else {}
+    front = D - half - 1
 
     # Body: flat faces, square in plan. Each drawn row is one course, and
-    # every voxel in that course carries that row's colour.
+    # every voxel in that course carries that row's colour -- except the
+    # latch, which only the front layer keeps (see chest_latch).
     for y in range(lid_row, base + 1):
         e = base - y
         for x in range(x0, x1 + 1):
             if not mask[y, x]:
                 continue
+            alt = latch.get((y, x))
             for z in range(-half, D - half):
                 vox.add((x, e, z))
-                rowof[(x, e, z)] = y
+                rowof[(x, e, z)] = y if alt is None or z == front else (y, alt)
 
     # Lid: a circular SEGMENT lying left-to-right -- an arch of chord D and
     # rise taken from the drawn lid band, not a half cylinder. Forcing the
@@ -3739,7 +3799,10 @@ def cmd_fit(args):
         return
     if args.mode == "chest":
         mask = largest_blob(mask)
-        vox, lid_row, rowof, D = build_chest(mask, args.lid_frac, args.squash)
+        # The latch is found in the drawing as drawn: de-outlining fills the
+        # dark seam it crosses, and the seam is how it is recognised.
+        vox, lid_row, rowof, D = build_chest(mask, args.lid_frac, args.squash,
+                                             art=art[y0:y1, x0:x1])
         if not vox:
             sys.exit("nothing in that rect")
         h_, w_ = mask.shape
