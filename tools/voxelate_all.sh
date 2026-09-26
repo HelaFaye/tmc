@@ -7,16 +7,21 @@
 #   TMC_ROOT    repo root            (default: auto-detect, then $PWD)
 #   TMC_ROOMS   room dump directory  (default: first non-empty of
 #                                     states/p0, night/vrdump, vrdump)
-#   STAGES      which to run         (default: objects,rooms,world)
+#   STAGES      which to run         (default: objects,rooms,world,tiles)
 #   FORCE=1     rebuild everything, ignoring what is already there
 #   JOBS        rooms built at once (default: number of CPUs)
 #   CANOPY=0    tree crowns as flat plates instead of shaped crowns
+#   TILES_MERGE=0  tile stage writes libraries and placements only, not
+#                  the assembled rooms (1.6 GB for the whole game)
 #
 # Outputs, all under $TMC_ROOT and all gitignored -- they are derived from
 # your ROM and are not distributable:
 #   geom/*.obj         objects, one mesh per class
 #   geom/rooms/*.obj   one mesh per room
 #   geom/world/*.obj   one mesh per area
+#   geom/tiles/area_NN/  every drawing voxelated (tiles.obj + tiles.png),
+#                        where each cell uses it (placements.txt) and, unless
+#                        TILES_MERGE=0, each room assembled (room_AA_RR.obj)
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -50,7 +55,7 @@ if [ -z "$ROOMS" ]; then
 fi
 [ -z "$ROOMS" ] && { echo "!! no room dumps; set TMC_ROOMS" >&2; exit 1; }
 
-STAGES="${STAGES:-objects,rooms,world}"
+STAGES="${STAGES:-objects,rooms,world,tiles}"
 # Shaped tree crowns (room_explore.py --canopy) unless CANOPY=0.
 CANOPY_FLAG="--canopy"; [ "${CANOPY:-1}" = "0" ] && CANOPY_FLAG=""
 FORCE="${FORCE:-0}"
@@ -63,7 +68,7 @@ done
 LOG="$ROOT/voxelate.log"
 N=$(ls "$ROOMS"/room_*.tmcr 2>/dev/null | wc -l)
 
-mkdir -p geom/rooms geom/world objects
+mkdir -p geom/rooms geom/world geom/tiles objects
 {
 echo "=== voxelate $(date) ==="
 echo "root   $ROOT"
@@ -79,7 +84,7 @@ t0=$(date +%s)
 # ---- objects ---------------------------------------------------------
 if stage objects; then
   echo "" | tee -a "$LOG"
-  echo "-- stage 1/3: objects (manifests, fit, mesh)" | tee -a "$LOG"
+  echo "-- stage 1/4: objects (manifests, fit, mesh)" | tee -a "$LOG"
   TMC_ROOT="$ROOT" TMC_ROOMS="$ROOMS" bash "$KIT/tools/rebuild_all.sh" 2>&1 \
     | tee -a "$LOG" | grep -E "fittable|built|placed|undersized|!!" || true
 fi
@@ -124,7 +129,7 @@ except Exception:
 if stage rooms; then
   JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
   echo "" | tee -a "$LOG"
-  echo "-- stage 2/3: $N rooms -> geom/rooms/ ($JOBS at a time)" | tee -a "$LOG"
+  echo "-- stage 2/4: $N rooms -> geom/rooms/ ($JOBS at a time)" | tee -a "$LOG"
   RLOGS="$(mktemp -d)"
   export -f build_room
   export PY KIT HEIGHTS FORCE RLOGS CANOPY_FLAG
@@ -155,7 +160,7 @@ fi
 # ---- overworld -------------------------------------------------------
 if stage world; then
   echo "" | tee -a "$LOG"
-  echo "-- stage 3/3: overworld by area -> geom/world/" | tee -a "$LOG"
+  echo "-- stage 3/4: overworld by area -> geom/world/" | tee -a "$LOG"
   AREAS=$(ls "$ROOMS"/room_*.tmcr 2>/dev/null \
           | sed 's#.*/room_\([0-9]\{1,3\}\)_.*#\1#' | sort -un)
   na=$(echo "$AREAS" | wc -w); j=0; wmade=0; wskip=0; wfail=0
@@ -183,6 +188,30 @@ if stage world; then
   done
   echo "" | tee -a "$LOG"
   echo "   world: $wmade built, $wskip already present, $wfail failed" | tee -a "$LOG"
+fi
+
+# ---- tiles -----------------------------------------------------------
+# Every distinct drawing voxelated once and placed on its cell's height.
+# Resume is per area: an area whose placements exist is skipped.
+if stage tiles; then
+  echo "" | tee -a "$LOG"
+  echo "-- stage 4/4: tiles -> geom/tiles/" | tee -a "$LOG"
+  TILE_AREAS=""
+  for a in $(ls "$ROOMS"/room_*.tmcr 2>/dev/null \
+             | sed 's#.*/room_\([0-9]\{1,3\}\)_.*#\1#' | sort -un); do
+    a=$((10#$a))
+    if [ "$FORCE" = "1" ] || [ ! -s "geom/tiles/area_$(printf %02d "$a")/placements.txt" ]; then
+      TILE_AREAS="${TILE_AREAS:+$TILE_AREAS,}$a"
+    fi
+  done
+  if [ -z "$TILE_AREAS" ]; then
+    echo "   tiles: every area already present" | tee -a "$LOG"
+  else
+    MERGE_FLAG="--merge"; [ "${TILES_MERGE:-1}" = "0" ] && MERGE_FLAG=""
+    "$PY" "$KIT/tools/tilevox.py" "$ROOMS" --area "$TILE_AREAS" --out geom/tiles \
+        ${MERGE_FLAG} --jobs "${JOBS:-$(nproc 2>/dev/null || echo 2)}" 2>&1 \
+      | tee -a "$LOG" | tail -1
+  fi
 fi
 
 echo "" | tee -a "$LOG"
