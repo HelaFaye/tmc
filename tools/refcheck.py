@@ -188,6 +188,8 @@ def main():
     ap.add_argument("--out", default="refcheck")
     ap.add_argument("--canopy", action="store_true",
                     help="build tree crowns with voxel --canopy")
+    ap.add_argument("--relief", action="store_true",
+                    help="build heights with voxel --relief")
     ap.add_argument("--subdiv", type=int, default=4,
                     help="voxel detail passed to room_explore voxel (4 = 4px)")
     ap.add_argument("--zoom", type=int, default=2)
@@ -211,7 +213,7 @@ def main():
             obj = tmp / (room.stem + ".obj")
             cmd = [sys.executable, str(HERE / "room_explore.py"), "voxel",
                    str(room), "--out", str(obj), "--overlay",
-                   "--subdiv", str(a.subdiv)] + (["--canopy"] if a.canopy else [])
+                   "--subdiv", str(a.subdiv)] + (["--canopy"] if a.canopy else []) + (["--relief"] if a.relief else [])
             if a.heights and Path(a.heights).exists():
                 cmd += ["--heights", a.heights]
             p = subprocess.run(cmd, capture_output=True, text=True)

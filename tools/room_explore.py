@@ -1008,6 +1008,122 @@ def heightfield(r, cls, layer_index=0, measured=True):
     return h
 
 
+# ------------------------------------------------------------------ relief --
+# The 45-degree rule applied to the whole room (viewangle.py): a thing
+# raised h is drawn h rows north of where it stands. So give every drawn
+# pixel its height above the ground and move it south by that height.
+#
+# The blocked cells of a wall are its drawn FRONT FACE: a column of blocked
+# pixels ending on floor at row b is a face whose pixel at row y stands
+# b - y high. Moved south, the whole face lands on row b -- a vertical wall
+# exactly as tall as the artist drew it -- and anything beyond FACE_MAX is
+# the wall's top, at the face's height. Walls were a fixed 16px before, so
+# arches, buildings and brazier stands came out short and their upper
+# parts were projected onto their tops.
+FACE_MAX = 48               # px: tallest front face; beyond it, wall top
+DOOR_ACTS = (0x28, 0x29)    # SURFACE_DOOR_13, SURFACE_DOOR: openings
+
+
+def relief_field(r, cls, step, layer_index=0):
+    """Plan heights and solidity at `step`-pixel resolution, by relief.
+
+    Returns (H, solid) shaped like the room's grid at that step. Ground,
+    water and holes keep their class heights; walls and ledges become faces
+    and tops as above; door cells are openings at ground height (they were
+    blocked, which stood a block in every doorway).
+    """
+    ch, cw = r.cells_h, r.cells_w
+    act = r.layers[layer_index]["act"][:ch, :cw]
+    blocked_c = np.zeros((ch, cw), bool)
+    base_c = np.zeros((ch, cw), np.int32)
+    solid_c = np.zeros((ch, cw), bool)
+    for cy in range(ch):
+        for cx in range(cw):
+            c = cls[cy, cx]
+            solid_c[cy, cx] = c != CLASS_VOID
+            if int(act[cy, cx]) in DOOR_ACTS:
+                continue                      # an opening, at ground
+            if c in (CLASS_WALL, CLASS_LEDGE):
+                blocked_c[cy, cx] = True
+            else:
+                base_c[cy, cx] = CLASS_HEIGHT.get(c, 0)
+    # Plateaus: ground cut off from the room's main floor is a wall top or
+    # an upper floor, not the floor itself (the desert temple draws the sand
+    # above its walls as walkable ground). The main floor is the largest
+    # connected walkable region.
+    walk = np.zeros((ch, cw), bool)
+    for cy in range(ch):
+        for cx in range(cw):
+            walk[cy, cx] = (not blocked_c[cy, cx] and solid_c[cy, cx]
+                            and base_c[cy, cx] >= 0)
+    comp, ncomp = _label(walk)
+    sizes = np.bincount(comp.ravel(), minlength=ncomp + 1)
+    sizes[0] = 0
+    main = int(sizes.argmax()) if ncomp else 0
+
+    Hp, Wp = ch * 16, cw * 16
+    up = lambda a: np.repeat(np.repeat(a, 16, 0), 16, 1)
+    B = up(blocked_c)
+    h = up(base_c).astype(np.int32)
+    solid = up(solid_c)
+    comp_p = up(comp)
+    faces = []                                 # (x, a, b, f) per face run
+    long_runs = []
+    for x in range(Wp):
+        col = B[:, x]
+        y = 0
+        while y < Hp:
+            if not col[y]:
+                y += 1
+                continue
+            a = y
+            while y < Hp and col[y]:
+                y += 1
+            b = y                              # face base: first row below
+            if b - a > 2 * FACE_MAX:
+                long_runs.append((x, a, b))    # a side wall, seen edge-on
+                continue
+            f = min(b - a, FACE_MAX)
+            faces.append((x, a, b, f))
+            rows = np.arange(a, b)
+            h[a:b, x] = np.where(rows >= b - f, b - rows, f)
+    # A side wall runs north-south, so its column is one long blocked run
+    # that is not a face. It stands as tall as the faces around it.
+    typical = int(np.median([f for _, _, _, f in faces])) if faces else 16
+    for x, a, b in long_runs:
+        h[a:b, x] = typical
+    # Raise each plateau to the height of the faces whose tops touch it.
+    lift_of = {}
+    for x, a, b, f in faces:
+        if a > 0:
+            k = int(comp_p[a - 1, x])
+            if k and k != main:
+                lift_of.setdefault(k, []).append(f)
+    for k, fs in lift_of.items():
+        h[(comp_p == k)] = int(np.median(fs))
+    # move south by height; highest wins; gaps filled from above
+    out = np.full((Hp, Wp), -10 ** 6, np.int32)
+    ys, xs = np.nonzero(solid)
+    zs = ys + np.maximum(h[ys, xs], 0)
+    keep = zs < Hp
+    order = np.argsort(h[ys, xs][keep], kind="stable")
+    zk, xk, hk = zs[keep][order], xs[keep][order], h[ys, xs][keep][order]
+    out[zk, xk] = hk
+    got = out > -10 ** 6
+    for _ in range(FACE_MAX + 1):
+        fill = ~got & np.roll(got, 1, 0) & solid
+        fill[0] = False
+        if not fill.any():
+            break
+        out[fill] = np.roll(out, 1, 0)[fill]
+        got |= fill
+    out[~got] = 0
+    gh, gw = Hp // step, Wp // step
+    Hs = out[:gh * step, :gw * step].reshape(gh, step, gw, step).max(axis=(1, 3))
+    Ss = solid[:gh * step, :gw * step].reshape(gh, step, gw, step).any(axis=(1, 3))
+    return Hs.astype(np.int32), Ss
+
+
 def cell_colours(r, layer_index, cells_h, cells_w):
     """Mean art colour per cell, or None when the room has no usable art."""
     try:
@@ -1396,6 +1512,8 @@ def cmd_voxel(args):
         solid = cls != CLASS_VOID
         CELL = 16
         rows, cols = r.cells_h, r.cells_w
+    if getattr(args, "relief", False):
+        H, solid = relief_field(r, cls, CELL, args.layer)
     OUTSIDE = args.outside          # height treated as beyond the room edge
 
     verts, faces, vcols = [], [], []
@@ -2284,6 +2402,8 @@ def cmd_worldgen(args):
                     solid = cls != CLASS_VOID
                     CELL = 16
                     rows_, cols_ = r.cells_h, r.cells_w
+                if getattr(args, "relief", False):
+                    H, solid = relief_field(r, cls, CELL, args.layer)
                 for height in sorted(set(int(v) for v in np.unique(H))):
                     mask = solid & (H == height)
                     if not mask.any():
@@ -2497,6 +2617,8 @@ def main():
     p_wg.add_argument("--floor-height", type=int, default=64)
     p_wg.add_argument("--outside", type=int, default=-16)
     p_wg.add_argument("--colocated", type=float, default=0.25)
+    p_wg.add_argument("--relief", action="store_true",
+                      help="heights from drawn front faces (see relief_field)")
     p_wg.add_argument("--canopy", action="store_true",
                       help="shape tree crowns (see canopy_field)")
     p_wg.add_argument("--footprint", action="store_true",
@@ -2546,6 +2668,8 @@ def main():
     p_vx.add_argument("--overlay", action="store_true",
                       help="also emit layer 1 (canopies, bridge decks) lifted")
     p_vx.add_argument("--overlay-lift", type=int, default=24)
+    p_vx.add_argument("--relief", action="store_true",
+                      help="heights from drawn front faces (see relief_field)")
     p_vx.add_argument("--canopy", action="store_true",
                       help="shape tree crowns as domed, bumpy surfaces "
                            "(work in progress: large meshes)")
