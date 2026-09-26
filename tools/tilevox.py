@@ -919,6 +919,8 @@ UPRIGHT_DEPTH = 8
 FLAME_MIN = 6           # px: smallest flame
 FLAME_BLOB = 60         # px: largest single flame
 FLAME_W = 10            # px: widest flame
+FLAME_W_MIN = 6         # px: narrowest; every real flame in the game is 6-9
+                        # wide, the flowers and ornaments that pass are 3-5
 FLAME_ALONE = 8         # px: no other flame blob this close
 FLAME_BOWL = 0.6        # share of the two rows under a flame that are grey or dark
 FLAME_RING = 0.7        # share of a flame's neighbours that may share its hue (its glow)
@@ -943,7 +945,7 @@ def flame_ok(px, blob):
     bright saturated green, cliffs are speckled with orange, stained glass
     is both. A flame is one compact blob -- FLAME_MIN..FLAME_BLOB pixels,
     at most FLAME_W wide and taller than wide -- around a pale core (fire
-    is drawn with a light centre), at least 3px wide and no more than
+    is drawn with a light centre), at least FLAME_W_MIN wide and no more than
     three times as tall as wide (stripes are), whose ring of neighbours is
     not mostly of its own hue family -- its glow is, leaves are more so --
     and that burns in something: the two rows under it are mostly grey or
@@ -953,7 +955,7 @@ def flame_ok(px, blob):
     size = int(blob.sum())
     ys, xs = np.nonzero(blob)
     bw, bh = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
-    if (not (FLAME_MIN <= size <= FLAME_BLOB) or bw > FLAME_W or bw < 3
+    if (not (FLAME_MIN <= size <= FLAME_BLOB) or bw > FLAME_W or bw < FLAME_W_MIN
             or bh <= bw or bh > 3 * bw):
         return False
     y0, y1 = max(0, ys.min() - 1), min(px.shape[0], ys.max() + 2)
