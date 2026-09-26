@@ -51,6 +51,11 @@ cell places the model for its drawing on top of its height.
              roof's outline is rounded (mushroom caps), gabled where it is
              square -- and its doors carved into its front.
 
+  uprights   Braziers and torches, found by their drawing: a flame (a
+             compact, bright, saturated blob with a pale core, taller than
+             wide, burning alone) over a blocked post. Their whole drawing
+             is height; the silhouette is extruded upright on its foot.
+
   overlay    Where the top layer is drawn above the bottom one (outdoors),
              its cells are tiles too, cut out along the layer's
              transparency -- roofs, bridge decks, fence and planter tops
@@ -696,6 +701,187 @@ def building_quads(b, ox, oz, lift):
     return q
 
 
+# -------------------------------------------------------------- uprights --
+# Braziers and torches have no tile type of their own everywhere (the green
+# braziers on the bridge in area 141 are plain edge tiles), so they are
+# found by their drawing: a blocked cell with a flame in it. An upright has
+# next to no depth, so by the 45-degree rule its whole drawing -- flame tip
+# down to the foot of its post -- is height. It is built as the drawn
+# silhouette extruded UPRIGHT_DEPTH, standing on the floor at its foot,
+# showing the drawing on its front.
+UPRIGHT_DEPTH = 8
+FLAME_MIN = 6           # px: smallest flame
+FLAME_BLOB = 60         # px: largest single flame
+FLAME_W = 10            # px: widest flame
+FLAME_ALONE = 8         # px: no other flame blob this close
+FLAME_RING = 0.7        # share of a flame's neighbours that may share its hue (its glow)
+FLAME_POST = 2          # cells of post below the flame, at most
+
+
+def _hsv(px):
+    rgb = px[:, :, :3].astype(float) / 255.0
+    mx, mn = rgb.max(axis=2), rgb.min(axis=2)
+    d = np.where(mx - mn > 1e-9, mx - mn, 1.0)
+    r_, g_, b_ = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    hue = np.where(mx == r_, ((g_ - b_) / d) % 6,
+                   np.where(mx == g_, (b_ - r_) / d + 2, (r_ - g_) / d + 4)) * 60.0
+    sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-9), 0)
+    return hue, sat, mx
+
+
+def flame_ok(px, blob):
+    """Is this blob of flame pixels a flame?
+
+    Bright, saturated flame pixels (flame_mask) are not enough: foliage is
+    bright saturated green, cliffs are speckled with orange, stained glass
+    is both. A flame is one compact blob -- FLAME_MIN..FLAME_BLOB pixels,
+    at most FLAME_W wide and taller than wide -- around a pale core (fire
+    is drawn with a light centre), at least 3px wide and no more than
+    three times as tall as wide (stripes are), whose ring of neighbours is
+    not mostly of its own hue family -- its glow is, leaves are more so.
+    px is any image the blob mask matches.
+    """
+    size = int(blob.sum())
+    ys, xs = np.nonzero(blob)
+    bw, bh = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+    if (not (FLAME_MIN <= size <= FLAME_BLOB) or bw > FLAME_W or bw < 3
+            or bh <= bw or bh > 3 * bw):
+        return False
+    y0, y1 = max(0, ys.min() - 1), min(px.shape[0], ys.max() + 2)
+    x0, x1 = max(0, xs.min() - 1), min(px.shape[1], xs.max() + 2)
+    sub, m = px[y0:y1, x0:x1], blob[y0:y1, x0:x1]
+    hue, sat, v = _hsv(sub)
+    P = np.pad(m, 1)
+    near = m | P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:]
+    if not (near & (v >= 0.9) & (sat < 0.45)).any():
+        return False
+    warm = (hue <= 55) | (hue >= 345)
+    fam = warm if warm[m].mean() >= 0.5 else ((hue >= 95) & (hue <= 165))
+    ring = near & ~m
+    return bool(ring.any()) and (fam & (sat >= 0.35))[ring].mean() <= FLAME_RING
+
+
+def flame_mask(px):
+    """Flame pixels: bright and saturated, orange-yellow or green."""
+    rgb = px[:, :, :3].astype(float) / 255.0
+    mx, mn = rgb.max(axis=2), rgb.min(axis=2)
+    d = np.where(mx - mn > 1e-9, mx - mn, 1.0)
+    r_, g_, b_ = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    hue = np.where(mx == r_, ((g_ - b_) / d) % 6,
+                   np.where(mx == g_, (b_ - r_) / d + 2, (r_ - g_) / d + 4)) * 60.0
+    sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-9), 0)
+    warm = (hue <= 55) | (hue >= 345)
+    green = (hue >= 95) & (hue <= 165)
+    return (mx >= 0.8) & (sat >= 0.5) & (warm | green)
+
+
+def find_uprights(r, cls, H, art):
+    """Braziers and torches: (H, [uprights]).
+
+    Flames are found on the whole room image, not per cell: braziers are
+    drawn centred on a cell boundary as often as in a cell (the bridge of
+    area 141). From each flame, its post runs down through blocked cells,
+    FLAME_POST at most, to its foot; the upright spans the flame's top to
+    that foot, 16px wide centred on the flame. It stands on the floor
+    below its foot, or on what its post stood on (a rail, a ledge). Its
+    cells go down to its base only when it stands free (floor either
+    side): a rail that carries braziers keeps its rail.
+    """
+    h, w = r.cells_h, r.cells_w
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    walk = cls == RE.CLASS_GROUND
+    H = np.array(H, dtype=np.int64)
+    A = art[:h * 16, :w * 16]
+    fm = flame_mask(A)
+    lab, n = RE._label(fm)
+    ups = []
+    for k in range(1, n + 1):
+        blob = lab == k
+        cnt = int(blob.sum())
+        if cnt < FLAME_MIN or cnt > FLAME_BLOB or not flame_ok(A, blob):
+            continue
+        ys, xs = np.nonzero(blob)
+        # a flame burns alone: fields of such blobs are foliage, carpet
+        wy0, wy1 = max(0, ys.min() - FLAME_ALONE), ys.max() + FLAME_ALONE + 1
+        wx0, wx1 = max(0, xs.min() - FLAME_ALONE), xs.max() + FLAME_ALONE + 1
+        others = [int((lab[wy0:wy1, wx0:wx1] == j).sum())
+                  for j in np.unique(lab[wy0:wy1, wx0:wx1]) if j and j != k]
+        if sum(o for o in others if o >= 4) > cnt // 2:
+            continue
+        xc = int(round((xs.min() + xs.max()) / 2.0))
+        cy = int(ys.max()) // 16
+        # its post: under whichever cell the flame covers is blocked
+        cands = sorted({min(w - 1, max(0, x // 16)) for x in (xs.min(), xc, xs.max())},
+                       key=lambda c: abs(c * 16 + 8 - xc))
+        cx = next((c for c in cands if blocked[cy, c]
+                   or (cy + 1 < h and blocked[cy + 1, c])), cands[0])
+        run = []
+        y = cy
+        while y < h and blocked[y, cx] and len(run) <= FLAME_POST:
+            run.append(y)
+            y += 1
+        if not run and cy + 1 < h and blocked[cy + 1, cx]:
+            run = [cy + 1]
+        if not run:
+            continue
+        last = run[-1]
+        if last + 1 >= h:
+            continue
+        foot = (last + 1) * 16
+        top = int(ys.min())
+        below = int(H[last + 1, cx])
+        base = below if walk[last + 1, cx] else int(min(H[yy, cx] for yy in run))
+        x0 = max(0, min(A.shape[1] - 16, xc - 8))
+        region = A[top:foot, x0:x0 + 16].astype(int)
+        edge = np.concatenate([region[:, 0], region[:, -1]])
+        vals, counts = np.unique(edge.reshape(-1, 3), axis=0, return_counts=True)
+        bg = vals[counts >= max(2, counts.max() // 3)]
+        mask = np.ones(region.shape[:2], bool)
+        for c in bg:
+            mask &= ~(region == c).all(axis=2)
+        if mask.sum() < FLAME_MIN * 2:
+            continue
+        free = all((cx - 1 >= 0 and walk[yy, cx - 1]) and (cx + 1 < w and walk[yy, cx + 1])
+                   for yy in run)
+        if free:
+            for yy in run:
+                H[yy, cx] = base
+        ups.append(dict(cx=cx, x0=x0, top=top, foot=foot, base=base, mask=mask,
+                        cells=[(cx, yy) for yy in run]))
+    return H, ups
+
+
+def upright_quads(u, ox, oz, lift):
+    """The drawn silhouette of an upright, extruded and stood on its foot.
+
+    Built with emit_canopy on a grid in the plane of the drawing (column x
+    by drawn row), extrusion as its height, then turned upright: drawn row
+    becomes height above the foot, extrusion depth runs north from the
+    front. The turn is a proper rotation, so windings stay outward. Every
+    face shows the drawing as seen from the front."""
+    mask = u["mask"]
+    rows, cols = mask.shape
+    Hg = np.where(mask, UPRIGHT_DEPTH, 0).astype(int)
+    q = []
+    X0 = ox + u["x0"]
+    base = u["base"] + lift
+    zf = oz + u["foot"]
+
+    def quad(pts, c, uv=None):
+        out = []
+        for (x, y, z) in pts:
+            # emit frame: x across, y = extrusion, z = drawn row from top
+            X = x
+            Y = base + (u["foot"] - (u["top"] + z))
+            Z = zf - UPRIGHT_DEPTH + y
+            out.append((X, Y, Z))
+        uv = [(x - ox, u["top"] + z) for (x, _y, z) in pts]
+        q.append((out, uv))
+    RE.emit_canopy(quad, (Hg, np.zeros((rows, cols, 3)), mask), X0, 0, 0,
+                   step=1, uvf=None, merge=True)
+    return q
+
+
 def tile_key(pixels, role):
     return hashlib.sha1(pixels.tobytes()).hexdigest()[:12] + role[0]
 
@@ -1041,6 +1227,9 @@ def build_area(job):
             blds, covered = [], set()
             if overlay is not None and overlay[2] is not None and not a.no_buildings:
                 H, blds, covered = find_buildings(r, cls, H, doors, overlay[1])
+            ups = []
+            if not a.no_uprights:
+                H, ups = find_uprights(r, cls, H, art)
             role = room_roles(r, cls, H, bl, art)
             cells = []
             for cy in range(r.cells_h):
@@ -1085,7 +1274,7 @@ def build_area(job):
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ)
             placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
-                           flights, doors, blds))
+                           flights, doors, blds, ups))
 
     # voxelate: one model per drawing, packed into the area's atlas
     n = len(lib)
@@ -1110,7 +1299,7 @@ def build_area(job):
     nfaces = ncell = 0
     with open(out / "placements.txt", "w") as place:
         place.write("# key room cx cy x y z role -- tile model origin, world pixels\n")
-        for r, lift, art, H, solid, cells, ov, flights, doors, blds in placed:
+        for r, lift, art, H, solid, cells, ov, flights, doors, blds, ups in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
             for k, cx, cy, y, ro in cells:
@@ -1131,6 +1320,8 @@ def build_area(job):
                 m.quads(door_quads(d, ox, oz, lift))
             for b in blds:
                 m.quads(building_quads(b, ox, oz, lift))
+            for u in ups:
+                m.quads(upright_quads(u, ox, oz, lift))
             for fl in flights:
                 m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
@@ -1143,7 +1334,7 @@ def build_area(job):
     with open(out / "stairs.txt", "w") as st:
         st.write("# room cx0,cy0,cx1,cy1 rise steps up base top -- flights of "
                  "steps; up/base/top are '-' where the landings are one level\n")
-        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors, _b in placed:
+        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors, _b, _u in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             for fl in flights:
                 raised = fl.get("up") is not None
@@ -1173,6 +1364,8 @@ def main():
     ap.add_argument("--no-stairs", action="store_true",
                     help="leave flights of steps flat (no raised landings, "
                          "no steps)")
+    ap.add_argument("--no-uprights", action="store_true",
+                    help="leave braziers and torches to the heightfield")
     ap.add_argument("--no-buildings", action="store_true",
                     help="leave buildings to the heightfield")
     ap.add_argument("--no-blocks", action="store_true",
