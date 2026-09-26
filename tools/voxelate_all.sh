@@ -12,7 +12,7 @@
 #   JOBS        rooms built at once (default: number of CPUs)
 #   CANOPY=0    tree crowns as flat plates instead of shaped crowns
 #   TILES_MERGE=0  tile stage writes libraries and placements only, not
-#                  the assembled rooms (2.0 GB for the whole game)
+#                  the assembled rooms (1.5 GB for the whole game)
 #
 # Outputs, all under $TMC_ROOT and all gitignored -- they are derived from
 # your ROM and are not distributable:

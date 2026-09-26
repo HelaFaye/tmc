@@ -163,7 +163,7 @@ python3 tools/verify_repro.py vrdump --area 3
 | `objects/*.scene`, `geom/<class>.obj` | `rebuild_all.sh`: manifests, a size check, then `shapefit.py scene` |
 | `geom/rooms/room_AA_RR.obj` | `room_explore.py voxel`, one per room |
 | `geom/world/area_N/area_NN.{obj,mtl,png}` | `room_explore.py worldgen --texture --albedo`, one per area |
-| `geom/tiles/area_NN/tiles.{obj,png}`, `placements.txt`, `stairs.txt`, `room_AA_RR.{obj,png}` | `tilevox.py --merge`: the area's tile library and atlas, which tile every cell uses and at what height, every flight of steps and the landings it joins, and each room assembled (`TILES_MERGE=0` skips the assembled rooms, 2.0 GB for the whole game) |
+| `geom/tiles/area_NN/tiles.{obj,png}`, `placements.txt`, `stairs.txt`, `room_AA_RR.{obj,png}` | `tilevox.py --merge`: the area's tile library and atlas, which tile every cell uses and at what height, every flight of steps and the landings it joins, and each room assembled (`TILES_MERGE=0` skips the assembled rooms, 1.5 GB for the whole game) |
 
 Every output is derived from your ROM and is gitignored.
 

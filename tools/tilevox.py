@@ -95,7 +95,7 @@ import room_explore as RE  # noqa: E402
 
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
-RELIEF = {"floor": 1, "wall": 2, "block": 1, "water": 0, "pit": 0, "deck": 1,
+RELIEF = {"floor": 1, "wall": 1, "block": 1, "water": 0, "pit": 0, "deck": 1,
           "grass": 5}
 RELIEF_STEPS = {"grass": 1}     # per role; others use RELIEF_STEP
 RELIEF_STEP = 2         # px: relief is measured on blocks this size
@@ -501,6 +501,7 @@ BUILDING_ROOF = 12      # px: rise of a domed or gabled roof
 BUILDING_ROUND = 0.75   # roof's top row narrower than this share of its
                         # widest: rounded (a mushroom cap 0.63, roofs ~1)
 BUILDING_MIN = 4        # cells: a smaller roof is a hole's lip, not a house
+BUILDING_COMPACT = 0.6  # a door-less roof fills this share of its box
 BUILDING_FILL = 0.5     # share of the roof cells' pixels the roof draws
 BUILDING_REACH = (4, 6) # cells: roof kept within this many columns of the
                         # doors and rows above the foot (town walls join
@@ -542,7 +543,55 @@ def leafy_cells(top, h, w):
     return green, teal
 
 
-def find_buildings(r, cls, H, doors, cf=None):
+def cell_hues(top, h, w):
+    """Per cell: circular mean hue of its saturated drawn pixels, or None
+    when it has too few (grey, white, dark)."""
+    hue, sat, v = _hsv(np.asarray(top)[:, :, :3])
+    drawn = np.asarray(top)[:, :, 3] > 0
+    out = np.empty((h, w), dtype=object)
+    for cy in range(h):
+        for cx in range(w):
+            sl = (slice(cy * 16, cy * 16 + 16), slice(cx * 16, cx * 16 + 16))
+            m = drawn[sl] & (sat[sl] >= 0.35) & (v[sl] >= 0.25)
+            if m.sum() < 32:
+                out[cy, cx] = None
+                continue
+            a = np.radians(hue[sl][m])
+            out[cy, cx] = float(np.degrees(np.arctan2(np.sin(a).mean(),
+                                                      np.cos(a).mean())) % 360)
+    return out
+
+
+def label_by_hue(mask, hues, tol=45.0):
+    """4-connected components of mask, joining neighbours only when their
+    hues agree within tol (or either is grey): two houses whose roofs
+    touch, green and red, are two roofs."""
+    lab = np.zeros(mask.shape, np.int32)
+    n = 0
+    H_, W_ = mask.shape
+    for y0, x0 in zip(*np.nonzero(mask)):
+        if lab[y0, x0]:
+            continue
+        n += 1
+        lab[y0, x0] = n
+        st = [(y0, x0)]
+        while st:
+            y, x = st.pop()
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = y + dy, x + dx
+                if not (0 <= ny < H_ and 0 <= nx < W_) or not mask[ny, nx] or lab[ny, nx]:
+                    continue
+                a, b = hues[y, x], hues[ny, nx]
+                if a is not None and b is not None:
+                    d = abs(a - b) % 360
+                    if min(d, 360 - d) > tol:
+                        continue
+                lab[ny, nx] = n
+                st.append((ny, nx))
+    return lab, n
+
+
+def find_buildings(r, cls, H, doors, cf=None, crown=None):
     """Buildings anchored on doorways; flattens the cells they stood on.
 
     The roof is the top-layer blob drawn at or just above a door's arch,
@@ -598,7 +647,11 @@ def find_buildings(r, cls, H, doors, cf=None):
             groups.setdefault(key, (set(), [], use_t))
             groups[key][0].update(ids)
             groups[key][1].append(i)
-    out, covered = [], set()
+    # Each job is a roof blob and the doors under it. Door-anchored roofs
+    # first; then compact roof blobs over blocked cells with no door facing
+    # south (houses stacked in a row, doors on a side): a building all the
+    # same, standing on the floor south of its blocked footprint.
+    jobs, used = [], set()
     for _k, (ids, di, use_t) in groups.items():
         comp = np.isin(lab_t if use_t else lab, list(ids))
         ds = [doors[i] for i in di]
@@ -609,17 +662,70 @@ def find_buildings(r, cls, H, doors, cf=None):
         win[max(0, foot0 - BUILDING_REACH[1]):foot0, max(0, dx_lo):dx_hi + 1] = True
         whole = int(comp.sum())
         comp &= win
+        if use_t and whole > 2 * int(comp.sum()):
+            continue          # teal running on past the house: forest
+        if not use_t:
+            used.update(ids)
+        jobs.append((comp, ds))
+    # door-less roofs: leaves here are tree crowns (ragged blobs), not green
+    # -- a green roof is solid; roofs split where their colours part
+    used_cells = np.zeros(cand.shape, bool)
+    for comp, _ds in jobs:
+        used_cells |= comp
+    free = cand & ~used_cells & (~crown if crown is not None else ~green)
+    lab_d, n_d = label_by_hue(free, cell_hues(top, h_, w_))
+    for k in range(1, n_d + 1):
+        comp = lab_d == k
+        ys_, xs_ = np.nonzero(comp)
+        bh_, bw_ = ys_.max() - ys_.min() + 1, xs_.max() - xs_.min() + 1
+        if (bh_ < 2 or bw_ < 2 or comp.sum() < BUILDING_COMPACT * bh_ * bw_
+                or ys_.min() == 0 or xs_.min() == 0 or xs_.max() == w_ - 1):
+            continue
+        jobs.append((comp, []))
+
+    out, covered = [], set()
+    for comp, ds in jobs:
         ncell = int(comp.sum())
         if ncell < BUILDING_MIN or ncell > BUILDING_MAX:
             continue
-        if use_t and whole > 2 * ncell:
-            continue          # teal running on past the house: forest
         cmask = np.zeros(alpha.shape, bool)
         big = np.kron(comp, np.ones((16, 16), bool))
         cmask[:big.shape[0], :big.shape[1]] = big[:alpha.shape[0], :alpha.shape[1]]
         if (alpha & cmask).sum() < BUILDING_FILL * ncell * 256:
             continue
-        foot = max(d["cy"] for d in ds) + 1
+        if ds:
+            foot = max(d["cy"] for d in ds) + 1
+            base = int(max(d["base"] for d in ds))
+            hmin = max(d["hw"] for d in ds) + 8
+        else:
+            # the foot: where the blocked cells under the roof end
+            foot, bases = 0, []
+            for c in np.where(comp.any(axis=0))[0]:
+                y = int(np.where(comp[:, c])[0].max()) + 1
+                for _i in range(3):
+                    # down its front wall, not into the next roof
+                    if y < h_ and blocked[y, c] and not cand[y, c]:
+                        y += 1
+                foot = max(foot, y)
+            if foot >= h_:
+                continue
+            for c in np.where(comp.any(axis=0))[0]:
+                if cls[foot, c] == RE.CLASS_GROUND:
+                    bases.append(int(H[foot, c]))
+            if not bases:
+                # a house drawn behind another (its foot on the other's
+                # roof): the floor around its footprint
+                ys_, xs_ = np.nonzero(comp)
+                for y in range(ys_.min(), foot):
+                    for x in (xs_.min() - 1, xs_.max() + 1):
+                        if 0 <= x < w_ and cls[y, x] == RE.CLASS_GROUND:
+                            bases.append(int(H[y, x]))
+            if not bases:
+                continue
+            base = int(np.bincount(np.array(bases) - min(bases)).argmax() + min(bases)) \
+                if not any(cls[foot, c] == RE.CLASS_GROUND
+                           for c in np.where(comp.any(axis=0))[0]) else max(bases)
+            hmin = 40
         cols = sorted(set(np.where(comp.any(axis=0))[0].tolist())
                       | {d["cx"] for d in ds})
         c0, c1 = cols[0], cols[-1]
@@ -627,11 +733,10 @@ def find_buildings(r, cls, H, doors, cf=None):
         for c in range(c0, c1 + 1):
             ys = np.where(comp[:, c])[0]
             ys = ys[ys < foot]
-            tr = int(ys.min()) if len(ys) else min(d["top"] for d in ds)
+            tr = (int(ys.min()) if len(ys) else
+                  (min(d["top"] for d in ds) if ds else foot - 1))
             topc[c] = tr
         E = {c: (foot - topc[c]) * 16 for c in topc}
-        base = int(max(d["base"] for d in ds))
-        hmin = max(d["hw"] for d in ds) + 8
         hb = int(max(hmin, round(max(E.values()) * BUILDING_HB)))
         hb = 2 * ((hb + 1) // 2)
         widths = (alpha & cmask).sum(axis=1)
@@ -653,7 +758,33 @@ def find_buildings(r, cls, H, doors, cf=None):
             z0 = min(topc.values()) * 16 // 2
             z1 = min(Ms.shape[0], (foot * 16 + 48) // 2)
             Ms[z0:z1, c0 * 8:(c1 + 1) * 8] = False
-        out.append(dict(c0=c0, c1=c1, foot=foot, top=topc,
+        # the drawn front wall: rows between the roof's lowest pixel and the
+        # foot, which the undrawn side walls wear
+        rrows = np.where((alpha & cmask).any(axis=1))[0]
+        wall0 = int(rrows.max()) + 1 if len(rrows) else foot * 16 - 16
+        if foot * 16 - wall0 < 6:
+            wall0 = foot * 16 - 16
+        # the band: the widest run of front columns that is not a door (a
+        # doorway is dark), else the middle half of the front
+        span = (c1 - c0 + 1) * 16
+        dcols = {d["cx"] for d in ds}
+        runs_, cur = [], []
+        for c in range(c0, c1 + 1):
+            if c in dcols:
+                if cur:
+                    runs_.append(cur)
+                cur = []
+            else:
+                cur.append(c)
+        if cur:
+            runs_.append(cur)
+        if runs_ and ds:
+            best = max(runs_, key=len)
+            band = (best[0] * 16, len(best) * 16)
+        else:
+            band = (c0 * 16 + span // 4, span // 2)
+        out.append(dict(c0=c0, c1=c1, foot=foot, top=topc, wall=(wall0, foot * 16),
+                        band=band,
                         depth={c: max(16, E[c] - hb) for c in E},
                         hb=hb, base=base, style=style, doors=ds,
                         roof=set(zip(*np.nonzero(comp)))))
@@ -707,11 +838,12 @@ def building_quads(b, ox, oz, lift):
         return [(x - ox, (z - oz) - (y - ground)) for x, y, z in pts]
 
     # The drawing shows a building's front only. Its other outer walls --
-    # east, west, north, down to the ground -- wear the drawn front wall,
-    # spread along their length; projecting them from the game's camera
+    # east, west, north, down to the ground -- wear the drawn front wall
+    # (the rows between the roof's lowest pixel and the foot, stretched to
+    # the wall's height), spread along their length; projecting them from the game's camera
     # pulled one column of roof down each as a smear. Walls inside the
     # roof (the steps of a dome or gable) are roof and stay projected.
-    fx0, fw = c0 * 16, (c1 - c0 + 1) * 16
+    fx0, fw = b["band"]
     zfront = oz + foot * 16
     plan_z0, plan_x0 = oz + gz0, ox + gx0
     depth_px, width_px = rows * st, cols * st
@@ -724,9 +856,11 @@ def building_quads(b, ox, oz, lift):
         zs_ = {p_[2] for p_ in pts}
         if len(zs_) == 1 and next(iter(zs_)) == zfront:
             return uvf(pts)
+        w0, w1 = b["wall"]
         return [(fx0 + (((z - plan_z0) / float(depth_px)) if len(xs_) == 1
                         else ((x - plan_x0) / float(width_px))) * fw,
-                 foot * 16 - (y - ground)) for x, y, z in pts]
+                 w1 - min(1.0, max(0.0, (y - ground) / float(b["hb"]))) * (w1 - w0))
+                for x, y, z in pts]
 
     def quad(pts, c, uv=None):
         q.append((pts, uv))
@@ -1106,6 +1240,7 @@ def drop_faces(H, solid, ox, oz, lift, outside, skip=()):
 OVERLAY_LIFT = 24       # px above the cell's class height, as the terrain
 OVERLAY_REACH = 24      # skirt reaches the ground when it is this close
 OVERLAY_SKIRT = 12      # otherwise it hangs this far
+DECK_MIN = 3            # cells: smallest group of lifted top-layer plates
 
 
 def room_overlay(r, H, canopy=True):
@@ -1148,9 +1283,10 @@ def room_overlay(r, H, canopy=True):
 
 
 def deck_skirts(decks, occ, H, ox, oz, lift):
-    """Aprons under the edges of lifted decks, down to the ground where it
-    comes close (a roof on its wall, a bridge on its bank), otherwise
-    hanging OVERLAY_SKIRT -- room_explore.overlay_skirt_bottom decides."""
+    """Aprons under the edges of lifted decks, where the ground comes close
+    enough to carry them (a roof on its wall, a bridge on its bank) --
+    room_explore.overlay_skirt_bottom decides. Where it does not, no apron:
+    the deck's own tile has its edge."""
     quads = []
     rows, cols = H.shape
     Hi = np.asarray(H, dtype=np.int64)
@@ -1159,10 +1295,12 @@ def deck_skirts(decks, occ, H, ox, oz, lift):
             ny, nx = cy + dz, cx + dx
             if 0 <= ny < rows and 0 <= nx < cols and occ[ny, nx]:
                 continue
-            bottom, _sup = RE.overlay_skirt_bottom(
+            bottom, sup = RE.overlay_skirt_bottom(
                 hh, Hi, occ, cy, cx, dz, dx, rows, cols,
                 OVERLAY_REACH, OVERLAY_SKIRT)
-            if bottom < hh:
+            # only aprons that carry the deck: a hanging one shows whatever
+            # is drawn under the deck's edge (sand, grass) as a board
+            if sup and bottom < hh:
                 quads.append(side_face(cx, cy, dx, dz, hh + lift, bottom + lift,
                                        ox, oz))
     return quads
@@ -1277,7 +1415,8 @@ def build_area(job):
                        else room_overlay(r, H, canopy=not a.no_canopy))
             blds, covered = [], set()
             if overlay is not None and overlay[2] is not None and not a.no_buildings:
-                H, blds, covered = find_buildings(r, cls, H, doors, overlay[1])
+                H, blds, covered = find_buildings(r, cls, H, doors, overlay[1],
+                                                  overlay[5])
             ups = []
             if not a.no_uprights:
                 H, ups = find_uprights(r, cls, H, art)
@@ -1310,6 +1449,19 @@ def build_area(job):
                 decks, cf, top, occ, _c1, _crown = overlay
                 roofs = {(x_, y_) for b in blds for (y_, x_) in b["roof"]}
                 decks = [dk for dk in decks if (dk[0], dk[1]) not in roofs]
+                # A plate over a solid cell is the top of that thing -- a
+                # flower box, a fence post, a sign -- which the composited
+                # tile already shows; lifted, it floated with an apron. Keep
+                # only what Link walks under: over open ground, water or a
+                # pit, in groups of DECK_MIN or more (canopies, bridges).
+                blocked0 = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+                keep = np.zeros(cls.shape, bool)
+                for dk in decks:
+                    if not blocked0[dk[1], dk[0]]:
+                        keep[dk[1], dk[0]] = True
+                klab, kn = RE._label(keep)
+                big = {k for k in range(1, kn + 1) if (klab == k).sum() >= DECK_MIN}
+                decks = [dk for dk in decks if klab[dk[1], dk[0]] in big]
                 # the top layer's arch over a doorway is part of the arch's
                 # front, already drawn there; lifted, it floated
                 arch = {(d["cx"] + dx_, y_) for d in doors for dx_ in (-1, 0, 1)
