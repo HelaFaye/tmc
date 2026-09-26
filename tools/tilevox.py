@@ -150,13 +150,45 @@ def room_roles(r, cls, H, blocks, art=None):
     return role
 
 
+WALL_SPECKLE = 8        # px: a wall cell this far off its wall neighbours' median
+WALL_SPECKLE_NB = 5     # of its 8 neighbours at least this many are wall
+
+
+def despeckle_walls(cls, H):
+    """Single wall cells whose measured height disagrees with the wall
+    around them take that wall's median height.
+
+    The drop is measured per cell from the drawn face below it, and next
+    to gates and cliff corners one cell reads 24 or 8 in a run of 16s: it
+    stood as a lone block with its dark stone top showing, a lump. Only
+    cells mostly surrounded by wall are touched; edges and real steps
+    between wall heights keep what they measured."""
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    H = np.array(H, dtype=np.int64)
+    out = H.copy()
+    rows, cols = H.shape
+    for y in range(rows):
+        for x in range(cols):
+            if not blocked[y, x]:
+                continue
+            nb = [int(H[y + dy, x + dx]) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                  if (dy or dx) and 0 <= y + dy < rows and 0 <= x + dx < cols
+                  and blocked[y + dy, x + dx]]
+            if len(nb) < WALL_SPECKLE_NB:
+                continue
+            med = int(np.median(nb))
+            if abs(int(H[y, x]) - med) >= WALL_SPECKLE:
+                out[y, x] = med
+    return out
+
+
 def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     """The terrain's cell heights, built exactly as `voxel` builds them,
     plus the upper landings of flights of steps when path is given
     (stair_levels), and walls raised to their doorways (find_doors).
     Returns (cls, H, blocks, flights, doors)."""
     cls = RE.classify_room(r, layer)
-    H = np.array(RE.heightfield(r, cls, layer), dtype=np.int64)
+    H = despeckle_walls(cls, RE.heightfield(r, cls, layer))
     if relief:
         Hr, _solid = RE.relief_field(r, cls, 16, layer)
         H = np.array(Hr, dtype=np.int64)
@@ -1282,7 +1314,7 @@ def room_overlay(r, H, canopy=True):
     return decks, cf, top, occ, c1, crown
 
 
-def deck_skirts(decks, occ, H, ox, oz, lift):
+def deck_skirts(decks, occ, H, ox, oz, lift, top=None):
     """Aprons under the edges of lifted decks, where the ground comes close
     enough to carry them (a roof on its wall, a bridge on its bank) --
     room_explore.overlay_skirt_bottom decides. Where it does not, no apron:
@@ -1295,6 +1327,14 @@ def deck_skirts(decks, occ, H, ox, oz, lift):
             ny, nx = cy + dz, cx + dx
             if 0 <= ny < rows and 0 <= nx < cols and occ[ny, nx]:
                 continue
+            if top is not None:
+                # the deck must draw along this edge; where it is mostly
+                # transparent, an apron shows the ground under it as a board
+                a = top[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16, 3] > 0
+                edge = (a[-1] if dz == 1 else a[0] if dz == -1
+                        else a[:, -1] if dx == 1 else a[:, 0])
+                if edge.mean() < 0.5:
+                    continue
             bottom, sup = RE.overlay_skirt_bottom(
                 hh, Hi, occ, cy, cx, dz, dx, rows, cols,
                 OVERLAY_REACH, OVERLAY_SKIRT)
@@ -1475,7 +1515,7 @@ def build_area(job):
                     if k not in lib:
                         lib[k] = (len(lib), pix, "deck")
                     cells.append((k, cx, cy, hh + lift, "deck"))
-                ov = (decks, cf, occ)
+                ov = (decks, cf, occ, top)
             placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
                            flights, doors, blds, ups))
 
@@ -1528,8 +1568,8 @@ def build_area(job):
             for fl in flights:
                 m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
-                decks, cf, occ = ov
-                m.quads(deck_skirts(decks, occ, H, ox, oz, lift))
+                decks, cf, occ, top_ = ov
+                m.quads(deck_skirts(decks, occ, H, ox, oz, lift, top_))
                 if cf is not None:
                     m.quads(crown_quads(cf, ox, oz, lift))
             nfaces += m.faces
