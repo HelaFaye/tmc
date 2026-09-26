@@ -61,7 +61,7 @@ what the decompilation calls them, so a pit is a pit because the game says
 | Runtime modules | `port/vr/` | `vr_world` snapshots `gMapTop`/`gMapBottom`, entities, palettes and BG VRAM, and writes `.tmcr` v4. `vr_anchor` is the camera anchor with tabletop, diorama and life scales. `vr_interp` interpolates entities (Link included) between game ticks. `vr_greedy_mesh` builds meshes from voxel grids. `vr_spritedump` rasterises sprite frames. `vr_debug_panel` is an ImGui panel that drives them all. |
 | Harvest | `tools/harvest_rooms.py`, `harvest_states.sh`, `harvest_night.sh` | Warp to each of the game's 842 rooms in turn and dump it, optionally at each story state (0–6 dungeons cleared). |
 | Decode and analysis | `tools/room_explore.py`, `extract_art.py`, `verify_art.py`, `shading.py`, `tilehints.py`, `survey_tiles.py`, `surfaces.py` (+ `gen_surfaces.py`, `surfaces_table.py`), `viewangle.py`, `decomp_labels.py`, `entity_catalogue.py` | Read dumps, rebuild the art, separate shading from colour, classify cells from the game's own collision and action tables, and name entities from the decomp headers. |
-| Tiles | `tools/tilevox.py` | Identify every cell's drawing, voxelate each distinct drawing once (one textured column per pixel, relief from its shading), and place it on the cell's height, with drawn front faces where the ground drops; the top layer (roofs, bridge decks, fence tops) as cut-out tiles lifted like the terrain overlay, tree crowns in their terrain shape. |
+| Tiles | `tools/tilevox.py` | Identify every cell's drawing, voxelate each distinct drawing once (one textured column per pixel, relief from its shading), and place it on the cell's height, with drawn front faces where the ground drops; flights of steps built as the drawn steps up to a raised landing; the top layer (roofs, bridge decks, fence tops) as cut-out tiles lifted like the terrain overlay, tree crowns in their terrain shape. |
 | Fitting | `tools/shapefit.py`, `mk_manifests.py`, `verify_fits.py`, `hull_carve.py`, `fit_link.py` | Turn drawn objects into solids (chests, torches, boulders, stumps, trees, lotus, buildings, stairs), check their sizes, and carve sprite hulls. |
 | Manifests | `vr/objects/*.scene`, `vr/world/*.txt` | Coordinates, material indices and authored heights only. No art. |
 | Drivers | `tools/rebuild_all.sh`, `tools/voxelate_all.sh` | Run objects, rooms and whole areas end to end. |
@@ -163,7 +163,7 @@ python3 tools/verify_repro.py vrdump --area 3
 | `objects/*.scene`, `geom/<class>.obj` | `rebuild_all.sh`: manifests, a size check, then `shapefit.py scene` |
 | `geom/rooms/room_AA_RR.obj` | `room_explore.py voxel`, one per room |
 | `geom/world/area_N/area_NN.{obj,mtl,png}` | `room_explore.py worldgen --texture --albedo`, one per area |
-| `geom/tiles/area_NN/tiles.{obj,png}`, `placements.txt`, `room_AA_RR.{obj,png}` | `tilevox.py --merge`: the area's tile library and atlas, which tile every cell uses and at what height, and each room assembled (`TILES_MERGE=0` skips the assembled rooms, 1.9 GB for the whole game) |
+| `geom/tiles/area_NN/tiles.{obj,png}`, `placements.txt`, `stairs.txt`, `room_AA_RR.{obj,png}` | `tilevox.py --merge`: the area's tile library and atlas, which tile every cell uses and at what height, every flight of steps and the landings it joins, and each room assembled (`TILES_MERGE=0` skips the assembled rooms, 1.9 GB for the whole game) |
 
 Every output is derived from your ROM and is gitignored.
 

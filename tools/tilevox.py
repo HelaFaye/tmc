@@ -30,6 +30,12 @@ cell places the model for its drawing on top of its height.
              not its top stretched down, and its undrawn flanks wear the
              same band.
 
+  stairs     A flight of steps joins two floors the flat terrain put at
+             one height. Where its landings are not otherwise connected,
+             the upper one is raised by the height of the cliff beside the
+             flight (or its drawn risers), and the flight is built as the
+             steps find_stairs.py counts, spaced as drawn.
+
   overlay    Where the top layer is drawn above the bottom one (outdoors),
              its cells are tiles too, cut out along the layer's
              transparency -- roofs, bridge decks, fence and planter tops
@@ -44,6 +50,8 @@ from your ROM):
                          coordinates, 16x16 base at y=0, +Z south,
                          textured from area_NN/tiles.png (the drawings)
   area_NN/placements.txt one line per cell: key room cx cy x y z role
+  area_NN/stairs.txt     every flight of steps: its cells, step count, and
+                         the landings it joins
   area_NN/room_AA_RR.obj (--merge) the room assembled: placed tiles plus
                          the vertical faces, world coordinates, textured
                          from room_AA_RR.png (the room's art), ready to view
@@ -96,8 +104,10 @@ def room_roles(r, cls, H, blocks):
     return role
 
 
-def room_heights(r, layer=0, blocks=True, relief=False):
-    """The terrain's cell heights, built exactly as `voxel` builds them."""
+def room_heights(r, layer=0, blocks=True, relief=False, path=None):
+    """The terrain's cell heights, built exactly as `voxel` builds them,
+    plus the upper landings of flights of steps when path is given
+    (stair_levels). Returns (cls, H, blocks, flights)."""
     cls = RE.classify_room(r, layer)
     H = np.array(RE.heightfield(r, cls, layer), dtype=np.int64)
     if relief:
@@ -107,7 +117,180 @@ def room_heights(r, layer=0, blocks=True, relief=False):
     if bl:
         H = RE.block_heights(H, bl, 16)
     H = RE.flatten_cells(H, RE.sprite_footprints(r, cls, layer), 16)
-    return cls, H, bl
+    flights = []
+    if path is not None and layer == 0:
+        H, flights = stair_levels(path, r, cls, H)
+    return cls, H, bl, flights
+
+
+# ----------------------------------------------------------------- stairs --
+# A flight of steps (find_stairs.py: cells whose action byte is a slope)
+# joins two floors. The flat terrain puts every walkable cell at 0, so both
+# landings of 76 of the game's 90 layer-0 flights came out level and the
+# steps had nothing to climb. stair_levels restores the upper landing, then
+# stair_quads builds the steps the drawing counts.
+STAIR_RISE = (8, 48)            # px: plausible total rise of one flight
+STAIR_MAX_SHARE = 0.4           # never raise more of a room's floor than this
+
+
+def stair_levels(path, r, cls, H):
+    """Raise the upper landing of every flight; return (H, flights).
+
+    For each flight, the floor on either side of it (stair cells excluded)
+    is split into connected regions. If the two landings are one region --
+    reachable from each other some other way -- they are one level and the
+    flight is left as drawn relief. Otherwise the landing on the up side
+    is raised: north for a north-south flight (its risers face the camera,
+    so it climbs away from it), the smaller region for an east-west one.
+
+    The rise is the drawn height of the faces beside the flight -- the
+    cliff the stairs climb, measured by the terrain -- or, without one, the
+    flight's own risers summed (dark rows = height, the 45-degree rule).
+    Blocked cells standing mostly on the raised floor (a tree, a pillar on
+    the plateau) go up with it.
+    """
+    import find_stairs as FS
+    try:
+        found = FS.find(Path(path))
+    except Exception:
+        return H, []
+    flights = [it for it in found if it["kind"] == "steps" and it["layer"] == 0
+               and (it.get("measure") or {}).get("steps")]
+    if not flights:
+        return H, []
+    H = np.array(H, dtype=np.int64)
+    rows, cols = H.shape
+    stair = np.zeros((rows, cols), bool)
+    for it in flights:
+        x0, y0, x1, y1 = it["rect"]
+        stair[y0:y1 + 1, x0:x1 + 1] = True
+    floor = (cls == RE.CLASS_GROUND) & ~stair
+    total = max(1, int(floor.sum()))
+    out = []
+    for it in flights:
+        x0, y0, x1, y1 = it["rect"]
+        m = it["measure"]
+        ns = it["rise"] == "ns"
+        lab, _n = RE._label(floor)
+        if ns:
+            sa = [(y0 - 1, x) for x in range(x0, x1 + 1)]       # north: up
+            sb = [(y1 + 1, x) for x in range(x0, x1 + 1)]
+        else:
+            sa = [(y, x0 - 1) for y in range(y0, y1 + 1)]       # west
+            sb = [(y, x1 + 1) for y in range(y0, y1 + 1)]       # east
+        inside = lambda c: 0 <= c[0] < rows and 0 <= c[1] < cols
+        la = {int(lab[c]) for c in sa if inside(c) and lab[c]}
+        lb = {int(lab[c]) for c in sb if inside(c) and lab[c]}
+        rec = dict(rect=it["rect"], rise=it["rise"], steps=m["steps"],
+                   bands=m["bands"], up=None, base=None, top=None)
+        if not la or not lb or la & lb:
+            out.append(rec)                     # one level: leave as drawn
+            continue
+        area = lambda ids: int(np.isin(lab, list(ids)).sum())
+        if ns:
+            up, dn, up_side = la, lb, "n"
+        else:
+            up, dn, up_side = ((la, lb, "w") if area(la) <= area(lb)
+                               else (lb, la, "e"))
+        region = np.isin(lab, list(up))
+        if region.sum() > STAIR_MAX_SHARE * total:
+            out.append(rec)
+            continue
+        base = int(max(H[c] for c in (sb if up is la else sa) if inside(c)))
+        # faces beside the flight: blocked cells level with it, on either side
+        faces = []
+        if ns:
+            for y in range(y0, y1 + 1):
+                for x in (x0 - 1, x1 + 1):
+                    if inside((y, x)) and cls[y, x] in (RE.CLASS_WALL, RE.CLASS_LEDGE):
+                        faces.append(int(H[y, x]) - base)
+        risers = int(sum(b[3] for b in m["bands"]))
+        rise = int(np.median(faces)) if faces else risers
+        if not (STAIR_RISE[0] <= rise <= STAIR_RISE[1]):
+            rise = risers
+        rise = int(min(max(rise, STAIR_RISE[0]), STAIR_RISE[1]))
+        rise = 2 * ((rise + 1) // 2)
+        top = base + rise
+        H[region & (H < top)] = top
+        blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~stair
+        P = np.pad(region, 1)
+        nb = (P[:-2, 1:-1].astype(int) + P[2:, 1:-1] + P[1:-1, :-2] + P[1:-1, 2:])
+        H[blocked & (nb >= 3)] += rise
+        rec.update(up=up_side, base=base, top=top)
+        out.append(rec)
+    return H, out
+
+
+def stair_quads(fl, ox, oz, lift):
+    """The steps of one raised flight, textured from the game's camera.
+
+    Steps as the drawing counts them, spaced by the drawn pitches and split
+    in height by the drawn risers (falling back to even steps), rising from
+    the lower landing to the upper across the flight's cells. Each is a
+    solid block down to the base: its tread, its riser facing down the
+    flight, its two flanks. Texels project the room art from the game's
+    camera, (x, z - height), so each tread takes the rows where it is drawn.
+    """
+    if fl.get("up") is None:
+        return []
+    x0, y0, x1, y1 = fl["rect"]
+    n = int(fl["steps"])
+    bands = fl["bands"] or [(0, 1, 1, 1)] * n
+    pitch = np.array([max(1, b - a) for a, b, _t, _r in bands], float)
+    riser = np.array([max(0, rr) for _a, _b, _t, rr in bands], float)
+    if riser.sum() <= 0:
+        riser = np.ones(n)
+    # bands run from the top of the drawing down: the first is the top step
+    pitch, riser = pitch[::-1], riser[::-1]
+    base, top = fl["base"] + lift, fl["top"] + lift
+    hs = base + np.rint(np.cumsum(riser) / riser.sum() * (top - base)).astype(int)
+    X0, X1 = ox + x0 * 16, ox + (x1 + 1) * 16
+    Z0, Z1 = oz + y0 * 16, oz + (y1 + 1) * 16
+    up = fl["up"]
+    L = (Z1 - Z0) if up == "n" else (X1 - X0)
+    cuts = np.rint(np.concatenate([[0], np.cumsum(pitch)]) / pitch.sum() * L).astype(int)
+
+    def uv(pts):
+        return [(x - ox, (z - oz) - (y - lift)) for x, y, z in pts]
+
+    quads = []
+    prev = base
+    for i in range(n):
+        h = int(hs[i])
+        a_, b_ = int(cuts[i]), int(cuts[i + 1])      # from the low end
+        if b_ <= a_ or h <= base:
+            prev = max(prev, h)
+            continue
+        if up == "n":          # low end south, rising north
+            za, zb = Z1 - b_, Z1 - a_
+            boxes = [
+                [(X0, h, za), (X1, h, za), (X1, h, zb), (X0, h, zb)],          # tread
+                [(X0, h, zb), (X1, h, zb), (X1, prev, zb), (X0, prev, zb)],    # riser
+                [(X1, h, za), (X1, h, zb), (X1, base, zb), (X1, base, za)],    # east
+                [(X0, h, zb), (X0, h, za), (X0, base, za), (X0, base, zb)],    # west
+            ]
+        elif up == "w":        # low end east, rising west
+            xa, xb = X1 - b_, X1 - a_
+            boxes = [
+                [(xa, h, Z0), (xb, h, Z0), (xb, h, Z1), (xa, h, Z1)],
+                [(xb, h, Z0), (xb, h, Z1), (xb, prev, Z1), (xb, prev, Z0)],
+                [(xa, h, Z1), (xb, h, Z1), (xb, base, Z1), (xa, base, Z1)],
+                [(xb, h, Z0), (xa, h, Z0), (xa, base, Z0), (xb, base, Z0)],
+            ]
+        else:                  # low end west, rising east
+            xa, xb = X0 + a_, X0 + b_
+            boxes = [
+                [(xa, h, Z0), (xb, h, Z0), (xb, h, Z1), (xa, h, Z1)],
+                [(xa, h, Z1), (xa, h, Z0), (xa, prev, Z0), (xa, prev, Z1)],
+                [(xa, h, Z1), (xb, h, Z1), (xb, base, Z1), (xa, base, Z1)],
+                [(xb, h, Z0), (xa, h, Z0), (xa, base, Z0), (xb, base, Z0)],
+            ]
+        for pts in boxes:
+            ys = {p[1] for p in pts}
+            if len(ys) == 1 or min(ys) < max(ys):
+                quads.append((pts, uv(pts)))
+        prev = h
+    return quads
 
 
 def tile_key(pixels, role):
@@ -241,15 +424,18 @@ def side_face(cx, cy, dx, dz, top, bottom, ox, oz):
     a, b, d = top, bottom, top - bottom
     foot = z0 + 16
     tt, tb = foot - d, foot
+    # Windings are room_explore's, outward. The band runs left to right as
+    # seen from outside: on the east and west faces the first corner is the
+    # right-hand one, so their texels run the other way.
+    ltr = [(x0, tt), (x0 + 16, tt), (x0 + 16, tb), (x0, tb)]
+    rtl = [(x0 + 16, tt), (x0, tt), (x0, tb), (x0 + 16, tb)]
     if dz == 1:
-        pts = [(X0, a, Z1), (X1, a, Z1), (X1, b, Z1), (X0, b, Z1)]
-    elif dz == -1:
-        pts = [(X1, a, Z0), (X0, a, Z0), (X0, b, Z0), (X1, b, Z0)]
-    elif dx == 1:
-        pts = [(X1, a, Z1), (X1, a, Z0), (X1, b, Z0), (X1, b, Z1)]
-    else:
-        pts = [(X0, a, Z0), (X0, a, Z1), (X0, b, Z1), (X0, b, Z0)]
-    return pts, [(x0, tt), (x0 + 16, tt), (x0 + 16, tb), (x0, tb)]
+        return [(X0, a, Z1), (X1, a, Z1), (X1, b, Z1), (X0, b, Z1)], ltr
+    if dz == -1:
+        return [(X1, a, Z0), (X0, a, Z0), (X0, b, Z0), (X1, b, Z0)], ltr
+    if dx == 1:
+        return [(X1, a, Z0), (X1, a, Z1), (X1, b, Z1), (X1, b, Z0)], rtl
+    return [(X0, a, Z1), (X0, a, Z0), (X0, b, Z0), (X0, b, Z1)], rtl
 
 
 def drop_faces(H, solid, ox, oz, lift, outside):
@@ -416,6 +602,7 @@ def build_area(job):
     area, paths, a = job
     RELIEF_STEP = a.relief_step
     rooms = []
+    dump_path = {}
     for p in paths:
         try:
             r = RE.load_room(Path(p))
@@ -423,6 +610,7 @@ def build_area(job):
             continue
         if r.cells_w and r.cells_h and r.layers[a.layer]["present"]:
             rooms.append(r)
+            dump_path[(r.area, r.room)] = p
     if not rooms:
         return area, 0, 0, 0, 0
     out = Path(a.out) / f"area_{area:02d}"
@@ -431,7 +619,7 @@ def build_area(job):
 
     # identify: every cell's drawing and role, keyed; heights as the terrain
     lib = {}                      # key -> (index, pixels, role)
-    placed = []                   # (r, lift, art, H, solid, cells, overlay)
+    placed = []                   # (r, lift, art, H, solid, cells, overlay, flights)
     for li, lv in enumerate(levels):
         lift = li * a.floor_height
         for r in lv:
@@ -439,8 +627,9 @@ def build_area(job):
             if art is None:
                 continue
             art = np.ascontiguousarray(art[:, :, :3].astype(np.uint8))
-            cls, H, bl = room_heights(r, a.layer, blocks=not a.no_blocks,
-                                      relief=a.relief)
+            cls, H, bl, flights = room_heights(
+                r, a.layer, blocks=not a.no_blocks, relief=a.relief,
+                path=None if a.no_stairs else dump_path.get((r.area, r.room)))
             role = room_roles(r, cls, H, bl)
             cells = []
             for cy in range(r.cells_h):
@@ -467,7 +656,7 @@ def build_area(job):
                         lib[k] = (len(lib), pix, "deck")
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ)
-            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov))
+            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov, flights))
 
     # voxelate: one model per drawing, packed into the area's atlas
     n = len(lib)
@@ -491,7 +680,7 @@ def build_area(job):
     nfaces = ncell = 0
     with open(out / "placements.txt", "w") as place:
         place.write("# key room cx cy x y z role -- tile model origin, world pixels\n")
-        for r, lift, art, H, solid, cells, ov in placed:
+        for r, lift, art, H, solid, cells, ov, flights in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
             for k, cx, cy, y, ro in cells:
@@ -507,6 +696,8 @@ def build_area(job):
             for k, cx, cy, y, ro in cells:
                 m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16))
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside))
+            for fl in flights:
+                m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
                 decks, cf, occ = ov
                 m.quads(deck_skirts(decks, occ, H, ox, oz, lift))
@@ -514,6 +705,18 @@ def build_area(job):
                     m.quads(crown_quads(cf, ox, oz, lift))
             nfaces += m.faces
             m.close()
+    with open(out / "stairs.txt", "w") as st:
+        st.write("# room cx0,cy0,cx1,cy1 rise steps up base top -- flights of "
+                 "steps; up/base/top are '-' where the landings are one level\n")
+        for r, lift, _art, _H, _solid, _cells, _ov, flights in placed:
+            name = f"room_{r.area:02d}_{r.room:02d}"
+            for fl in flights:
+                raised = fl.get("up") is not None
+                st.write(f"{name} {','.join(str(v) for v in fl['rect'])} "
+                         f"{fl['rise']} {fl['steps']} "
+                         f"{fl['up'] if raised else '-'} "
+                         f"{fl['base'] + lift if raised else '-'} "
+                         f"{fl['top'] + lift if raised else '-'}\n")
     return area, len(rooms), ncell, n, nfaces
 
 
@@ -532,6 +735,9 @@ def main():
                     help="leave out the top layer (canopies, decks, roofs)")
     ap.add_argument("--no-canopy", action="store_true",
                     help="tree crowns as flat deck tiles instead of shaped crowns")
+    ap.add_argument("--no-stairs", action="store_true",
+                    help="leave flights of steps flat (no raised landings, "
+                         "no steps)")
     ap.add_argument("--no-blocks", action="store_true",
                     help="leave dungeon blocks to the measured heights")
     ap.add_argument("--relief-step", type=int, default=RELIEF_STEP,
