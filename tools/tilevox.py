@@ -754,6 +754,7 @@ FLAME_MIN = 6           # px: smallest flame
 FLAME_BLOB = 60         # px: largest single flame
 FLAME_W = 10            # px: widest flame
 FLAME_ALONE = 8         # px: no other flame blob this close
+FLAME_BOWL = 0.6        # share of the two rows under a flame that are grey or dark
 FLAME_RING = 0.7        # share of a flame's neighbours that may share its hue (its glow)
 FLAME_POST = 2          # cells of post below the flame, at most
 
@@ -778,7 +779,9 @@ def flame_ok(px, blob):
     at most FLAME_W wide and taller than wide -- around a pale core (fire
     is drawn with a light centre), at least 3px wide and no more than
     three times as tall as wide (stripes are), whose ring of neighbours is
-    not mostly of its own hue family -- its glow is, leaves are more so.
+    not mostly of its own hue family -- its glow is, leaves are more so --
+    and that burns in something: the two rows under it are mostly grey or
+    dark (a bowl, a box), where a flower sits on leaves and soil.
     px is any image the blob mask matches.
     """
     size = int(blob.sum())
@@ -798,7 +801,15 @@ def flame_ok(px, blob):
     warm = (hue <= 55) | (hue >= 345)
     fam = warm if warm[m].mean() >= 0.5 else ((hue >= 95) & (hue <= 165))
     ring = near & ~m
-    return bool(ring.any()) and (fam & (sat >= 0.35))[ring].mean() <= FLAME_RING
+    if not ring.any() or (fam & (sat >= 0.35))[ring].mean() > FLAME_RING:
+        return False
+    # it burns in something: the rows under it are a grey or dark bowl
+    by = int(ys.max()) + 1
+    under = px[by:by + 2, xs.min():xs.max() + 1]
+    if under.size == 0:
+        return False
+    _h, us, uv = _hsv(under)
+    return float(((us < 0.35) | (uv < 0.55)).mean()) >= FLAME_BOWL
 
 
 def flame_mask(px):
