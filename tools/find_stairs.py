@@ -98,7 +98,14 @@ def composite_rgb(r):
 #                a flight that darkens toward the bottom still reads
 #   STEP_DEPTH   how much darker than that average (0..255 luminance)
 #   STEP_MINGAP  closest two boundaries may be; nearer ones are one line
-STEP_WINDOW, STEP_DEPTH, STEP_MINGAP = 15, 12, 4
+#   STEP_GROW    how much longer than the flight's median step a step
+#                beyond the slope cells may be and still count
+#   STEP_STRONG  how dark, as a share of the flight's median boundary, a
+#                boundary beyond the slope cells must be
+#   STEP_COLOUR  how far (RGB distance) the lit colour of a step beyond the
+#                slope cells may be from the flight's treads
+STEP_WINDOW, STEP_DEPTH, STEP_MINGAP, STEP_GROW, STEP_STRONG, STEP_COLOUR = \
+    15, 12, 4, 1.75, 0.6, 40.0
 
 
 def measure_steps(img, rect, rise):
@@ -116,19 +123,23 @@ def measure_steps(img, rect, rise):
     riser's height.
     """
     x0, y0, x1, y1 = rect
-    # A flight under two cells long along its rise is read with a cell of
-    # margin on each end: the slope strip can be narrower than the drawn
-    # steps (the town gate's sideways steps sit inside one cell).
-    if rise == "ew" and x1 - x0 < 1:
-        x0, x1 = max(0, x0 - 1), min(img.shape[1] // 16 - 1, x1 + 1)
-    if rise != "ew" and y1 - y0 < 1:
-        y0, y1 = max(0, y0 - 1), min(img.shape[0] // 16 - 1, y1 + 1)
-    reg = img[y0 * 16:(y1 + 1) * 16, x0 * 16:(x1 + 1) * 16].mean(axis=2)
+    # Read one cell beyond each end of the flight. The slope cells mark
+    # where Link walks, and the drawn steps often run past them: the top
+    # step of the temple stairs in room 49_00 starts half a cell above its
+    # slope cells, and the Hyrule Town gate's sideways steps are wider than
+    # their one-cell strip.
     if rise == "ew":
-        reg = reg.T                 # steps run along x: read columns
-        start = x0 * 16
+        lo, hi = x0 * 16, (x1 + 1) * 16
+        rx0, rx1 = max(0, x0 - 1), min(img.shape[1] // 16 - 1, x1 + 1)
+        rgb = img[y0 * 16:(y1 + 1) * 16, rx0 * 16:(rx1 + 1) * 16].transpose(1, 0, 2)
+        start = rx0 * 16
     else:
-        start = y0 * 16
+        lo, hi = y0 * 16, (y1 + 1) * 16
+        ry0, ry1 = max(0, y0 - 1), min(img.shape[0] // 16 - 1, y1 + 1)
+        rgb = img[ry0 * 16:(ry1 + 1) * 16, x0 * 16:(x1 + 1) * 16]
+        start = ry0 * 16
+    reg = rgb.mean(axis=2)
+    row_rgb = np.median(rgb, axis=1)          # one colour per row
     if reg.shape[0] < 4 or reg.shape[1] < 1:
         return dict(edges=[], bands=[], steps=0)
     p = np.median(reg, axis=1)
@@ -138,13 +149,68 @@ def measure_steps(img, rect, rise):
     d = p - base
     dips = [i for i in range(1, len(d) - 1)
             if d[i] < -STEP_DEPTH and d[i] <= d[i - 1] and d[i] <= d[i + 1]]
-    edges = []
-    for i in dips:
-        if edges and i - edges[-1] < STEP_MINGAP:
-            if d[i] < d[edges[-1]]:
-                edges[-1] = i
-        else:
-            edges.append(i)
+    def merge(ix):
+        out = []
+        for i in ix:
+            if out and i - out[-1] < STEP_MINGAP:
+                if d[i] < d[out[-1]]:
+                    out[-1] = i
+            else:
+                out.append(i)
+        return out
+
+    # Inside the slope cells and outside them are merged separately, so a
+    # line at the cell edge is never swallowed by a darker one just past it
+    # (which made the reader lose steps it had found before).
+    inside = [i for i in dips if lo <= start + i + 1 < hi]
+    core = merge(inside)
+    before = merge([i for i in dips if start + i + 1 < lo])
+    after = merge([i for i in dips if start + i + 1 >= hi])
+    found = before + core + after
+    # The boundaries inside the slope cells are the flight. Grow it outward
+    # one boundary at a time while the next gap still looks like a step --
+    # up to STEP_GROW times the flight's median spacing -- so a taller top
+    # step joins but the pattern of the floor beyond does not.
+    # A boundary beyond them must also be as strong a line as the flight's
+    # own: at least STEP_STRONG of its median darkness. The temple's top
+    # step edge is darker than its median; floor pattern and a dirt bank's
+    # texture are fainter, and without this test they were taken as steps.
+    # And the band it adds must be drawn in the flight's own colours: its
+    # lit part within STEP_COLOUR (RGB distance) of the flight's treads. The
+    # desert temple's walls have strong, evenly spaced brick courses right
+    # above the steps; they are brown, the treads are cream.
+    def tread_colour(a, b):
+        seg = d[a + 1:b + 1]
+        lit = row_rgb[a + 1:b + 1][seg > 0]
+        return lit.mean(axis=0) if len(lit) else None
+
+    if len(core) >= 2:
+        pitch = float(np.median(np.diff(core)))
+        strong = STEP_STRONG * float(np.median(d[core]))
+        cols = [c for c in (tread_colour(a, b) for a, b in zip(core, core[1:]))
+                if c is not None]
+        ref = np.median(cols, axis=0) if cols else None
+
+        def like_flight(a, b):
+            c = tread_colour(a, b)
+            return (ref is not None and c is not None
+                    and float(np.linalg.norm(c - ref)) <= STEP_COLOUR)
+
+        edges = list(core)
+        for i in reversed([i for i in before if i < core[0] - STEP_MINGAP + 1]):
+            if (edges[0] - i <= STEP_GROW * pitch and d[i] <= strong
+                    and like_flight(i, edges[0])):
+                edges.insert(0, i)
+            else:
+                break
+        for i in [i for i in after if i > core[-1] + STEP_MINGAP - 1]:
+            if (i - edges[-1] <= STEP_GROW * pitch and d[i] <= strong
+                    and like_flight(edges[-1], i)):
+                edges.append(i)
+            else:
+                break
+    else:
+        edges = found
     bands = []
     for a, b in zip(edges, edges[1:]):
         seg = d[a + 1:b + 1]
