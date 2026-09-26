@@ -18,7 +18,10 @@ the sheet shows three panels side by side:
               drawn above its base and a raised top shows its drawn top.
 
 The mesh is `room_explore.py voxel` output, so this checks what the
-pipeline actually builds.
+pipeline actually builds. With --worldgen it is `worldgen --texture` output
+instead, rendered through its own UVs and atlas: that is the mesh the
+overworld stage writes, and the only way to check a surface whose texture
+is not the plain projection (free blocks, --blocks).
 
 Usage
 -----
@@ -62,8 +65,8 @@ def load_cases(path):
     return cases
 
 
-def load_obj(path):
-    V, C, F = [], [], []
+def load_obj(path, uvs=False):
+    V, C, F, T, FT = [], [], [], [], []
     for line in open(path):
         p = line.split()
         if not p:
@@ -71,8 +74,14 @@ def load_obj(path):
         if p[0] == "v":
             V.append([float(p[1]), float(p[2]), float(p[3])])
             C.append([float(t) for t in p[4:7]] if len(p) >= 7 else [.6, .6, .6])
+        elif p[0] == "vt":
+            T.append([float(p[1]), float(p[2])])
         elif p[0] == "f":
             F.append([int(t.split("/")[0]) - 1 for t in p[1:]])
+            FT.append([int(t.split("/")[1]) - 1 if "/" in t else -1
+                       for t in p[1:]])
+    if uvs:
+        return np.array(V, float), np.array(C, float), F, np.array(T, float), FT
     return np.array(V, float), np.array(C, float), F
 
 
@@ -93,6 +102,9 @@ def camera(yaw_deg, pitch_deg):
 
 def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
     """Z-buffered flat-shaded raster of quads, cropped to a world-space box.
+
+    tex = (atlas, T, FT): colour each pixel from the mesh's own UVs, T the
+    vt array and FT each face's vt indices (worldgen output).
 
     tex = (art, origin_x, origin_y): colour each pixel by projecting the art
     from the game's camera: a surface point at height y over (x, z) takes
@@ -121,7 +133,7 @@ def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
     zb = np.full((H, W), -1e18)
     sx = sx - ox
     sy = sy - oy
-    for f in F:
+    for fi, f in enumerate(F):
         if len(f) < 3:
             continue
         a, b, c = V[f[0]], V[f[1]], V[f[2]]
@@ -157,6 +169,22 @@ def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
             if tex is None:
                 img[by0:by1 + 1, bx0:bx1 + 1][win] = col
                 continue
+            if isinstance(tex[1], np.ndarray):
+                atlas, UV, FT = tex
+                ft = FT[fi]
+                k = [f.index(i) for i in tri]
+                if min(ft) < 0:
+                    img[by0:by1 + 1, bx0:bx1 + 1][win] = col
+                    continue
+                t3 = UV[[ft[j] for j in k]]
+                u = w0 * t3[0, 0] + w1 * t3[1, 0] + w2 * t3[2, 0]
+                v = w0 * t3[0, 1] + w1 * t3[1, 1] + w2 * t3[2, 1]
+                ah, aw = atlas.shape[:2]
+                ax = np.clip((u * aw).astype(int), 0, aw - 1)
+                ay = np.clip(((1.0 - v) * ah).astype(int), 0, ah - 1)
+                img[by0:by1 + 1, bx0:bx1 + 1][win] = \
+                    atlas[ay[win], ax[win], :3] / 255.0 * shade
+                continue
             art, tox, toz = tex
             T = V[list(tri)]
             # World position of each pixel, nudged half a unit inward so a
@@ -190,8 +218,13 @@ def main():
                     help="build tree crowns with voxel --canopy")
     ap.add_argument("--relief", action="store_true",
                     help="build heights with voxel --relief")
-    ap.add_argument("--subdiv", type=int, default=4,
-                    help="voxel detail passed to room_explore voxel (4 = 4px)")
+    ap.add_argument("--blocks", action="store_true",
+                    help="build free-standing blocks as cubes (--blocks)")
+    ap.add_argument("--worldgen", action="store_true",
+                    help="render the textured worldgen mesh through its UVs")
+    ap.add_argument("--subdiv", type=int, default=None,
+                    help="voxel detail (4 = 4px); default 4 for voxel, "
+                         "1 for --worldgen as the overworld stage uses")
     ap.add_argument("--zoom", type=int, default=2)
     ap.add_argument("--heights", default=str(HERE.parent / "vr" / "world" / "heights.txt"))
     a = ap.parse_args()
@@ -209,21 +242,36 @@ def main():
         if not room.exists():
             print(f"  [{i}/{len(cases)}] {c['label']}: {room} missing, skipped")
             continue
+        r = RE.load_room(room)
         if c["room"] not in meshes:
-            obj = tmp / (room.stem + ".obj")
-            cmd = [sys.executable, str(HERE / "room_explore.py"), "voxel",
-                   str(room), "--out", str(obj), "--overlay",
-                   "--subdiv", str(a.subdiv)] + (["--canopy"] if a.canopy else []) + (["--relief"] if a.relief else [])
+            sub = a.subdiv or (1 if a.worldgen else 4)
+            extra = ((["--canopy"] if a.canopy else [])
+                     + (["--relief"] if a.relief else [])
+                     + (["--blocks"] if a.blocks else [])
+                     + ["--overlay", "--subdiv", str(sub)])
             if a.heights and Path(a.heights).exists():
-                cmd += ["--heights", a.heights]
+                extra += ["--heights", a.heights]
+            if a.worldgen:
+                wd = tmp / room.stem
+                obj = wd / f"area_{r.area:02d}.obj"
+                cmd = [sys.executable, str(HERE / "room_explore.py"), "worldgen",
+                       str(room), "--out", str(wd), "--texture"] + extra
+            else:
+                obj = tmp / (room.stem + ".obj")
+                cmd = [sys.executable, str(HERE / "room_explore.py"), "voxel",
+                       str(room), "--out", str(obj)] + extra
             p = subprocess.run(cmd, capture_output=True, text=True)
             if p.returncode != 0 or not obj.exists():
-                print(f"  [{i}/{len(cases)}] {c['label']}: voxel failed: "
+                print(f"  [{i}/{len(cases)}] {c['label']}: mesh failed: "
                       f"{(p.stderr or p.stdout).strip().splitlines()[-1:]}")
                 continue
-            meshes[c["room"]] = load_obj(obj)
-        V, C, F = meshes[c["room"]]
-        r = RE.load_room(room)
+            if a.worldgen:
+                V_, C_, F_, T_, FT_ = load_obj(obj, uvs=True)
+                atlas = np.asarray(Image.open(obj.with_suffix(".png")).convert("RGB"))
+                meshes[c["room"]] = (V_, C_, F_, (atlas, T_, FT_))
+            else:
+                meshes[c["room"]] = load_obj(obj) + (None,)
+        V, C, F, uvtex = meshes[c["room"]]
         cx0, cy0, cx1, cy1 = c["rect"]
         # The case rectangle in world pixels.
         box = (r.origin_x + cx0 * 16, r.origin_x + (cx1 + 1) * 16,
@@ -232,9 +280,12 @@ def main():
         # Keep a face if its extent overlaps the box at all: greedy-merged
         # faces run far past a small box, and requiring every corner inside
         # dropped whole floors.
-        Fn = [f for f in F
-              if V[f, 0].max() >= box[0] - 48 and V[f, 0].min() <= box[1] + 48
-              and V[f, 2].max() >= box[2] - 48 and V[f, 2].min() <= box[3] + 96]
+        keep = [k for k, f in enumerate(F)
+                if V[f, 0].max() >= box[0] - 48 and V[f, 0].min() <= box[1] + 48
+                and V[f, 2].max() >= box[2] - 48 and V[f, 2].min() <= box[3] + 96]
+        Fn = [F[k] for k in keep]
+        if uvtex is not None:
+            uvtex = (uvtex[0], uvtex[1], [uvtex[2][k] for k in keep])
         art = RE.room_art_rgb(r, 0)
         crop = art[cy0 * 16:(cy1 + 1) * 16, cx0 * 16:(cx1 + 1) * 16].astype(np.uint8)
         art_img = Image.fromarray(crop)
@@ -245,7 +296,7 @@ def main():
         # With the art projected from the game's camera, the model seen from
         # that camera always reproduces the art, so it cannot check anything.
         # Two 3/4 views instead: from the south-west and the south-east.
-        tex = (art, r.origin_x, r.origin_y)
+        tex = uvtex if uvtex is not None else (art, r.origin_x, r.origin_y)
         game = render(V, C, Fn, camera(35, 35), box, scale=(1.0, 1.0), tex=tex)
         three = render(V, C, Fn, camera(-35, 35), box, scale=(1.0, 1.0), tex=tex)
         z = a.zoom

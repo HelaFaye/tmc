@@ -94,7 +94,7 @@ build_room(){
   o="geom/rooms/$b.obj"
   lg="$RLOGS/$b.log"
   if [ "$FORCE" != "1" ] && [ -s "$o" ]; then echo "skip $b"; return; fi
-  if "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --overlay \
+  if "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --overlay --blocks \
        ${CANOPY_FLAG} ${HEIGHTS:+--heights "$HEIGHTS"} >>"$lg" 2>&1; then
     echo "made $b"
   elif "$PY" "$KIT/tools/room_explore.py" voxel "$f" --out "$o" --layer 1 \
@@ -171,7 +171,7 @@ if stage world; then
     if [ "$FORCE" != "1" ] && [ -n "$(ls -A "$o" 2>/dev/null)" ]; then
       wskip=$((wskip+1)); continue; fi
     if "$PY" "$KIT/tools/room_explore.py" worldgen "$ROOMS" --area "$a" \
-         --out "$o" --texture --albedo --overlay ${CANOPY_FLAG} \
+         --out "$o" --texture --albedo --overlay --blocks ${CANOPY_FLAG} \
          ${HEIGHTS:+--heights "$HEIGHTS"} \
          >>"$LOG" 2>&1; then
       wmade=$((wmade+1))

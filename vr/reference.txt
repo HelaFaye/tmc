@@ -20,3 +20,8 @@ room_38_01.tmcr     0,0,6,5     stairs    cave-mouth stair arch
 room_136_07.tmcr    3,1,9,6     stairs    dungeon stair arch between green torches
 room_36_16.tmcr     4,2,10,7    stairs    stairwell going down through the floor
 room_136_13.tmcr    5,8,11,14   stairs    steps up a corridor to a doorway
+room_104_05.tmcr    5,1,12,6    block     bevelled stone blocks standing free on the floor
+room_38_00.tmcr     3,11,15,17  block     pink bevelled blocks beside boulders
+room_33_03.tmcr     0,0,14,10   interior  house: layer 1 at floor priority, no lifted plates; tables raised by collision
+room_00_00.tmcr     38,18,48,26 floor     log bridge over pits: half-solid edges (collision 0x3/0xC) stay floor
+room_02_00.tmcr     12,15,24,24 floor     town grass tufts (collision 0x53) and flower beds stay floor

@@ -294,10 +294,31 @@ CLASS_BY_COLLISION = {
     # Wall variants seen across the overworld. Differentiating these is a
     # tileType/art job, not a collision one — collision says "solid", the art
     # says "tree" or "house" or "cliff".
-    0x5F: CLASS_WALL, 0x0C: CLASS_WALL, 0x1D: CLASS_WALL, 0x03: CLASS_WALL,
-    0x05: CLASS_WALL, 0x0A: CLASS_WALL, 0x04: CLASS_WALL, 0x02: CLASS_WALL,
-    0x01: CLASS_WALL, 0x08: CLASS_WALL, 0x17: CLASS_WALL, 0x18: CLASS_WALL,
+    0x1D: CLASS_WALL, 0x17: CLASS_WALL, 0x18: CLASS_WALL,
 }
+
+# What the game itself says, checked against IsTileCollision (src/movement.c)
+# for the generic walker, collision type 0. These cells used to be walls
+# here and came out as floor tiles standing 16px proud -- 7,103 cells in 555
+# rooms, the tall grass, sand, log bridges and tree bases the user saw
+# sticking up.
+#
+# 0x01..0x0E are not wall kinds but a bitmask of the cell's four 8x8
+# quarters (bit 3 NW, 2 NE, 1 SW, 0 SE). A cell is one height here, so it
+# stands only when most of it is solid: three or four quarters. Half-solid
+# cells are the edges of log bridges, the base of a wall reaching into a
+# floor cell, a tree's corner; walking on the other half is what the game
+# expects, and a raised half-cell reads as a bump in the floor.
+for _q in range(0x01, 0x0F):
+    CLASS_BY_COLLISION[_q] = (CLASS_WALL if bin(_q).count("1") >= 3
+                              else CLASS_GROUND)
+# Passable for the walker: 0x28 (rails, door thresholds), 0x2A (clouds,
+# above) and 0x50..0x5F, the walkable ground surfaces -- tall grass, grass
+# tufts, sand, the paving in front of doors.
+CLASS_BY_COLLISION[0x28] = CLASS_GROUND
+for _q in range(0x50, 0x60):
+    CLASS_BY_COLLISION[_q] = CLASS_GROUND
+del _q
 
 # Named tile types worth special-casing early (include/tiles.h).
 CLASS_BY_TILETYPE = {
@@ -1124,6 +1145,95 @@ def relief_field(r, cls, step, layer_index=0):
     return Hs.astype(np.int32), Ss
 
 
+# ------------------------------------------------------------------ blocks --
+# The dungeons' bevelled blocks -- tile types 0x360..0x367, one block per
+# cell in six colours (0x365 alone is 590 cells in 46 rooms), set singly, in
+# rows and in whole block mazes -- are drawn as their TOP, a square cap
+# filling most of the cell, over a short darker band that is their front
+# face. The terrain rules get both halves wrong: the measured drop stops at
+# the cap's own top outline and makes a block 2px tall, and projective
+# texturing paints the cap down the front and the floor to the north on
+# top. So a block is a cube, its cap stretched over its top and its front
+# band down every side (a block has no other side art, and is the same all
+# round).
+#
+# Layer 1 reuses 0x365 for 1277 cells of blank filler, so only the layer
+# being built counts, and only where it is blocked. The larger bevelled
+# platforms (0x369..0x376, 0x381..0x38f) are pieces of multi-cell shapes,
+# not blocks, and are left to the terrain rules.
+BLOCK_TYPES = tuple(range(0x360, 0x368))
+BLOCK_H = 16                # px: a block is a cube
+BLOCK_BAND = (2, 8, 4)      # front band rows: min, max, default
+
+
+def block_cells(r, cls, layer_index=0):
+    """{(cy, cx): front band rows} for the block cells of a room.
+
+    The band is measured from the drawing: rows up from the bottom of the
+    cell that stay darker than the cap. Outside BLOCK_BAND, the default.
+    """
+    L = r.layers[layer_index]
+    h, w = r.cells_h, r.cells_w
+    t = L["tile"][:h, :w].astype(np.int64)
+    tt_tab = np.asarray(L["tiletype"])
+    tt = np.where(t < len(tt_tab), tt_tab[np.minimum(t, len(tt_tab) - 1)], -1)
+    hit = np.isin(tt, BLOCK_TYPES) & np.isin(cls[:h, :w], [CLASS_WALL, CLASS_LEDGE])
+    if not hit.any():
+        return {}
+    art = room_art_rgb(r, layer_index)
+    lum = None if art is None else art[:, :, :3].astype(float).mean(axis=2)
+    lo, hi, dflt = BLOCK_BAND
+    out = {}
+    for cy, cx in zip(*np.where(hit)):
+        f = dflt
+        if lum is not None and lum.shape[0] >= cy * 16 + 16 \
+                and lum.shape[1] >= cx * 16 + 16:
+            rows = lum[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].mean(axis=1)
+            cap = float(np.median(rows[2:10]))
+            n = 0
+            while n < 16 and rows[15 - n] < 0.85 * cap:
+                n += 1
+            if lo <= n <= hi:
+                f = n
+        out[(int(cy), int(cx))] = f
+    return out
+
+
+def block_heights(H, blocks, CELL):
+    """Raise the block cells of a (sub)cell heightfield to BLOCK_H."""
+    k = max(1, 16 // CELL)
+    for (cy, cx) in blocks:
+        H[cy * k:(cy + 1) * k, cx * k:(cx + 1) * k] = BLOCK_H
+    return H
+
+
+def block_art(pt, face, cell, band, base):
+    """Where in the drawing a point on a block's surface is drawn.
+
+    pt is (x, y, z) in world pixels, face 'top' or a side normal (dx, dz),
+    cell the block's (x0, z0) and base the floor height. The top takes the
+    cap -- the cell's rows above the band -- stretched over the whole
+    square; every side takes the band stretched over the block's height,
+    running left to right as seen from outside.
+    """
+    x, y, z = pt
+    bx, bz = cell
+    if face == "top":
+        return x, bz + (z - bz) * (16.0 - band) / 16.0
+    dx, dz = face
+    t = min(max((y - base) / float(BLOCK_H), 0.0), 1.0)
+    row = bz + 16.0 - band * t
+    if dz == 1:
+        col = x
+    elif dz == -1:
+        col = bx + (bx + 16 - x)
+    elif dx == 1:
+        col = bx + (bz + 16 - z)
+    else:
+        col = bx + (z - bz)
+    return col, row
+
+
 def cell_colours(r, layer_index, cells_h, cells_w):
     """Mean art colour per cell, or None when the room has no usable art."""
     try:
@@ -1399,6 +1509,66 @@ def emit_canopy(quad, cf, ox, oz, base, step=2, uvf=None, merge=False):
     return n
 
 
+def overlay_overhead(r):
+    """Is the room's layer 1 drawn ABOVE layer 0, i.e. overhead?
+
+    The BG priority bits say so. Outdoors layer 1 has priority 1 over
+    layer 0's 2 (438 rooms): canopies, bridge decks and roofs, drawn over
+    Link. In houses and other interiors both layers have priority 2 (101
+    rooms): layer 1 is floor-level detail drawn under the sprites -- rugs,
+    furniture, edging -- and lifting it 24px as overlay plates stood whole
+    floors of tiles up in the air. Collision on layer 0 already raises the
+    furniture that is solid.
+    """
+    if len(r.layers) < 2 or not r.layers[1]["present"]:
+        return False
+    try:
+        return (int(r.layers[1]["bgcontrol"]) & 3) < (int(r.layers[0]["bgcontrol"]) & 3)
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+def sprite_footprints(r, cls, layer_index=0):
+    """Blocked cells the background draws as bare floor: sprite furniture.
+
+    Indoors, shelves, dressers, pots and the like are objects (FURNITURE,
+    0x4D, and friends) drawn as sprites; the background under them is plain
+    floor, and only the collision says something stands there. Raised by
+    the terrain rules they came out as floor tiles standing 16px proud --
+    464 cells in 60 rooms. Their shape is the sprite's, which the entity
+    pipeline builds; the terrain keeps the floor flat.
+
+    A cell counts when its drawing, both layers composited, is pixel for
+    pixel the drawing of a walkable cell in the same room. Only in rooms
+    whose layer 1 is not overhead (overlay_overhead): outdoors the same test
+    matches solid tree trunks under a canopy, which are drawn as canopy.
+    """
+    h, w = r.cells_h, r.cells_w
+    out = np.zeros((h, w), bool)
+    if overlay_overhead(r):
+        return out
+    a = room_art_rgb(r, layer_index)
+    if a is None or a.shape[0] < h * 16 or a.shape[1] < w * 16:
+        return out
+    a = np.ascontiguousarray(a[:h * 16, :w * 16, :3].astype(np.uint8))
+    cells = a.reshape(h, 16, w, 16, 3).transpose(0, 2, 1, 3, 4).reshape(h, w, -1)
+    keys = np.array([[hash(cells[y, x].tobytes()) for x in range(w)]
+                     for y in range(h)])
+    coll = r.layers[layer_index]["collision"][:h, :w]
+    walk = set(keys[(cls[:h, :w] == CLASS_GROUND) & (coll == 0)].tolist())
+    if not walk:
+        return out
+    return np.isin(cls[:h, :w], [CLASS_WALL, CLASS_LEDGE]) & np.isin(keys, list(walk))
+
+
+def flatten_cells(H, mask, CELL, value=0):
+    """Set the (sub)cells of every masked cell to value."""
+    k = max(1, 16 // CELL)
+    for cy, cx in zip(*np.where(mask)):
+        H[cy * k:(cy + 1) * k, cx * k:(cx + 1) * k] = value
+    return H
+
+
 def overlay_skirt_bottom(hh, H, occ, cy, cx, dy, dx, rows, cols,
                          reach, fixed):
     """How far down the apron of a lifted surface should go.
@@ -1514,6 +1684,11 @@ def cmd_voxel(args):
         rows, cols = r.cells_h, r.cells_w
     if getattr(args, "relief", False):
         H, solid = relief_field(r, cls, CELL, args.layer)
+    if getattr(args, "blocks", False):
+        H = block_heights(np.array(H, copy=True), block_cells(r, cls, args.layer),
+                          CELL)
+    H = flatten_cells(np.array(H, copy=True), sprite_footprints(r, cls, args.layer),
+                      CELL)
     OUTSIDE = args.outside          # height treated as beyond the room edge
 
     verts, faces, vcols = [], [], []
@@ -1599,7 +1774,7 @@ def cmd_voxel(args):
     #
     # This is derived, not authored: the game itself says these cells are a
     # separate level. Only the LIFT is a choice.
-    if args.overlay and len(r.layers) > 1 and r.layers[1]["present"]:
+    if args.overlay and overlay_overhead(r):
         L1 = r.layers[1]
         c1 = classify_room(r, 1)
         t1 = L1["tile"]; k1 = L1["collision"]
@@ -2404,8 +2579,44 @@ def cmd_worldgen(args):
                     rows_, cols_ = r.cells_h, r.cells_w
                 if getattr(args, "relief", False):
                     H, solid = relief_field(r, cls, CELL, args.layer)
+                H = flatten_cells(np.array(H, copy=True),
+                                  sprite_footprints(r, cls, args.layer), CELL)
+                blocks = (block_cells(r, cls, args.layer)
+                          if getattr(args, "blocks", False) else {})
+                kb = max(1, 16 // CELL)
+                bmask = np.zeros(H.shape, bool)
+                if blocks:
+                    H = block_heights(np.array(H, copy=True), blocks, CELL)
+                    for (bcy, bcx) in blocks:
+                        bmask[bcy * kb:(bcy + 1) * kb, bcx * kb:(bcx + 1) * kb] = True
+
+                def block_uv(pts, cy_, cx_, face, base_):
+                    """UVs for a quad on a block: see block_art."""
+                    if tex is None:
+                        return None
+                    _, tx, ty, TW, TH = tex
+                    b = blocks[(cy_ // kb, cx_ // kb)]
+                    cell = (ox + (cx_ // kb) * 16, oy + (cy_ // kb) * 16)
+                    out_ = []
+                    for (px, py, pz) in pts:
+                        u_, v_ = block_art((px, py - lift, pz), face,
+                                           cell, b, base_)
+                        out_.append(((u_ - tx) / TW, 1.0 - (v_ - ty) / TH))
+                    return out_
+
+                if blocks:
+                    for (bcy, bcx) in zip(*np.where(bmask & solid)):
+                        x0 = ox + bcx * CELL; x1 = x0 + CELL
+                        z0 = oy + bcy * CELL; z1 = z0 + CELL
+                        yv = int(H[bcy, bcx]) + lift
+                        pts = [(x0, yv, z0), (x1, yv, z0),
+                               (x1, yv, z1), (x0, yv, z1)]
+                        c = (col[bcy, bcx] if col is not None
+                             else np.array([.6, .6, .6]))
+                        quad(pts, c, block_uv(pts, bcy, bcx, "top", 0))
+                        tops += 1
                 for height in sorted(set(int(v) for v in np.unique(H))):
-                    mask = solid & (H == height)
+                    mask = solid & (H == height) & ~bmask
                     if not mask.any():
                         continue
                     for x, y, w, hh in greedy_quads(mask):
@@ -2446,12 +2657,15 @@ def cmd_worldgen(args):
                                 p = [(x0,a,z1),(x1,a,z1),(x1,b,z1),(x0,b,z1)]
                             else:
                                 p = [(x1,a,z0),(x0,a,z0),(x0,b,z0),(x1,b,z0)]
-                            quad(p, c, uv_proj(p, lift) if project
-                                 else uv_side(x0, x1, z0, z1))
+                            if bmask[cy, cx]:
+                                quad(p, c, block_uv(p, cy, cx, (dx, dz), nh))
+                            else:
+                                quad(p, c, uv_proj(p, lift) if project
+                                     else uv_side(x0, x1, z0, z1))
                 # Layer 1: the world's second level -- canopies, bridge decks,
                 # roofs. It carries its own collision data, so generating from
                 # layer 0 alone drops it entirely.
-                if args.overlay and len(r.layers) > 1 and r.layers[1]["present"]:
+                if args.overlay and overlay_overhead(r):
                     L1 = r.layers[1]
                     c1 = classify_room(r, 1)
                     col1 = cell_colours(r, 1, r.cells_h, r.cells_w)
@@ -2617,6 +2831,9 @@ def main():
     p_wg.add_argument("--floor-height", type=int, default=64)
     p_wg.add_argument("--outside", type=int, default=-16)
     p_wg.add_argument("--colocated", type=float, default=0.25)
+    p_wg.add_argument("--blocks", action="store_true",
+                       help="dungeon blocks (tile types 0x360-0x367) as cubes, "
+                            "their drawn cap on top and front band on the sides")
     p_wg.add_argument("--relief", action="store_true",
                       help="heights from drawn front faces (see relief_field)")
     p_wg.add_argument("--canopy", action="store_true",
@@ -2668,6 +2885,9 @@ def main():
     p_vx.add_argument("--overlay", action="store_true",
                       help="also emit layer 1 (canopies, bridge decks) lifted")
     p_vx.add_argument("--overlay-lift", type=int, default=24)
+    p_vx.add_argument("--blocks", action="store_true",
+                       help="dungeon blocks (tile types 0x360-0x367) as cubes, "
+                            "their drawn cap on top and front band on the sides")
     p_vx.add_argument("--relief", action="store_true",
                       help="heights from drawn front faces (see relief_field)")
     p_vx.add_argument("--canopy", action="store_true",
