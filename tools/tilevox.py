@@ -43,6 +43,14 @@ cell places the model for its drawing on top of its height.
              steps rising inside a stairway door. The top layer's arch
              plates over a doorway are dropped: they are the arch's front.
 
+  buildings  A door with a roof over it (the top layer's non-leaf drawing
+             over the house's blocked footprint) is a building. Its drawn
+             extent is height plus depth by the 45-degree rule: half is
+             height, and the volume stands on the front part of the
+             drawing with the roof projected onto it -- domed where the
+             roof's outline is rounded (mushroom caps), gabled where it is
+             square -- and its doors carved into its front.
+
   overlay    Where the top layer is drawn above the bottom one (outdoors),
              its cells are tiles too, cut out along the layer's
              transparency -- roofs, bridge decks, fence and planter tops
@@ -157,8 +165,8 @@ def stair_levels(path, r, cls, H):
     The rise is the drawn height of the faces beside the flight -- the
     cliff the stairs climb, measured by the terrain -- or, without one, the
     flight's own risers summed (dark rows = height, the 45-degree rule).
-    Blocked cells standing mostly on the raised floor (a tree, a pillar on
-    the plateau) go up with it.
+    Blocked clusters standing on the raised floor and touching no lower
+    floor (a house, a tree on the plateau) go up with it.
     """
     import find_stairs as FS
     try:
@@ -223,10 +231,20 @@ def stair_levels(path, r, cls, H):
         rise = 2 * ((rise + 1) // 2)
         top = base + rise
         H[region & (H < top)] = top
+        # Blocked clusters standing on the raised floor -- a house, a tree
+        # -- go up with it: those touching the raised floor and no lower
+        # floor. A cliff between the two levels touches both and stays;
+        # its measured face is already the step up.
         blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~stair
-        P = np.pad(region, 1)
-        nb = (P[:-2, 1:-1].astype(int) + P[2:, 1:-1] + P[1:-1, :-2] + P[1:-1, 2:])
-        H[blocked & (nb >= 3)] += rise
+        blab, bn = RE._label(blocked)
+        lower = floor & ~region
+        Pr, Pl = np.pad(region, 1), np.pad(lower, 1)
+        touch_r = Pr[:-2, 1:-1] | Pr[2:, 1:-1] | Pr[1:-1, :-2] | Pr[1:-1, 2:]
+        touch_l = Pl[:-2, 1:-1] | Pl[2:, 1:-1] | Pl[1:-1, :-2] | Pl[1:-1, 2:]
+        for k in range(1, bn + 1):
+            comp = blab == k
+            if (touch_r & comp).any() and not (touch_l & comp).any():
+                H[comp] += rise
         rec.update(up=up_side, base=base, top=top)
         out.append(rec)
     return H, out
@@ -441,6 +459,217 @@ def door_quads(d, ox, oz, lift):
     return q
 
 
+# -------------------------------------------------------------- buildings --
+# A building is a door with a roof over it: the top layer draws the roof
+# (overhead, so Link walks behind the house), and the collision blocks the
+# whole drawing. By the 45-degree rule that drawing is height plus depth,
+# not a footprint: the terrain stood every building on its whole drawn
+# area at one wall height, a flat slab as deep as its roof is tall.
+BUILDING_HB = 0.5       # share of the drawn extent that is height
+BUILDING_ROOF = 12      # px: rise of a domed or gabled roof
+BUILDING_ROUND = 0.75   # roof's top row narrower than this share of its
+                        # widest: rounded (a mushroom cap 0.63, roofs ~1)
+BUILDING_MIN = 4        # cells: a smaller roof is a hole's lip, not a house
+BUILDING_FILL = 0.5     # share of the roof cells' pixels the roof draws
+BUILDING_REACH = (4, 6) # cells: roof kept within this many columns of the
+                        # doors and rows above the foot (town walls join
+                        # their gatehouses' roofs)
+BUILDING_STEP = 4       # px: plan grid of the building volume
+
+
+BUILDING_MAX = 60      # cells: a larger roof blob is not one building
+
+
+def leafy_cells(top, h, w):
+    """Cells whose top-layer drawing is mostly leaf-coloured, judged pixel
+    by pixel (hue in CANOPY_HUE, saturation at least CANOPY_MIN_SAT). The
+    blob test canopy_mask uses cannot separate a mushroom cap from the
+    forest canopy its drawing touches."""
+    a = np.asarray(top).astype(float)
+    rgb = a[:, :, :3] / 255.0
+    mx, mn = rgb.max(axis=2), rgb.min(axis=2)
+    d = np.where(mx - mn > 1e-9, mx - mn, 1.0)
+    r_, g_, b_ = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    hue = np.where(mx == r_, ((g_ - b_) / d) % 6,
+                   np.where(mx == g_, (b_ - r_) / d + 2, (r_ - g_) / d + 4)) * 60.0
+    sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-9), 0)
+    drawn = a[:, :, 3] > 0
+    leaf = drawn & (hue >= RE.CANOPY_HUE[0]) & (hue <= RE.CANOPY_HUE[1]) \
+        & (sat >= RE.CANOPY_MIN_SAT)
+    out = np.zeros((h, w), bool)
+    for cy in range(h):
+        for cx in range(w):
+            dn = drawn[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].sum()
+            if dn:
+                out[cy, cx] = leaf[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].sum() * 2 > dn
+    return out
+
+
+def find_buildings(r, cls, H, doors, cf=None):
+    """Buildings anchored on doorways; flattens the cells they stood on.
+
+    The roof is the top-layer blob drawn at or just above a door's arch,
+    over cells the bottom layer blocks (the house's own footprint) and not
+    leaf-coloured (leafy_cells), within BUILDING_REACH of its doors; doors
+    under one roof make one building. Under BUILDING_MIN cells or
+    BUILDING_FILL drawn it is a hole's lip, over BUILDING_MAX not one
+    building. Its columns are
+    the roof's and the doors'; its foot the doors' foot. Per column the
+    drawn extent E (roof top to foot) splits into height and depth; the
+    height is BUILDING_HB of the deepest, never under the door plus 8px.
+    The volume stands on the front part of the drawing, depth E - height
+    per column, which is where the 45-degree rule puts it; the cells
+    behind it are floor. The style comes from the roof's outline: rounded
+    (top row under BUILDING_ROUND of its widest: a mushroom cap) domes,
+    square gables.
+
+    Returns (H, [building dicts], set of cells the buildings replace).
+    """
+    import extract_art
+    if not doors or not RE.overlay_overhead(r):
+        return H, [], set()
+    top = extract_art.room_art(r, 1)
+    if top is None:
+        return H, [], set()
+    alpha = np.asarray(top)[:, :, 3] > 0
+    L1 = r.layers[1]
+    h_, w_ = r.cells_h, r.cells_w
+    drawn = np.zeros((h_, w_), bool)
+    for cy in range(h_):
+        for cx in range(w_):
+            drawn[cy, cx] = alpha[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].any()
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    roof = (drawn & ((L1["tile"][:h_, :w_] != 0) | (L1["collision"][:h_, :w_] != 0))
+            & blocked & ~leafy_cells(top, h_, w_))
+    lab, _n = RE._label(roof)
+    H = np.array(H, dtype=np.int64)
+    groups = {}
+    for i, d in enumerate(doors):
+        ids = {int(lab[y, x]) for y in range(max(0, d["top"] - 3), d["top"] + 1)
+               for x in range(d["cx"] - 2, d["cx"] + 3)
+               if 0 <= x < w_ and lab[y, x]}
+        if ids:
+            groups.setdefault(min(ids), (set(), []))
+            groups[min(ids)][0].update(ids)
+            groups[min(ids)][1].append(i)
+    out, covered = [], set()
+    for _k, (ids, di) in groups.items():
+        comp = np.isin(lab, list(ids))
+        ds = [doors[i] for i in di]
+        dx_lo = min(d["cx"] for d in ds) - BUILDING_REACH[0]
+        dx_hi = max(d["cx"] for d in ds) + BUILDING_REACH[0]
+        foot0 = max(d["cy"] for d in ds) + 1
+        win = np.zeros_like(comp)
+        win[max(0, foot0 - BUILDING_REACH[1]):foot0, max(0, dx_lo):dx_hi + 1] = True
+        comp &= win
+        ncell = int(comp.sum())
+        if ncell < BUILDING_MIN or ncell > BUILDING_MAX:
+            continue
+        cmask = np.zeros(alpha.shape, bool)
+        big = np.kron(comp, np.ones((16, 16), bool))
+        cmask[:big.shape[0], :big.shape[1]] = big[:alpha.shape[0], :alpha.shape[1]]
+        if (alpha & cmask).sum() < BUILDING_FILL * ncell * 256:
+            continue
+        foot = max(d["cy"] for d in ds) + 1
+        cols = sorted(set(np.where(comp.any(axis=0))[0].tolist())
+                      | {d["cx"] for d in ds})
+        c0, c1 = cols[0], cols[-1]
+        topc = {}
+        for c in range(c0, c1 + 1):
+            ys = np.where(comp[:, c])[0]
+            ys = ys[ys < foot]
+            tr = int(ys.min()) if len(ys) else min(d["top"] for d in ds)
+            topc[c] = tr
+        E = {c: (foot - topc[c]) * 16 for c in topc}
+        base = int(max(d["base"] for d in ds))
+        hmin = max(d["hw"] for d in ds) + 8
+        hb = int(max(hmin, round(max(E.values()) * BUILDING_HB)))
+        hb = 2 * ((hb + 1) // 2)
+        widths = (alpha & cmask).sum(axis=1)
+        widths = widths[widths > 0]
+        rnd = widths[:4].mean() / float(widths.max()) if len(widths) else 1.0
+        style = "dome" if rnd < BUILDING_ROUND else "gable"
+        for c in range(c0, c1 + 1):
+            for y in range(topc[c], foot):
+                if blocked[y, c] or comp[y, c]:
+                    if blocked[y, c]:
+                        H[y, c] = base
+                    covered.add((c, y))
+        for d in ds:
+            d["hw"] = hb
+            d["building"] = True
+        if cf is not None:
+            # no tree crown over the building: its drawing touched the cap
+            Ms = cf[2]
+            z0 = min(topc.values()) * 16 // 2
+            z1 = min(Ms.shape[0], (foot * 16 + 48) // 2)
+            Ms[z0:z1, c0 * 8:(c1 + 1) * 8] = False
+        out.append(dict(c0=c0, c1=c1, foot=foot, top=topc,
+                        depth={c: max(16, E[c] - hb) for c in E},
+                        hb=hb, base=base, style=style, doors=ds,
+                        roof=set(zip(*np.nonzero(comp)))))
+    return H, out, covered
+
+
+def building_quads(b, ox, oz, lift):
+    """The building's volume, textured by projecting the room art from the
+    game's camera -- its top takes the roof drawn above it, its front the
+    wall and door drawn above its foot. Door cells are notched out full
+    height (door_quads builds their front) and lidded at the roof."""
+    st = BUILDING_STEP
+    c0, c1, foot = b["c0"], b["c1"], b["foot"]
+    dmax = max(b["depth"].values())
+    rows = (dmax + st - 1) // st
+    cols = (c1 - c0 + 1) * 16 // st
+    gx0, gz0 = c0 * 16, foot * 16 - rows * st        # room pixels
+    Hg = np.zeros((rows, cols), int)
+    M = np.zeros((rows, cols), bool)
+    for gx in range(cols):
+        c = c0 + (gx * st) // 16
+        dep = b["depth"][c]
+        for gy in range(rows):
+            z = gz0 + gy * st
+            if z >= foot * 16 - dep:
+                M[gy, gx] = True
+    door_cols = {d["cx"] for d in b["doors"]}
+    for gx in range(cols):
+        if c0 + (gx * st) // 16 in door_cols:
+            for gy in range(rows):
+                if gz0 + gy * st >= foot * 16 - 16:
+                    M[gy, gx] = False
+    # roof: dome or gable over the plan, heights in 2px steps
+    ys, xs = np.nonzero(M)
+    if not len(ys):
+        return []
+    zc, xc = (ys.min() + ys.max() + 1) / 2.0, (xs.min() + xs.max() + 1) / 2.0
+    rz, rx = max(1.0, (ys.max() - ys.min() + 1) / 2.0), max(1.0, (xs.max() - xs.min() + 1) / 2.0)
+    for gy, gx in zip(ys, xs):
+        v = (gy + 0.5 - zc) / rz
+        u = (gx + 0.5 - xc) / rx
+        if b["style"] == "dome":
+            add = BUILDING_ROOF * np.sqrt(max(0.0, 1.0 - u * u - v * v))
+        else:
+            add = BUILDING_ROOF * max(0.0, 1.0 - abs(v))
+        Hg[gy, gx] = b["hb"] + 2 * int(round(add / 2.0))
+    ground = b["base"] + lift
+    q = []
+
+    def uvf(pts):
+        return [(x - ox, (z - oz) - (y - ground)) for x, y, z in pts]
+
+    def quad(pts, c, uv=None):
+        q.append((pts, uv))
+    RE.emit_canopy(quad, (Hg, np.zeros((rows, cols, 3)), M), ox + gx0, oz + gz0,
+                   ground, step=st, uvf=uvf, merge=True)
+    # lids over the door notches
+    for d in b["doors"]:
+        X0, Z1 = ox + d["cx"] * 16, oz + foot * 16
+        y = ground + b["hb"]
+        p = [(X0, y, Z1 - 16), (X0 + 16, y, Z1 - 16), (X0 + 16, y, Z1), (X0, y, Z1)]
+        q.append((p, uvf(p)))
+    return q
+
+
 def tile_key(pixels, role):
     return hashlib.sha1(pixels.tobytes()).hexdigest()[:12] + role[0]
 
@@ -617,7 +846,8 @@ OVERLAY_SKIRT = 12      # otherwise it hangs this far
 
 
 def room_overlay(r, H, canopy=True):
-    """(deck cells, crown field or None, top RGBA art, occupancy, c1).
+    """(deck cells, crown field or None, top RGBA art, occupancy, c1, crown
+    cells).
 
     Deck cells are layer-1 cells that draw something and are not tree
     crown: [(cx, cy, height)]. Crowns keep the terrain's shape
@@ -625,10 +855,10 @@ def room_overlay(r, H, canopy=True):
     """
     import extract_art
     if not RE.overlay_overhead(r):
-        return [], None, None, None, None
+        return [], None, None, None, None, None
     top = extract_art.room_art(r, 1)
     if top is None:
-        return [], None, None, None, None
+        return [], None, None, None, None, None
     top = np.asarray(top)
     L1 = r.layers[1]
     h, w = r.cells_h, r.cells_w
@@ -651,7 +881,7 @@ def room_overlay(r, H, canopy=True):
             if a.shape[:2] != (16, 16) or not (a[:, :, 3] > 0).any():
                 continue
             decks.append((cx, cy, RE.CLASS_HEIGHT.get(c1[cy, cx], 0) + OVERLAY_LIFT))
-    return decks, cf, top, occ, c1
+    return decks, cf, top, occ, c1, crown
 
 
 def deck_skirts(decks, occ, H, ox, oz, lift):
@@ -779,6 +1009,12 @@ def build_area(job):
             cls, H, bl, flights, doors = room_heights(
                 r, a.layer, blocks=not a.no_blocks, relief=a.relief,
                 path=None if a.no_stairs else dump_path.get((r.area, r.room)))
+            overlay = (None if a.no_overlay or len(r.layers) < 2
+                       or not r.layers[1]["present"]
+                       else room_overlay(r, H, canopy=not a.no_canopy))
+            blds, covered = [], set()
+            if overlay is not None and overlay[2] is not None and not a.no_buildings:
+                H, blds, covered = find_buildings(r, cls, H, doors, overlay[1])
             role = room_roles(r, cls, H, bl)
             cells = []
             for cy in range(r.cells_h):
@@ -786,7 +1022,17 @@ def build_area(job):
                     ro = role[cy, cx]
                     if ro is None:
                         continue
-                    pix = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+                    sy, sx = cy, cx
+                    if (cx, cy) in covered:
+                        # under or behind a building: the floor behind it,
+                        # else the floor in front
+                        ro = "floor"
+                        ys_ = [y for y in range(cy, -1, -1) if (cx, y) not in covered]
+                        sy = ys_[0] if ys_ and cls[ys_[0], cx] == RE.CLASS_GROUND else None
+                        if sy is None:
+                            fy = max(b["foot"] for b in blds)
+                            sy = min(fy, r.cells_h - 1)
+                    pix = art[sy * 16:sy * 16 + 16, sx * 16:sx * 16 + 16]
                     if pix.shape[:2] != (16, 16):
                         continue
                     k = tile_key(pix, ro)
@@ -794,8 +1040,10 @@ def build_area(job):
                         lib[k] = (len(lib), pix, ro)
                     cells.append((k, cx, cy, int(H[cy, cx]) + lift, ro))
             ov = None
-            if not a.no_overlay and len(r.layers) > 1 and r.layers[1]["present"]:
-                decks, cf, top, occ, _c1 = room_overlay(r, H, canopy=not a.no_canopy)
+            if overlay is not None:
+                decks, cf, top, occ, _c1, _crown = overlay
+                roofs = {(x_, y_) for b in blds for (y_, x_) in b["roof"]}
+                decks = [dk for dk in decks if (dk[0], dk[1]) not in roofs]
                 # the top layer's arch over a doorway is part of the arch's
                 # front, already drawn there; lifted, it floated
                 arch = {(d["cx"] + dx_, y_) for d in doors for dx_ in (-1, 0, 1)
@@ -811,7 +1059,7 @@ def build_area(job):
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ)
             placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
-                           flights, doors))
+                           flights, doors, blds))
 
     # voxelate: one model per drawing, packed into the area's atlas
     n = len(lib)
@@ -835,7 +1083,7 @@ def build_area(job):
     nfaces = ncell = 0
     with open(out / "placements.txt", "w") as place:
         place.write("# key room cx cy x y z role -- tile model origin, world pixels\n")
-        for r, lift, art, H, solid, cells, ov, flights, doors in placed:
+        for r, lift, art, H, solid, cells, ov, flights, doors, blds in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
             for k, cx, cy, y, ro in cells:
@@ -854,6 +1102,8 @@ def build_area(job):
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip))
             for d in doors:
                 m.quads(door_quads(d, ox, oz, lift))
+            for b in blds:
+                m.quads(building_quads(b, ox, oz, lift))
             for fl in flights:
                 m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
@@ -866,7 +1116,7 @@ def build_area(job):
     with open(out / "stairs.txt", "w") as st:
         st.write("# room cx0,cy0,cx1,cy1 rise steps up base top -- flights of "
                  "steps; up/base/top are '-' where the landings are one level\n")
-        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors in placed:
+        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors, _b in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             for fl in flights:
                 raised = fl.get("up") is not None
@@ -896,6 +1146,8 @@ def main():
     ap.add_argument("--no-stairs", action="store_true",
                     help="leave flights of steps flat (no raised landings, "
                          "no steps)")
+    ap.add_argument("--no-buildings", action="store_true",
+                    help="leave buildings to the heightfield")
     ap.add_argument("--no-blocks", action="store_true",
                     help="leave dungeon blocks to the measured heights")
     ap.add_argument("--relief-step", type=int, default=RELIEF_STEP,
