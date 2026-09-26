@@ -688,10 +688,32 @@ def building_quads(b, ox, oz, lift):
     def uvf(pts):
         return [(x - ox, (z - oz) - (y - ground)) for x, y, z in pts]
 
+    # The drawing shows a building's front only. Its other outer walls --
+    # east, west, north, down to the ground -- wear the drawn front wall,
+    # spread along their length; projecting them from the game's camera
+    # pulled one column of roof down each as a smear. Walls inside the
+    # roof (the steps of a dome or gable) are roof and stay projected.
+    fx0, fw = c0 * 16, (c1 - c0 + 1) * 16
+    zfront = oz + foot * 16
+    plan_z0, plan_x0 = oz + gz0, ox + gx0
+    depth_px, width_px = rows * st, cols * st
+
+    def wall_uv(pts):
+        ys = [p_[1] for p_ in pts]
+        if min(ys) > ground or max(ys) == min(ys):
+            return uvf(pts)
+        xs_ = {p_[0] for p_ in pts}
+        zs_ = {p_[2] for p_ in pts}
+        if len(zs_) == 1 and next(iter(zs_)) == zfront:
+            return uvf(pts)
+        return [(fx0 + (((z - plan_z0) / float(depth_px)) if len(xs_) == 1
+                        else ((x - plan_x0) / float(width_px))) * fw,
+                 foot * 16 - (y - ground)) for x, y, z in pts]
+
     def quad(pts, c, uv=None):
         q.append((pts, uv))
     RE.emit_canopy(quad, (Hg, np.zeros((rows, cols, 3)), M), ox + gx0, oz + gz0,
-                   ground, step=st, uvf=uvf, merge=True)
+                   ground, step=st, uvf=wall_uv, merge=True)
     # lids over the door notches
     for d in b["doors"]:
         X0, Z1 = ox + d["cx"] * 16, oz + foot * 16
