@@ -105,29 +105,47 @@ def standing_spots(r, cls):
 
 
 def tour(game, views, outdir, settle=SETTLE):
-    """Run the game once through every view [(area, room, x, y)]: returns
-    {view index: (capture path, camera (x, y), (area, room))}."""
+    """Run the game through every view [(area, room, x, y)]: returns
+    {view index: (capture path, camera (x, y), (area, room))}. If the game
+    ends before the last view -- a scene that never gave control back, a
+    crash -- the tour resumes after the view it stopped at."""
     outdir = Path(outdir)
     plan = outdir / "plan.txt"
     plan.write_text("".join(f"{a:#x} {r:#x} {x} {y} 0\n" for a, r, x, y in views))
-    a0, r0, x0, y0 = views[0]
-    env = dict(os.environ, TMC_AUTOPLAY="1", TMC_ROOMCAP="1",
-               TMC_ROOMCAP_WARP=f"{a0:#x},{r0:#x},{x0:#x},{y0:#x},0",
-               TMC_ROOMCAP_TOUR=str(plan), TMC_ROOMCAP_TOUR_OUT=str(outdir),
-               TMC_ROOMCAP_SETTLE=str(settle), TMC_ROOMCAP_PROGRESS=str(PROGRESS),
-               SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
-    p = subprocess.run([f"./{BINARY}", "--no-audio"], cwd=game, env=env,
-                       timeout=120 + SECONDS_PER_VIEW * len(views),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
     got = {}
-    for m in re.finditer(r"\[roomcap\] tour (\d+) view room=0x([0-9a-f]+)/0x([0-9a-f]+) "
-                         r"scroll=(-?\d+),(-?\d+) size=\d+,\d+ ok=1", p.stderr):
-        i = int(m.group(1))
-        got[i] = (outdir / f"{i:05d}.png", (int(m.group(4)), int(m.group(5))),
-                  (int(m.group(2), 16), int(m.group(3), 16)))
-    for m in re.finditer(r"\[roomcap\] tour (\d+) skip room=0x([0-9a-f]+)/0x([0-9a-f]+)", p.stderr):
-        print(f"[capture] {int(m.group(2), 16):02d}_{int(m.group(3), 16):02d}: "
-              f"view {m.group(1)} never arrived", file=sys.stderr)
+    start = 0
+    while start < len(views):
+        a0, r0, x0, y0 = views[start]
+        env = dict(os.environ, TMC_AUTOPLAY="1", TMC_ROOMCAP="1",
+                   TMC_ROOMCAP_WARP=f"{a0:#x},{r0:#x},{x0:#x},{y0:#x},0",
+                   TMC_ROOMCAP_TOUR=str(plan), TMC_ROOMCAP_TOUR_OUT=str(outdir),
+                   TMC_ROOMCAP_TOUR_START=str(start),
+                   TMC_ROOMCAP_SETTLE=str(settle), TMC_ROOMCAP_PROGRESS=str(PROGRESS),
+                   SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
+        try:
+            p = subprocess.run([f"./{BINARY}", "--no-audio"], cwd=game, env=env,
+                               timeout=120 + SECONDS_PER_VIEW * (len(views) - start),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               text=True, errors="replace")
+            err = p.stderr
+        except subprocess.TimeoutExpired as e:
+            err = (e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        last = start - 1
+        for m in re.finditer(r"\[roomcap\] tour (\d+) view room=0x([0-9a-f]+)/0x([0-9a-f]+) "
+                             r"scroll=(-?\d+),(-?\d+) size=\d+,\d+ ok=(\d)", err):
+            i = int(m.group(1))
+            last = max(last, i)
+            if m.group(6) == "1":
+                got[i] = (outdir / f"{i:05d}.png", (int(m.group(4)), int(m.group(5))),
+                          (int(m.group(2), 16), int(m.group(3), 16)))
+        for m in re.finditer(r"\[roomcap\] tour (\d+) (skip|stuck) room=0x([0-9a-f]+)/0x([0-9a-f]+)", err):
+            last = max(last, int(m.group(1)))
+            print(f"[capture] {int(m.group(3), 16):02d}_{int(m.group(4), 16):02d}: "
+                  f"view {m.group(1)} {'never arrived' if m.group(2) == 'skip' else 'stuck'}",
+                  file=sys.stderr)
+        if "[roomcap] tour done" in err:
+            break
+        start = last + 1 if last >= start else start + 1
     return got
 
 

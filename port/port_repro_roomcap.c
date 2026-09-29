@@ -267,10 +267,22 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
                 if (f)
                     fclose(f);
                 tour = 1;
-                fprintf(stderr, "[roomcap] tour: %d views\n", tn);
+                const char* st = getenv("TMC_ROOMCAP_TOUR_START");
+                ti = st && *st ? atoi(st) : 0;
+                fprintf(stderr, "[roomcap] tour: %d views, from %d\n", tn, ti);
             }
         }
         if (tour) {
+            /* stuck -- a scene or menu that never gives the game back: say
+             * which view, and end; room_capture.py resumes after it */
+            if (booted && since && frame - since > 2400) {
+                fprintf(stderr, "[roomcap] tour %d stuck room=0x%02x/0x%02x (task=%u)\n", ti, ta[ti], tr[ti],
+                        (unsigned)gMain.task);
+                fflush(stderr);
+                _Exit(3);
+            }
+            if (booted && since == 0)
+                since = frame;
             if (!booted || gMain.task != TASK_GAME)
                 return;
             if (ti >= tn) {
