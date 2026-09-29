@@ -50,7 +50,7 @@ OUT = HERE.parent / "vr" / "captures"
 SCREEN = (240, 160)
 # the HUD, in screen pixels (x0, y0, x1, y1): hearts, the item buttons,
 # the rupee count
-HUD = ((0, 0, 40, 20), (176, 4, 240, 40), (188, 142, 240, 160))
+HUD = ((0, 0, 40, 20), (-64, 4, 0, 40), (-52, 142, 0, 160))   # x < 0: from the right
 LINK_BOX = (-14, -30, 14, 8)    # px round Link's feet his sprite may cover
 ALIGN_REACH = 16                # px either way to search for a capture's place
 SETTLE = 300                    # frames after the warp before the capture
@@ -88,8 +88,8 @@ def learn_curve(caps, comp):
     screen value back to the tile art's."""
     votes = {}
     for c, (x, y) in caps:
-        ref = comp[y:y + SCREEN[1], x:x + SCREEN[0]]
-        ok = ~hud_mask()
+        ref = comp[y:y + c.shape[0], x:x + c.shape[1]]
+        ok = ~hud_mask(c.shape)
         for ch in range(3):
             a = ref[..., ch][ok].ravel()
             b = c[..., ch][ok].ravel()
@@ -113,9 +113,15 @@ def to_art_colours(c, lut):
     return lut[np.clip(c, 0, 255)].astype(np.int16)
 
 
-def hud_mask():
-    m = np.zeros((SCREEN[1], SCREEN[0]), bool)
+def hud_mask(shape=None):
+    """The HUD's places on a screen of this shape (height, width): the
+    hearts at the left, the buttons and rupees at the right -- a
+    widescreen port puts them at its own right edge."""
+    h, w = shape[:2] if shape is not None else (SCREEN[1], SCREEN[0])
+    m = np.zeros((h, w), bool)
     for x0, y0, x1, y1 in HUD:
+        if x0 < 0 or (x1 <= 0 and x0 < 0):
+            x0, x1 = w + x0, w + x1
         m[y0:y1, x0:x1] = True
     return m
 
@@ -124,25 +130,27 @@ def place(cap, comp, guess):
     """Where on the room a capture lies: the offset near the guess where it
     matches the room's tile art best (sprites and HUD are a small share)."""
     H, W = comp.shape[:2]
-    ok = ~hud_mask()
+    sh, sw = cap.shape[:2]
+    ok = ~hud_mask(cap.shape)
     best, at = None, guess
     gx, gy = guess
     for dy in range(-ALIGN_REACH, ALIGN_REACH + 1):
         for dx in range(-ALIGN_REACH, ALIGN_REACH + 1):
             x, y = gx + dx, gy + dy
-            if x < 0 or y < 0 or x + SCREEN[0] > W or y + SCREEN[1] > H:
+            if x < 0 or y < 0 or x + sw > W or y + sh > H:
                 continue
-            d = (np.abs(cap - comp[y:y + SCREEN[1], x:x + SCREEN[0]]).sum(axis=2) > 24) & ok
+            d = (np.abs(cap - comp[y:y + sh, x:x + sw]).sum(axis=2) > 24) & ok
             s = int(d.sum())
             if best is None or s < best:
                 best, at = s, (x, y)
     return at
 
 
-def camera_guess(lx, ly, W, H):
+def camera_guess(lx, ly, W, H, screen=SCREEN):
     """Where the game's camera sits for Link at (lx, ly), room pixels."""
-    cx = min(max(lx - SCREEN[0] // 2, 0), max(0, W - SCREEN[0]))
-    cy = min(max(ly - SCREEN[1] // 2, 0), max(0, H - SCREEN[1]))
+    sw, sh = screen
+    cx = min(max(lx - sw // 2, 0), max(0, W - sw))
+    cy = min(max(ly - sh // 2, 0), max(0, H - sh))
     return cx, cy
 
 
@@ -155,9 +163,15 @@ def standing_spots(r, cls):
     if not len(ys):
         return []
     pts = np.stack([xs * 16 + 8, ys * 16 + 12], 1)
+    def starts(n, s):
+        """Screen origins covering n pixels, s at a time, the last flush."""
+        if n <= s:
+            return [0]
+        out = list(range(0, n - s, s - 32))
+        return out + [n - s]
     views = []
-    for vy in range(0, max(1, H - SCREEN[1] + 1), SCREEN[1] - 32) or [0]:
-        for vx in range(0, max(1, W - SCREEN[0] + 1), SCREEN[0] - 32) or [0]:
+    for vy in starts(H, SCREEN[1]):
+        for vx in starts(W, SCREEN[0]):
             cx, cy = vx + SCREEN[0] // 2, vy + SCREEN[1] // 2
             inside = pts[(np.abs(pts[:, 0] - cx) < SCREEN[0] // 2 - 24)
                          & (np.abs(pts[:, 1] - cy) < SCREEN[1] // 2 - 24)]
@@ -188,10 +202,12 @@ def room_capture(dumps, rid, game, out):
             for j, (lx, ly) in enumerate((p, q)):
                 c = capture(game, r.area, r.room, r.origin_x + lx, r.origin_y + ly,
                             Path(td) / f"c{k}_{j}.png")
-                g = camera_guess(lx, ly, W, H)
+                scr = (min(c.shape[1], W), min(c.shape[0], H))
+                c = c[:scr[1], :scr[0]]
+                g = camera_guess(lx, ly, W, H, scr)
                 if lut is None:
-                    ref = comp[g[1]:g[1] + SCREEN[1], g[0]:g[0] + SCREEN[0]]
-                    same = (c == ref).all(axis=2)[~hud_mask()].mean()
+                    ref = comp[g[1]:g[1] + scr[1], g[0]:g[0] + scr[0]]
+                    same = (c == ref).all(axis=2)[~hud_mask(c.shape)].mean()
                     # the port's GBA-LCD colour correction off (config.json
                     # "color_correction": false), the screen is the art's own
                     # colours; else learn the correction back
@@ -202,7 +218,7 @@ def room_capture(dumps, rid, game, out):
                 log.append(dict(link=[lx, ly], at=list(at)))
             for i, (c, (x, y), (lx, ly)) in enumerate(caps):
                 o, (ox, oy), _ = caps[1 - i]
-                keep = ~hud_mask()
+                keep = ~hud_mask(c.shape)
                 # Link: his box, where the other capture (him elsewhere)
                 # differs -- that one shows what is behind him
                 bx0, by0 = lx - x + LINK_BOX[0], ly - y + LINK_BOX[1]
@@ -210,7 +226,7 @@ def room_capture(dumps, rid, game, out):
                 box = np.zeros_like(keep)
                 box[max(0, by0):max(0, by1), max(0, bx0):max(0, bx1)] = True
                 keep &= ~box
-                sl = (slice(y, y + SCREEN[1]), slice(x, x + SCREEN[0]))
+                sl = (slice(y, y + c.shape[0]), slice(x, x + c.shape[1]))
                 new = keep & ~have[sl]
                 shown[sl][new] = c[new]
                 have[sl] |= new
