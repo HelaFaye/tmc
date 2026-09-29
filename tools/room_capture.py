@@ -54,6 +54,9 @@ HUD = ((0, 0, 40, 20), (-64, 4, 0, 40), (-52, 142, 0, 160))   # x < 0: from the 
 LINK_BOX = (-14, -30, 14, 8)    # px round Link's feet his sprite may cover
 ALIGN_REACH = 16                # px either way to search for a capture's place
 SETTLE = 300                    # frames after the warp before the capture
+PROGRESS = 1                    # dungeons cleared: past the prologue, whose scripts
+                                # take over a warp into Hyrule Field or the town
+MATCH_MIN = 0.7                 # a capture this much like the room's tile art is it
 
 
 def layers(r):
@@ -73,6 +76,7 @@ def capture(game, area, room, x, y, out, settle=SETTLE):
     env = dict(os.environ, TMC_AUTOPLAY="1", TMC_ROOMCAP="1",
                TMC_ROOMCAP_WARP=f"{area:#x},{room:#x},{x:#x},{y:#x},0",
                TMC_ROOMCAP_OUT=str(out), TMC_ROOMCAP_SETTLE=str(settle),
+               TMC_ROOMCAP_PROGRESS=str(PROGRESS),
                SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
     subprocess.run(["./tmc_pc", "--no-audio"], cwd=game, env=env, timeout=600,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -143,6 +147,7 @@ def place(cap, comp, guess):
             s = int(d.sum())
             if best is None or s < best:
                 best, at = s, (x, y)
+    place.match = 1.0 - (best or 0) / max(1, int(ok.sum()))
     return at
 
 
@@ -214,8 +219,16 @@ def room_capture(dumps, rid, game, out):
                     lut = np.arange(256) if same >= 0.5 else learn_curve([(c, g)], comp)
                 c = to_art_colours(c, lut)
                 at = place(c, comp, g)
+                log.append(dict(link=[lx, ly], at=list(at), match=round(place.match, 3)))
+                if place.match < MATCH_MIN:
+                    # not this room as its tiles draw it: a story scene took
+                    # over, or the warp went elsewhere
+                    print(f"[capture] {rid}: view at ({lx}, {ly}) matches {place.match:.0%}, dropped",
+                          file=sys.stderr)
+                    continue
                 caps.append((c, at, (lx, ly)))
-                log.append(dict(link=[lx, ly], at=list(at)))
+            if len(caps) < 2:
+                continue
             for i, (c, (x, y), (lx, ly)) in enumerate(caps):
                 o, (ox, oy), _ = caps[1 - i]
                 keep = ~hud_mask(c.shape)
