@@ -177,6 +177,7 @@ entsheets/
 /world/
 /verify/
 /objects/
+vr/tiles/catalogue/
 refcheck/
 /*.png
 *.tmcr
