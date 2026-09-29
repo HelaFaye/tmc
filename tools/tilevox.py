@@ -1760,6 +1760,7 @@ def furniture_heights(r, cls, shell, fam, taken=(), art=None):
         lab[rest > 0] = rest[rest > 0] + n
         n += rn
     out = {}
+    drawn_rows = shell.setdefault("drawn", {})   # rows of front the art shows
     one16 = np.ones((16, 16), bool)
     for k in range(1, n + 1):
         piece = lab == k
@@ -1780,20 +1781,27 @@ def furniture_heights(r, cls, shell, fam, taken=(), art=None):
         if art is not None and not backed and (not px or max(px) == FURNITURE_DEFAULT):
             # a table: as tall as its front is drawn, under its lit top
             fr = drawn_front(art, drawn_piece(art, piece, Fp, np.kron(piece, one16)))
-        if fr is not None:
-            hh = int(np.clip(fr, 4, LINK_PX))
-        elif px:
+        if px:
             hh = max(px)
         elif art is not None:
             hh = drawn_height(art, piece, Fp, shell.get("W"))
         else:
             hh = FURNITURE_DEFAULT
+        if fr is not None and not px:
+            hh = FURNITURE_DEFAULT      # a table, by the people who use it
+        for rule in TI.load_overrides():  # a person's height wins
+            if "height" in rule:
+                m_ = TI.override_mask(r, rule)
+                if any(m_[c] for c in cells):
+                    hh = rule["height"]
         if os.environ.get("TV_DBG"):
             print("PIECE", r.area, r.room, sorted((int(c[1]), int(c[0])) for c in cells),
                   [names.get(c) for c in cells if c in names][:1], "front", fr, "h", hh,
                   file=sys.stderr)
         for c in cells:
             out[(int(c[0]), int(c[1]))] = hh
+            if fr is not None:
+                drawn_rows[(int(c[0]), int(c[1]))] = min(fr, hh)
     return out
 
 
@@ -2082,7 +2090,18 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     things = np.kron(solidall & ~R, one) & O     # what stands on the floor
     sh["box"] = box_walls(O, inW, np.kron(walk, one), gap, things,
                           np.kron(stand, one) & O)
+    # one box is one room: where its floor misses much of the walkable
+    # floor (a cave of several parts, an L), the cells stay
+    b_ = sh["box"]
+    if b_ is not None:
+        wpx = np.kron(walk & ~exits, one)
+        cover = (b_["floor"][:wpx.shape[0], :wpx.shape[1]] & wpx[:b_["floor"].shape[0], :b_["floor"].shape[1]]).sum()
+        if cover < BOX_COVER * max(1, wpx.sum()):
+            sh["box"] = None
     return sh
+
+
+BOX_COVER = 0.85        # a box's floor holds this share of the walkable floor
 
 
 BOX_RAYS = 720          # rays from the floor's middle round the room
@@ -2374,15 +2393,43 @@ def drawn_piece(art, one, F, D):
     near = np.kron(ring, np.ones((16, 16), bool)) & F
     if not near.any():
         return D
-    floor_cols = np.unique(key[near])
+    # the floor's colours: those at least as common round the piece as in
+    # it -- the rug, not the stools beside a table drawn in its wood
+    rc, rn = np.unique(key[near], return_counts=True)
+    inside = D & np.kron(one, np.ones((16, 16), bool))
+    pc, pn = np.unique(key[inside], return_counts=True)
+    pd = dict(zip(pc.tolist(), (pn / max(1, inside.sum())).tolist()))
+    dens = rn / max(1, near.sum())
+    floor_cols = np.array([c for c, d in zip(rc.tolist(), dens) if d >= pd.get(c, 0.0)],
+                          dtype=np.int64)
     mine = D & ~np.isin(key, floor_cols)
+    # one thing: its biggest blob (not a stool reaching into its cells)
+    # (a pixel's erosion first: things side by side touch at their outlines)
+    lum_ = A @ np.array([299, 587, 114]) // 1000
+    Pm = np.pad(mine, 1)
+    core = mine & Pm[:-2, 1:-1] & Pm[2:, 1:-1] & Pm[1:-1, :-2] & Pm[1:-1, 2:] \
+        & (lum_ >= OUTLINE_LUM)             # split at the outlines between
+    bl, bn = RE._label(core)
+    if bn > 1:
+        sizes = np.bincount(bl.ravel())[1:]
+        keep = bl == int(sizes.argmax()) + 1
+        # its outline and legs back: what of the rest lies in its own
+        # columns and joins it
+        xs_ = np.nonzero(keep.any(axis=0))[0]
+        span = np.zeros_like(mine)
+        span[:, xs_.min():xs_.max() + 1] = True
+        jl, _jn = RE._label(keep | (mine & span & (lum_ < OUTLINE_LUM)))
+        ids = np.unique(jl[keep])
+        mine = np.isin(jl, ids[ids > 0])
     out = np.zeros_like(D)
     for x in np.nonzero(mine.any(axis=0))[0]:
-        z0 = int(np.nonzero(mine[:, x])[0].min())
-        col = D[:, x]
-        z1 = int(np.nonzero(col)[0].max()) + 1
-        out[z0:z1, x] = col[z0:z1]
+        zs = np.nonzero(mine[:, x])[0]
+        z0, z1 = int(zs.min()), int(zs.max()) + 1     # down to its feet
+        out[z0:z1, x] = D[z0:z1, x]
     return out if out.sum() >= 16 else D
+
+
+OUTLINE_LUM = 70        # darker than this is an outline, not a surface
 
 
 def projective_plan(D, F, hh):
@@ -2430,8 +2477,14 @@ def furniture_prisms(cls, shell, heights, art=None):
             F = np.kron(~one & ~shell["R"] & (cls != RE.CLASS_VOID), np.ones((16, 16), bool))
             if art is not None:
                 D = drawn_piece(art, one, F, D)
-            Wp, fill = projective_plan(D, F, hh)
-            out.append((one, dict(Wp=Wp, Hw=hh, base=shell["base"], fill=fill, F=F)))
+            # the art shows dr rows of front for hh of height: the plan is
+            # where the drawing puts the top, and the front's rows stretch
+            # up the height (docs/vr/06)
+            dr = [shell.get("drawn", {}).get((int(y), int(x)))
+                  for y, x in zip(*np.nonzero(one))]
+            dr = min((d for d in dr if d), default=hh)
+            Wp, fill = projective_plan(D, F, dr)
+            out.append((one, dict(Wp=Wp, Hw=hh, draw=dr, base=shell["base"], fill=fill, F=F)))
     return out
 
 
@@ -2504,8 +2557,10 @@ def shell_quads(sh, ox, oz, lift):
     y1 = y0 + Hw
     rows, cols = Wp.shape
 
+    k_ = sh.get("draw", Hw) / Hw if Hw else 1.0   # drawn rows per px of height
+
     def uv(pts):
-        return [(x - ox, (z - oz) - (y - y0)) for x, y, z in pts]
+        return [(x - ox, (z - oz) - (y - y0) * k_) for x, y, z in pts]
     q = []
     for x, z, wd, d in RE.greedy_quads(Wp):
         p = [(ox + x, y1, oz + z), (ox + x + wd, y1, oz + z),
@@ -2530,7 +2585,7 @@ def shell_quads(sh, ox, oz, lift):
                     if dz == 1 and not (z + 1 < sh["F"].shape[0] and sh["F"][z + 1, x0:x].any()):
                         # the outside of the front wall: never drawn; it
                         # wears the wall top's outer edge
-                        v = min(z - Hw - 2, sh["F"].shape[0] - 1) + 0.5
+                        v = min(z - sh.get("draw", Hw) - 2, sh["F"].shape[0] - 1) + 0.5
                         q.append((p, [(xp - ox, v) for xp, _y, _z in p]))
                     else:
                         q.append((p, uv(p)))

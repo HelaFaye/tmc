@@ -103,6 +103,8 @@ SHAPES = {
     "mushroom": ("dome", 12), "stump": ("drum", 8), "planter": ("box", 10),
     "pot": ("dome", 12),
     "prop": ("box", 10),
+    # named by a person (vr/tiles/overrides.txt)
+    "spiky_rock": ("spike", 20), "boulder": ("dome", 10), "stone": ("dome", 14),
 }
 PROP_FAMILIES = tuple(SHAPES)
 # drawn standing, with next to no depth: built as uprights (tilevox), the
@@ -366,6 +368,8 @@ def _parse_rule(f):
         rule["area"], rule["room"] = int(a), int(rm)
     if where.startswith("type="):
         rule["type"] = int(where[5:], 0)
+    elif where.startswith("tile="):
+        rule["tile"] = {int(v, 0) for v in where[5:].split(",")}
     elif where.startswith("special="):
         rule["special"] = int(where[8:], 0)
     else:
@@ -399,6 +403,8 @@ def override_mask(r, rule, tt=None):
     t = r.layers[0]["tile"][:h, :w]
     if "special" in rule:
         return np.asarray(t == rule["special"])
+    if "tile" in rule:
+        return np.isin(np.asarray(t), sorted(rule["tile"]))
     if "type" in rule:
         if tt is None:
             L = r.layers[0]
@@ -576,6 +582,8 @@ def shape_heights(px, family, floor_px=None):
         return np.where(m, np.where(dist >= 2, hmax, hmax - 2), 0).astype(np.int64)
     R = max(1.0, float(dist.max()))
     t = np.clip(dist / R, 0, 1)
+    if kind == "spike":                     # a point: rising straight to it
+        return np.where(m, np.maximum(1, np.rint(hmax * t)), 0).astype(np.int64)
     dome = 1 + np.rint((hmax - 1) * np.sqrt(1.0 - (1.0 - t) ** 2))
     if family in ("bush", "sapling"):
         # leaf clumps: lit pixels up a voxel, shadow down
