@@ -29,6 +29,7 @@
 #include "port_gba_mem.h" /* gIoMem, gVram, gBgPltt, gObjPltt, gOamMem */
 #include "port_debug_actions.h"
 #include "ui.h"         /* gHUD, HUD_HIDE_ALL (TMC_ROOMCAP_CLEAN) */
+#include "game.h"       /* GAMEMAIN_UPDATE (TMC_ROOMCAP_TOUR) */
 #include "player.h"     /* gPlayerEntity (TMC_ROOMCAP_CLEAN) */
 
 extern int Port_CaptureBaseFramebufferPNG(const char* path);
@@ -234,6 +235,88 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
         SetTask(TASK_GAME);
         booted = 1;
         fprintf(stderr, "[roomcap] frame %u: bootstrapped new game -> TASK_GAME (start 0x%02x/0x%02x)\n", frame, a, r);
+    }
+
+    /* TMC_ROOMCAP_TOUR=<plan>: capture many views in one session, as the
+     * voxel tour (port_repro_npc_talk.c) walks every room -- a restart per
+     * capture costs seconds; this costs the warp. The plan is one view a
+     * line, "area room x y [layer]" (x, y in the room's own pixels); the
+     * captures go to TMC_ROOMCAP_TOUR_OUT/<line>.png, each logged as
+     * "[roomcap] tour <line> view room=../.. scroll=x,y size=w,h" (the
+     * camera in room pixels). Clean throughout (TMC_ROOMCAP_CLEAN). A view
+     * that never lands in its room is logged as skipped. */
+    {
+        static int tour = -1, tn = 0, ti = 0;
+        static unsigned char ta[4096], tr[4096], tl[4096];
+        static unsigned short tx[4096], ty[4096];
+        static unsigned int fired = 0, arrived = 0, since = 0;
+        if (tour < 0) {
+            const char* plan = getenv("TMC_ROOMCAP_TOUR");
+            tour = 0;
+            if (plan && *plan) {
+                FILE* f = fopen(plan, "r");
+                char line[256];
+                while (f && tn < 4096 && fgets(line, sizeof line, f)) {
+                    unsigned int A, R, X, Y, L = 0;
+                    if (sscanf(line, "%i %i %i %i %i", &A, &R, &X, &Y, &L) >= 4) {
+                        ta[tn] = (unsigned char)A, tr[tn] = (unsigned char)R, tl[tn] = (unsigned char)L;
+                        tx[tn] = (unsigned short)X, ty[tn] = (unsigned short)Y;
+                        ++tn;
+                    }
+                }
+                if (f)
+                    fclose(f);
+                tour = 1;
+                fprintf(stderr, "[roomcap] tour: %d views\n", tn);
+            }
+        }
+        if (tour) {
+            if (!booted || gMain.task != TASK_GAME)
+                return;
+            if (ti >= tn) {
+                fprintf(stderr, "[roomcap] tour done\n");
+                fflush(stderr);
+                _Exit(0);
+            }
+            gHUD.hideFlags = HUD_HIDE_ALL;
+            gPlayerEntity.base.spriteSettings.draw = 0;
+            gSave.stats.health = gSave.stats.maxHealth;
+            if (gPlayerState.controlMode != CONTROL_ENABLED && frame % 40 < 2) {
+                extern void Port_Config_TestForceEdge(int input);
+                Port_Config_TestForceEdge(0 /* PORT_INPUT_A */);
+            }
+            if (since == 0)
+                since = frame;
+            const int here = arrived && gRoomControls.area == ta[ti] && gRoomControls.room == tr[ti] &&
+                             (gMain.substate == GAMEMAIN_UPDATE || gMain.substate == GAMEMAIN_BARRELUPDATE);
+            if (!arrived) {
+                /* warp (again, if a fade swallowed it: after 3s) */
+                if ((fired == 0 || frame - fired > 180) &&
+                    Port_DebugAction_Warp(ta[ti], tr[ti], tx[ti], ty[ti], tl[ti]) == 1)
+                    fired = frame;
+                if (fired && frame - fired > 20 && gRoomControls.area == ta[ti] && gRoomControls.room == tr[ti] &&
+                    (gMain.substate == GAMEMAIN_UPDATE || gMain.substate == GAMEMAIN_BARRELUPDATE))
+                    arrived = frame;
+            } else if (here && (int)(frame - arrived) >= settle) {
+                const char* dir = getenv("TMC_ROOMCAP_TOUR_OUT");
+                char path[512];
+                snprintf(path, sizeof path, "%s/%05d.png", dir && *dir ? dir : ".", ti);
+                int ok = Port_CaptureBaseFramebufferPNG(path);
+                fprintf(stderr, "[roomcap] tour %d view room=0x%02x/0x%02x scroll=%d,%d size=%d,%d ok=%d\n", ti,
+                        (unsigned)gRoomControls.area, (unsigned)gRoomControls.room,
+                        (int)(gRoomControls.scroll_x - gRoomControls.origin_x),
+                        (int)(gRoomControls.scroll_y - gRoomControls.origin_y), (int)gRoomControls.width,
+                        (int)gRoomControls.height, ok);
+                ++ti, fired = 0, arrived = 0, since = 0;
+            } else if (!here) {
+                arrived = 0;            /* left the room (an exit, a script): warp again */
+            }
+            if (since && frame - since > 900 && ti < tn) {
+                fprintf(stderr, "[roomcap] tour %d skip room=0x%02x/0x%02x (never arrived)\n", ti, ta[ti], tr[ti]);
+                ++ti, fired = 0, arrived = 0, since = 0;
+            }
+            return;
+        }
     }
 
     /* Once stable in TASK_GAME, warp to the target (re-renders from active ROM). */
