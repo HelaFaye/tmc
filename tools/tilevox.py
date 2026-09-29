@@ -2196,6 +2196,7 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
     sm = np.array([np.hypot(outer[i][0] - inner[i][0], outer[i][1] - inner[i][1]) for i in range(n)])
     north = [sm[i] for i in range(n) if np.sin(2 * np.pi * i / n) < -0.94]
     H = int(np.clip(np.median(north) if north else 32, *BOX_H))
+    outer = dewarp_outer(inner, sm, gapr, fit_wall_foot.exponent, Wpx, Hp)
     from PIL import Image, ImageDraw
     im = Image.new("1", (Wpx, Hp), 0)
     ImageDraw.Draw(im).polygon([(float(x), float(z)) for x, z in inner], fill=1)
@@ -2203,6 +2204,55 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
     return dict(inner=inner, outer=outer, gap=gapr, H=H, floor=fm)
 
 
+def dewarp_outer(inner, sm, gap, e, Wpx, Hp):
+    """Where each point of the wall's foot is drawn at the wall's top: out
+    from the foot square to the wall (its normal), by that side's band --
+    not along a ray from the room's middle, which near a corner crosses
+    into the next wall's drawing and warps the face. In a box (a high
+    exponent) the normal is squared, so a corner goes out to the drawn
+    corner of the outline -- the diagonal seam; round a curve it stays
+    the band's width."""
+    n = len(inner)
+    th = 2 * np.pi * np.arange(n) / n
+    sin, cos = np.sin(th), np.cos(th)
+    ok = ~np.asarray(gap, bool)
+
+    def band(m):
+        v = sm[m & ok]
+        return float(np.median(v)) if len(v) else float(np.median(sm[ok])) if ok.any() else 16.0
+    Tn, Ts = band(sin < -0.94), band(sin > 0.94)
+    Tw, Te = band(cos < -0.94), band(cos > 0.94)
+    P = np.array(inner, float)
+    K = BOX_NORMAL_K
+    out = []
+    for i in range(n):
+        a, b = P[(i - K) % n], P[(i + K) % n]
+        tx, tz = b[0] - a[0], b[1] - a[1]
+        nx, nz = tz, -tx                            # a normal of the foot
+        c = P.mean(axis=0)
+        if (P[i][0] - c[0]) * nx + (P[i][1] - c[1]) * nz < 0:
+            nx, nz = -nx, -nz                       # outward
+        L = np.hypot(nx, nz) or 1.0
+        nx, nz = nx / L, nz / L
+        if e >= BOX_SQUARE_N:
+            m_ = max(abs(nx), abs(nz)) or 1.0
+            nx, nz = nx / m_, nz / m_
+            if abs(nx) > 0.4 and abs(nz) > 0.4:     # a corner: to the seam
+                nx, nz = np.sign(nx), np.sign(nz)
+            elif abs(nx) >= abs(nz):
+                nx, nz = np.sign(nx), 0.0
+            else:
+                nx, nz = 0.0, np.sign(nz)
+        tx_ = Te if nx > 0 else Tw
+        tz_ = Ts if nz > 0 else Tn
+        ox_ = float(np.clip(P[i][0] + nx * tx_, 0, Wpx - 1))
+        oz_ = float(np.clip(P[i][1] + nz * tz_, 0, Hp - 1))
+        out.append((ox_, oz_))
+    return out
+
+
+BOX_NORMAL_K = 3        # rays each side: the foot's direction at a point
+BOX_SQUARE_N = 6.0      # a foot this square is a box: its faces are flat
 BOX_CLEAN = 12          # px: where the wall's colours and the floor agree
 BOX_N = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 12.0, 20.0, 40.0)
 
@@ -2283,6 +2333,7 @@ def fit_wall_foot(outer, run, runc, gap, lasts, origin, okc=None, dobj=None):
             else:
                 hi = mid
         inner.append((cx + dxs[i] * lo, cz + dzs[i] * lo))
+    fit_wall_foot.exponent = e_best
     return inner
 
 
@@ -2391,6 +2442,7 @@ def drawn_piece(art, one, F, D):
     P = np.pad(one, 1)
     ring = (P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:]) & ~one
     near = np.kron(ring, np.ones((16, 16), bool)) & F
+    drawn_piece.raw = None
     if not near.any():
         return D
     # the floor's colours: those at least as common round the piece as in
@@ -2421,6 +2473,7 @@ def drawn_piece(art, one, F, D):
         jl, _jn = RE._label(keep | (mine & span & (lum_ < OUTLINE_LUM)))
         ids = np.unique(jl[keep])
         mine = np.isin(jl, ids[ids > 0])
+    drawn_piece.raw = mine
     out = np.zeros_like(D)
     for x in np.nonzero(mine.any(axis=0))[0]:
         zs = np.nonzero(mine[:, x])[0]
@@ -2483,9 +2536,100 @@ def furniture_prisms(cls, shell, heights, art=None):
             dr = [shell.get("drawn", {}).get((int(y), int(x)))
                   for y, x in zip(*np.nonzero(one))]
             dr = min((d for d in dr if d), default=hh)
+            raw = getattr(drawn_piece, "raw", None) if art is not None else None
+            tq = table_quads(raw, dr, hh, art) if (raw is not None and dr < hh) else None
+            if os.environ.get("TV_DBG"):
+                print("TABLE", hh, dr, raw is not None and raw.sum(), tq is not None, file=sys.stderr)
+            if tq is not None:
+                out.append((one, dict(quads=tq, base=shell["base"])))
+                continue
             Wp, fill = projective_plan(D, F, dr)
             out.append((one, dict(Wp=Wp, Hw=hh, draw=dr, base=shell["base"], fill=fill, F=F)))
     return out
+
+
+TABLE_LEG_ROWS = 0.6    # a row this much of the table's width is apron, less is legs
+
+
+def cuboid(x0, x1, y0, y1, z0, z1, front, top=None):
+    """A box's faces, in room pixels (y up from 0): front = (u0, u1, v_top,
+    v_bottom) of the drawing its south face wears -- the north face wears
+    it too, the sides its edge columns; top = (u0, u1, v0, v1) for the top
+    face (else the front's top row). Windings as side_face's."""
+    u0, u1, vt, vb = front
+    q = [([(x0, y1, z1), (x1, y1, z1), (x1, y0, z1), (x0, y0, z1)],
+          [(u0, vt), (u1, vt), (u1, vb), (u0, vb)]),                      # south
+         ([(x1, y1, z0), (x0, y1, z0), (x0, y0, z0), (x1, y0, z0)],
+          [(u1, vt), (u0, vt), (u0, vb), (u1, vb)]),                      # north
+         ([(x1, y1, z0), (x1, y1, z1), (x1, y0, z1), (x1, y0, z0)],
+          [(u1 - 0.5, vt), (u1 - 0.5, vt), (u1 - 0.5, vb), (u1 - 0.5, vb)]),  # east
+         ([(x0, y1, z1), (x0, y1, z0), (x0, y0, z0), (x0, y0, z1)],
+          [(u0 + 0.5, vt), (u0 + 0.5, vt), (u0 + 0.5, vb), (u0 + 0.5, vb)]),  # west
+         ([(x0, y0, z1), (x1, y0, z1), (x1, y0, z0), (x0, y0, z0)],
+          [(u0, vb - 0.5)] * 2 + [(u1, vb - 0.5)] * 2)]                   # under
+    t0, t1, s0, s1 = top if top is not None else (u0, u1, vt, vt + 1)
+    q.append(([(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)],
+              [(t0, s0), (t1, s0), (t1, s1), (t0, s1)]))                  # top
+    return q
+
+
+def table_quads(raw, fr, hh, art=None):
+    """A table as a table: its top (the drawing above its front), its
+    apron (the front rows drawn full width) and four legs (the front
+    rows drawn as posts; the back pair mirrors the front, a table being
+    symmetrical), hh tall. None if its drawing shows no two legs."""
+    if raw is None or not raw.any():
+        return None
+    ys, xs = np.nonzero(raw)
+    r0, rb = int(ys.min()), int(ys.max())
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    wid = x1 - x0
+    s_ = rb + 1 - fr                                # first row of its front
+    # the apron is drawn solid across; the legs' rows have the floor
+    # showing between them
+    legs_from = None
+    for y in range(s_, rb + 1):
+        xs_ = np.nonzero(raw[y])[0]
+        if len(xs_) and (raw[y, xs_.min():xs_.max() + 1].mean() < 0.95):
+            legs_from = y
+            break
+    if legs_from is None or legs_from <= s_:
+        return None                                 # no posts under an apron
+    # the legs: the runs of its feet
+    row = raw[rb, x0:x1]
+    runs, x = [], 0
+    while x < wid:
+        if row[x]:
+            a = x
+            while x < wid and row[x]:
+                x += 1
+            runs.append((x0 + a, x0 + x))
+        else:
+            x += 1
+    if len(runs) < 2:
+        return None
+    runs = [runs[0], runs[-1]]
+    depth = s_ - r0                                  # its top, drawn
+    zf = rb + 1                                      # its front, at its feet
+    zb = zf - depth
+    k = hh / float(rb + 1 - s_)                      # px of height per drawn row
+    apron = max(1.0, (legs_from - s_) * k)
+    ar = np.nonzero(raw[legs_from - 1])[0]           # the apron's own width
+    ax0, ax1 = (int(ar.min()), int(ar.max()) + 1) if len(ar) else (x0, x1)
+    q = cuboid(ax0, ax1, hh - apron, hh, zb, zf,
+               (ax0 + 1, ax1 - 1, s_, legs_from), (x0, x1, r0, s_))
+    for a, b in runs:
+        w = b - a
+        for z0 in (zf - w, zb):                     # front pair, back pair
+            q += cuboid(a, b, 0, hh - apron, z0, z0 + w,
+                        (a, b, legs_from, rb + 1))
+    # the floor under it, which the game never draws: the floor just
+    # north of its drawing, as deep as it is (a rug's middle, not its hem)
+    d_ = zf - zb
+    v0 = max(0, r0 - d_)
+    q.append(([(x0, 0.05, zb), (x1, 0.05, zb), (x1, 0.05, zf), (x0, 0.05, zf)],
+              [(x0, v0), (x1, v0), (x1, v0 + d_), (x0, v0 + d_)]))
+    return q
 
 
 def heightmap_quads(hm, ox, oz, y0):
@@ -2550,6 +2694,9 @@ def shell_quads(sh, ox, oz, lift):
     room with its box walls found, those instead."""
     if sh.get("box") is not None:
         return box_quads(sh["box"], ox, oz, sh["base"] + lift)
+    if "quads" in sh:                   # built already (a table)
+        y0 = sh["base"] + lift
+        return [([(ox + x, y0 + y, oz + z) for x, y, z in p], uv) for p, uv in sh["quads"]]
     if "slope" in sh:
         return heightmap_quads(sh["slope"], ox, oz, sh["base"] + lift)
     Wp, Hw = sh["Wp"], sh["Hw"]

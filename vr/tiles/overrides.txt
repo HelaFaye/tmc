@@ -40,7 +40,7 @@
 
 # Link's house (34_16): the pair of cabinets and the desk with a bowl
 # against the back wall, half to three quarters Link's height (24 px)
-34_16 2,1-3,2          label=cabinets height=16
+34_16 2,1-3,2          label=cabinets height=12
 34_16 11,1-12,2        label=desk_with_bowl height=16
 
 # Mt. Crenel and around: the brown triangles on the sand are large

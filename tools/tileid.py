@@ -104,7 +104,7 @@ SHAPES = {
     "pot": ("dome", 12),
     "prop": ("box", 10),
     # named by a person (vr/tiles/overrides.txt)
-    "spiky_rock": ("spike", 20), "boulder": ("dome", 10), "stone": ("dome", 14),
+    "spiky_rock": ("spike", 20), "boulder": ("dome", 16), "stone": ("dome", 14),
 }
 PROP_FAMILIES = tuple(SHAPES)
 # drawn standing, with next to no depth: built as uprights (tilevox), the
