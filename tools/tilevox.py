@@ -1774,12 +1774,24 @@ def furniture_heights(r, cls, shell, fam, taken=(), art=None):
                 continue        # not in the room's art: a sprite on bare floor,
                                 # the entity stage's to build
         px = [furniture_px(names[c]) for c in cells if c in names]
-        if px:
+        fr = None
+        backed = bool((np.roll(piece, 1, axis=0) & ~piece)[1:].any() and
+                      (shell["R"][:-1] & piece[1:]).any())
+        if art is not None and not backed and (not px or max(px) == FURNITURE_DEFAULT):
+            # a table: as tall as its front is drawn, under its lit top
+            fr = drawn_front(art, drawn_piece(art, piece, Fp, np.kron(piece, one16)))
+        if fr is not None:
+            hh = int(np.clip(fr, 4, LINK_PX))
+        elif px:
             hh = max(px)
         elif art is not None:
             hh = drawn_height(art, piece, Fp, shell.get("W"))
         else:
             hh = FURNITURE_DEFAULT
+        if os.environ.get("TV_DBG"):
+            print("PIECE", r.area, r.room, sorted((int(c[1]), int(c[0])) for c in cells),
+                  [names.get(c) for c in cells if c in names][:1], "front", fr, "h", hh,
+                  file=sys.stderr)
         for c in cells:
             out[(int(c[0]), int(c[1]))] = hh
     return out
@@ -1801,6 +1813,39 @@ def drawn_as_floor(art, cls, cell):
             if best <= FLOOR_MATCH:
                 return True
     return False
+
+
+def drawn_front(art, D):
+    """Rows of a piece's front: the camera shows a thing's top (lit) above
+    its front (shaded) -- one row per pixel of depth, one per pixel of
+    height (docs/vr/06) -- so where each column's drawing turns from the
+    top's light to the front's shade, the rows below it are its height.
+    The split is the row with the most contrast between the two; the
+    median over columns. None where no column shows one."""
+    h, w = D.shape
+    A = np.asarray(art)[:h, :w, :3].astype(np.float64)
+    lum = A @ np.array([0.299, 0.587, 0.114])
+    fronts = []
+    for x in np.nonzero(D.any(axis=0))[0]:
+        zs = np.nonzero(D[:, x])[0]
+        z0, z1 = int(zs.min()), int(zs.max()) + 1
+        col = lum[z0:z1, x]
+        n = len(col)
+        if n < 8:
+            continue
+        best, bs = 0.0, None
+        for s_ in range(3, n - 2):
+            c = col[:s_].mean() - col[s_:].mean()
+            if c > best:
+                best, bs = c, s_
+        if bs is not None and best >= DRAWN_SPLIT_MIN:
+            fronts.append(n - bs)
+    if len(fronts) < max(3, int(0.3 * len(np.nonzero(D.any(axis=0))[0]))):
+        return None
+    return int(np.median(fronts))
+
+
+DRAWN_SPLIT_MIN = 12.0  # luminance: a top this much lighter than its front
 
 
 def drawn_height(art, piece, F, wall=None):
@@ -2955,10 +3000,13 @@ def build_area(job):
                     if shell is not None and shell["R"][cy, cx]:
                         continue
                     if shell is not None and shell.get("box") is not None \
-                            and not shell["exits"][cy, cx]:
+                            and (not shell["exits"][cy, cx]
+                                 or ro in ("wall", "wallflat", "ledge")):
                         continue            # the box draws the room: its floor
                                             # one surface, its walls and doors
-                                            # openings; exits alone stay tiles
+                                            # openings (their jambs too); the
+                                            # ground through an exit alone
+                                            # stays tiles
                     sy, sx = under.get((cy, cx), (cy, cx))
                     if (cx, cy) in covered:
                         # under or behind a building: the floor behind it,
