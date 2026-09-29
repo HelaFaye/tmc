@@ -99,7 +99,8 @@ import tileid as TI  # noqa: E402
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
 RELIEF = {"floor": 1, "wall": 1, "block": 1, "water": 0, "pit": 0, "deck": 1,
-          "grass": 5}
+          "grass": 5, "indoor": 0}  # indoors: planks and tiles lie flat; their
+                                    # seams read as speckle in relief
 RELIEF_STEPS = {"grass": 1}     # per role; others use RELIEF_STEP
 RELIEF_STEP = 2         # px: relief is measured on blocks this size
 FLAT_SPREAD = 12.0      # luminance spread below which a drawing is flat
@@ -186,6 +187,8 @@ def despeckle_walls(cls, H):
 
 
 INTERIOR_WALL_MAX = 3   # cells: tallest drawn back wall indoors
+FLOOR_MATCH = 8         # mean |difference| per channel: drawn as the floor
+FLOOR_LONE = 2          # cells: only a blocked cluster this small
 
 
 def interior_walls(r, cls, H):
@@ -208,6 +211,35 @@ def interior_walls(r, cls, H):
     walk = cls == RE.CLASS_GROUND
     H = np.array(H, dtype=np.int64)
     raised = np.zeros_like(H)
+    # invisible collision: a blocked cell drawn as a floor cell of the room
+    # (within FLOOR_MATCH per channel) is floor -- the smith's room has an
+    # object tile drawn as a bare plank by its back wall
+    art = RE.room_art_rgb(r, 0)
+    if art is not None and walk.any():
+        art = art[:rows * 16, :cols * 16, :3].astype(np.int16)
+        fl = np.unique(np.stack([art[y * 16:y * 16 + 16, x * 16:x * 16 + 16]
+                                 for y, x in zip(*np.nonzero(walk))
+                                 if art[y * 16:y * 16 + 16, x * 16:x * 16 + 16].shape[:2] == (16, 16)]),
+                       axis=0)
+        like = np.zeros_like(blocked)
+        for y, x in zip(*np.nonzero(blocked)):
+            px = art[y * 16:y * 16 + 16, x * 16:x * 16 + 16]
+            like[y, x] = px.shape[:2] == (16, 16) and \
+                np.abs(fl - px[None]).mean(axis=(1, 2, 3)).min() <= FLOOR_MATCH
+        # only a lone cell or two, or an object tile (index 0x4000 on, set
+        # by the room's objects): a drop or a ledge drawn like the floor
+        # (the green below the logs in the tree houses) is not
+        blab, _nb = RE._label(like)
+        bsize = np.bincount(blab.ravel())
+        special = L["tile"][:rows, :cols] >= 0x4000      # object tiles
+        for y, x in zip(*np.nonzero(like)):
+            if bsize[blab[y, x]] > FLOOR_LONE and not special[y, x]:
+                continue
+            nb = [int(H[yy, xx]) for yy, xx in ((y + 1, x), (y - 1, x), (y, x - 1), (y, x + 1))
+                  if 0 <= yy < rows and 0 <= xx < cols and walk[yy, xx]]
+            if nb:
+                blocked[y, x] = False
+                H[y, x] = min(nb)
     # the house's walls are the blocked mass joined to the room's edge;
     # furniture stands apart from it and keeps its height
     lab, _n = RE._label(blocked)
@@ -235,13 +267,40 @@ def interior_walls(r, cls, H):
             for yy in run:
                 H[yy, x] = max(int(H[yy, x]), top)
                 raised[yy, x] = max(int(raised[yy, x]), top)
+    # an exit: a run of SURFACE_DOOR cells from the floor out to the room's
+    # edge with no door under it (the arch over a doorway has one) -- it is
+    # floor, walked out of, not wall
+    act = L["act"][:rows, :cols]
+    exits = np.zeros((rows, cols), bool)
+    for y in range(rows):
+        for x in range(cols):
+            if act[y, x] != ARCH_ACT or (y + 1 < rows and act[y + 1, x] == DOOR_ACT):
+                continue
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                # walk outward (away from the floor) to the edge
+                yy, xx = y, x
+                while 0 <= yy < rows and 0 <= xx < cols and act[yy, xx] == ARCH_ACT:
+                    yy, xx = yy + dy, xx + dx
+                fy, fx = y - dy, x - dx
+                while 0 <= fy < rows and 0 <= fx < cols and act[fy, fx] == ARCH_ACT:
+                    fy, fx = fy - dy, fx - dx
+                if not (0 <= yy < rows and 0 <= xx < cols) and \
+                        0 <= fy < rows and 0 <= fx < cols and walk[fy, fx]:
+                    exits[y, x] = True
+                    H[y, x] = int(H[fy, fx])
+                    break
+    # the ring of wall round a room stands at least a storey: the front
+    # wall's drawing is its top, where the measured drop read 2-6px under
+    # its window ornaments
+    ring = np.isin(lab, list(edge)) & blocked & ~exits
+    H = np.where(ring, np.maximum(H, 16), H)
     # the wall behind a dresser or a shelf is the same wall: carry each
     # raised row sideways along the wall it belongs to
     for y, x in zip(*np.nonzero(raised)):
         top = int(raised[y, x])
         for step in (-1, 1):
             xx = x + step
-            while 0 <= xx < cols and blocked[y, xx] and lab[y, xx] in edge \
+            while 0 <= xx < cols and blocked[y, xx] and lab[y, xx] in edge and not exits[y, xx] \
                     and tt[y, xx] == tt[0, xx] and blocked[:y + 1, xx].all():
                 H[y, xx] = max(int(H[y, xx]), top)
                 xx += step
@@ -270,6 +329,7 @@ def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     doors = []
     if layer == 0:
         H, doors = find_doors(r, cls, H, layer)
+        H = TI.apply_height_overrides(r, H)      # vr/tiles/overrides.txt
     return cls, H, bl, flights, doors
 
 
@@ -1325,7 +1385,7 @@ def tile_key(pixels, role, hmap=None):
     return k.hexdigest()[:12] + ROLE_CODE.get(role, role[:2])
 
 
-ROLE_CODE = {"floor": "f", "wall": "w", "block": "k", "water": "a", "pit": "p",
+ROLE_CODE = {"floor": "f", "indoor": "i", "wall": "w", "block": "k", "water": "a", "pit": "p",
              "deck": "d", "grass": "g", "bush": "bu", "sapling": "sa", "rock": "ro",
              "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr",
              "signpost": "si", "foliage": "fo", "flowers": "fl"}
@@ -1775,8 +1835,10 @@ def build_area(job):
             role = room_roles(r, cls, H, bl, art)
             for (cy, cx) in shapes:
                 role[cy, cx] = fam[cy, cx]
+            if not RE.overlay_overhead(r):
+                role[role == "floor"] = "indoor"
             for (cy, cx), (sy, sx) in under.items():
-                role[cy, cx] = role[sy, sx] if role[sy, sx] in ("floor", "grass") else "floor"
+                role[cy, cx] = role[sy, sx] if role[sy, sx] in ("floor", "grass", "indoor") else "floor"
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):

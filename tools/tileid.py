@@ -281,6 +281,112 @@ def drawing_kind(px):
     return "prop"
 
 
+# --- what a person says ----------------------------------------------------
+# The rules above are guesses from the drawing; the overrides file is where
+# a wrong guess is corrected, cell by cell or tile type by tile type, and
+# where a height the drawing cannot tell is written down. It holds only
+# room numbers, cell coordinates and tile type numbers -- nothing from the
+# ROM -- so it is committed. tile_review.py draws a room with every cell
+# labelled, to read the coordinates off.
+#
+#   # where                what
+#   03_01 38,24            family=stump          one cell
+#   34_17 6,2-12,2         height=0              a rectangle, inclusive
+#   21_00 type=0x3e0       family=fence          every cell of a tile type
+#   a3    type=0x70        family=-              a whole area; - = terrain
+#   *     type=0x176       family=signpost       the whole game
+#
+# family: any family name, or - for none (the terrain role stands).
+# height: the cell's terrain height in px, set after every other stage.
+OVERRIDES = HERE.parent / "vr" / "tiles" / "overrides.txt"
+_overrides_cache = {}
+
+
+def load_overrides(path=None):
+    """The override rules, parsed once per path. TMC_TILE_OVERRIDES names
+    another file; an empty value turns them off."""
+    import os
+    if path is None:
+        path = os.environ.get("TMC_TILE_OVERRIDES", str(OVERRIDES))
+    if not path:
+        return []
+    if path in _overrides_cache:
+        return _overrides_cache[path]
+    rules = []
+    p = Path(path)
+    if p.is_file():
+        for n, line in enumerate(p.read_text().splitlines(), 1):
+            f = line.split("#", 1)[0].split()
+            if len(f) < 3:
+                continue
+            try:
+                rule = _parse_rule(f)
+            except ValueError as e:
+                print(f"{p}:{n}: {e}", file=sys.stderr)
+                continue
+            rule["line"] = n
+            rules.append(rule)
+    _overrides_cache[path] = rules
+    return rules
+
+
+def _parse_rule(f):
+    who, where, what = f[0], f[1], f[2:]
+    rule = {}
+    if who == "*":
+        pass
+    elif who.startswith("a"):
+        rule["area"] = int(who[1:])
+    else:
+        a, rm = who.split("_")
+        rule["area"], rule["room"] = int(a), int(rm)
+    if where.startswith("type="):
+        rule["type"] = int(where[5:], 0)
+    else:
+        if "room" not in rule:
+            raise ValueError("cell coordinates need a room (AA_RR)")
+        ends = [tuple(int(v) for v in e.split(",")) for e in where.split("-")]
+        (x0, y0), (x1, y1) = ends[0], ends[-1]
+        rule["cells"] = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+    for kv in what:
+        k, _, v = kv.partition("=")
+        if k == "family":
+            if v != "-" and v not in PROP_FAMILIES and v not in UPRIGHT_FAMILIES \
+                    and v not in ("foliage", "flowers"):
+                raise ValueError(f"unknown family {v!r}")
+            rule["family"] = v
+        elif k == "height":
+            rule["height"] = int(v)
+        else:
+            raise ValueError(f"unknown key {k!r}")
+    return rule
+
+
+def override_mask(r, rule, tt=None):
+    """The cells of room r a rule covers."""
+    h, w = r.cells_h, r.cells_w
+    m = np.zeros((h, w), bool)
+    if rule.get("area", r.area) != r.area or rule.get("room", r.room) != r.room:
+        return m
+    if "type" in rule:
+        if tt is None:
+            L = r.layers[0]
+            tt = L["tiletype"][np.clip(L["tile"], 0, len(L["tiletype"]) - 1)]
+        return np.asarray(tt[:h, :w] == rule["type"])
+    x0, y0, x1, y1 = rule["cells"]
+    m[max(0, y0):y1 + 1, max(0, x0):x1 + 1] = True
+    return m
+
+
+def apply_height_overrides(r, H):
+    """H with the height rules of the overrides file applied."""
+    H = np.array(H, dtype=np.int64)
+    for rule in load_overrides():
+        if "height" in rule:
+            H[override_mask(r, rule)] = rule["height"]
+    return H
+
+
 def families(r, cls, H, art, layer=0):
     """Family per cell (None where the terrain role stands), and the floor
     height each prop stands on."""
@@ -348,6 +454,11 @@ def families(r, cls, H, art, layer=0):
             if _open_ns(walk, cy, cx) and all_wood(px, ground):
                 fam[cy, cx] = "fence"
                 grew = True
+    # what a person has said a cell is wins (vr/tiles/overrides.txt)
+    for rule in load_overrides():
+        if "family" in rule:
+            m = override_mask(r, rule, tt)
+            fam[m] = None if rule["family"] == "-" else rule["family"]
     for cy in range(h):
         for cx in range(w):
             f = fam[cy, cx]

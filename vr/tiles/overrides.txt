@@ -1,0 +1,18 @@
+# Tile overrides: what a cell is, where tileid's guess from the drawing is
+# wrong, and heights the drawing cannot tell. Read by tools/tileid.py
+# (families) and tools/tilevox.py (heights, set after every other stage).
+# Coordinates and tile type numbers only -- nothing from the ROM.
+#
+# Find a cell's coordinates with tools/tile_review.py DUMPS AA_RR.
+#
+#   AA_RR x,y              one cell of room AA_RR
+#   AA_RR x0,y0-x1,y1      a rectangle, inclusive
+#   AA_RR type=0xNNN       every cell of that tile type in the room
+#   aN    type=0xNNN       ... in area N
+#   *     type=0xNNN       ... in the whole game
+#
+# followed by family=NAME (bush sapling rock mushroom stump planter prop
+# signpost fence foliage flowers, or - for none) and/or height=PX.
+
+# South Hyrule Field: the chopping stump by Link's house
+03_01 38,24            family=stump
