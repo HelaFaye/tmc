@@ -23,13 +23,26 @@ Families, and what the tile stage builds for each:
   bush, sapling, rock, mushroom    a dome on the drawn outline
   stump                            a flat-topped drum on the outline
   planter, prop                    a box on the outline
-  signpost                         a board: the outline, stood up
+  signpost                         an upright: the drawing stood on its
+                                   foot, the drawing on its front
+  fence                            an upright of its wood: a rail of logs
+                                   (generic prop 0x70, widest at its foot,
+                                   running on into the next cell) or a
+                                   post (a narrow wood blob with pale end
+                                   grain) in a cell only partly blocked --
+                                   the stakes around Link's yard
   foliage                          a leafy mass, its top rounding off
                                    toward the drawn edge: a blocked
                                    cell drawn vivid leaf green -- hedges,
                                    the field's round trees (the
                                    woods' forest mass is teal, muted)
-  flowers                          floor with its petals standing up
+  flowers                          floor with its petals standing up:
+                                   bright specks, white or not leaf-
+                                   coloured, that are not one of the
+                                   room's floor colours (South Hyrule
+                                   Field's dry grass is 18% of its floor
+                                   and saturated yellow), on a fully
+                                   walkable cell
   (anything else keeps its terrain role)
 
 The outline is the drawing less the floor it stands on: the colours of
@@ -72,15 +85,26 @@ HEDGE_HUE = (70, 150)   # a hedge is leaf green; the woods are teal (160+)
 HEDGE_SAT = 0.45        # mean saturation: clipped hedges are vivid
 HEDGE_BRIGHT = 0.5      # mean brightness: hedges are clipped and lit; the
                         # forest mass under the woods' canopy is not
-PETALS = 10             # saturated non-green pixels on grass: flowers
+PETALS = 6              # petal pixels on grass: flowers
+PETAL_BLOB = 12         # px: a petal cluster is small; a dirt patch is not
+GROUND_SHARE = 0.03     # a colour this common on the room's floor is floor
+
+FENCE_WOOD = 0.5        # share of a fence drawing that is wood or outline
+POST_W = (3, 9)         # px: a post's drawn width
+POST_MIN = 14           # px: smallest post drawing
+FENCE_ALL_WOOD = 0.6    # share of the whole drawing (off the floor) in wood
+FENCE_COLOUR = 0.1      # bright colour in it at most: a flower box is not
 
 # what each family is built as, for tilevox
 SHAPES = {
     "bush": ("dome", 12), "sapling": ("dome", 16), "rock": ("dome", 10),
     "mushroom": ("dome", 12), "stump": ("drum", 8), "planter": ("box", 10),
-    "prop": ("box", 10), "signpost": ("board", 14),
+    "prop": ("box", 10),
 }
 PROP_FAMILIES = tuple(SHAPES)
+# drawn standing, with next to no depth: built as uprights (tilevox), the
+# drawing on the front, depth north of the foot
+UPRIGHT_FAMILIES = {"fence": 4, "signpost": 4}
 
 
 def _hsv(px):
@@ -99,20 +123,134 @@ def green_share(px, lo=60, hi=170):
     return float(((hue >= lo) & (hue < hi) & (sat >= 0.3)).mean())
 
 
-def petal_mask(px):
-    """Petal pixels: saturated, bright, neither leaf green nor the teal to
-    blue of water sparkle, nor the magenta the art uses for 'not drawn'."""
+def ground_palette(art, cls):
+    """The room's floor colours, packed 0xRRGGBB: every colour covering at
+    least GROUND_SHARE of its walkable pixels. South Hyrule Field's dry
+    grass (224,200,40) is 18% of its floor -- yellow, saturated, bright,
+    and not a flower."""
+    h, w = cls.shape
+    A = np.asarray(art)[:h * 16, :w * 16, :3].astype(np.int64)
+    walk = np.kron(cls == RE.CLASS_GROUND, np.ones((16, 16), bool))[:A.shape[0], :A.shape[1]]
+    if not walk.any():
+        return np.zeros(0, np.int64)
+    key = _pack(A[walk])
+    vals, counts = np.unique(key, return_counts=True)
+    return vals[counts >= GROUND_SHARE * counts.sum()]
+
+
+def _pack(px):
+    px = np.asarray(px).astype(np.int64)
+    return (px[..., 0] << 16) | (px[..., 1] << 8) | px[..., 2]
+
+
+def petal_mask(px, ground=None):
+    """Petal pixels: bright, white or of a colour that is not leaf green
+    nor the teal to blue of water sparkle nor the magenta the art uses for
+    'not drawn', not one of the room's floor colours (ground_palette), in
+    clusters of PETAL_BLOB pixels at most."""
     hue, sat, v = _hsv(px)
     magenta = (px[..., 0] >= 240) & (px[..., 1] <= 16) & (px[..., 2] >= 240)
-    return (((hue < 60) | (hue >= 260)) & (sat >= 0.5) & (v >= 0.7) & ~magenta)
+    white = (sat < 0.35) & (v >= 0.8)
+    coloured = ((hue < 60) | (hue >= 260)) & (sat >= 0.5) & (v >= 0.7)
+    m = (white | coloured) & ~magenta
+    if ground is not None and len(ground):
+        m &= ~np.isin(_pack(px[..., :3]), ground)
+    lab, n = RE._label(m)
+    if n:
+        sizes = np.bincount(lab.ravel())
+        m &= sizes[lab] <= PETAL_BLOB
+    return m
 
 
-def petal_count(px):
-    return int(petal_mask(px).sum())
+def petal_count(px, ground=None):
+    return int(petal_mask(px, ground).sum())
 
 
-def petal_blobs(px):
-    return RE._label(petal_mask(px))[1]
+def petal_blobs(px, ground=None):
+    return RE._label(petal_mask(px, ground))[1]
+
+
+def wood_mask(px):
+    """Wood and its outline: brown (hue under 50 or red-purple, saturated,
+    not bright), the pale end grain of a cut post, and the dark outline."""
+    hue, sat, v = _hsv(px)
+    brown = ((hue < 50) | (hue >= 300)) & (sat >= 0.2) & (v >= 0.2) & (v < 0.9)
+    grain = (hue >= 30) & (hue < 65) & (sat >= 0.2) & (sat < 0.7) & (v >= 0.8)
+    dark = v < 0.3
+    return brown | grain | dark
+
+
+def fence_blobs(px, ground=None):
+    """The fence in a drawing: its blobs off the room's floor colours
+    (ground_palette), POST_MIN pixels or more, that are mostly wood."""
+    m = drawn_mask(px) if ground is None or not len(ground) \
+        else ~np.isin(_pack(px[..., :3]), ground)
+    wood = wood_mask(px)
+    lab, n = RE._label(m & wood)
+    out = []
+    for k in range(1, n + 1):
+        b = lab == k
+        if b.sum() >= POST_MIN and wood[b].mean() >= FENCE_WOOD:
+            out.append(b)
+    return out
+
+
+def all_wood(px, ground):
+    """The drawing, off the room's floor colours, is wood: a fence, not a
+    flower box or a stall with wood in it."""
+    m = ~np.isin(_pack(px[..., :3]), ground) if ground is not None and len(ground) \
+        else drawn_mask(px)
+    if m.sum() < POST_MIN:
+        return False
+    wood = wood_mask(px)
+    _h, sat, v = _hsv(px)
+    colour = (sat >= 0.5) & (v >= 0.7) & ~wood
+    return wood[m].mean() >= FENCE_ALL_WOOD and colour[m].mean() < FENCE_COLOUR
+
+
+def is_rail(b):
+    """A rail: a blob running edge to edge (on into the next cell), widest
+    at its foot -- posts stand up out of it. A stump is widest at its cut
+    top; a roof fills its cell."""
+    xs = np.nonzero(b.any(axis=0))[0]
+    if not (xs.min() <= 1 and xs.max() >= 14) or b.mean() > 0.95:
+        return False
+    rows = b.sum(axis=1)
+    ys = np.nonzero(rows)[0]
+    mid = (ys.min() + ys.max() + 1) // 2
+    return rows[mid:ys.max() + 1].mean() >= rows[ys.min():mid].mean() + 0.5
+
+
+def has_post(px, ground=None):
+    """A post: a wood blob POST_W wide, taller than wide, with pale end
+    grain in its upper half."""
+    _h, sat, v = _hsv(px)
+    hue = _h
+    grain = (hue >= 30) & (hue < 65) & (sat >= 0.2) & (sat < 0.7) & (v >= 0.8)
+    for b in fence_blobs(px, ground):
+        ys, xs = np.nonzero(b)
+        bw, bh = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+        if not (POST_W[0] <= bw <= POST_W[1]) or bh < bw:
+            continue
+        upper = b & (np.arange(16)[:, None] <= ys.min() + bh // 2)
+        if (grain & upper).any():
+            return True
+    return False
+
+
+def drawn_mask(px, floor_px=None):
+    """Every pixel that is not the floor's (outline() keeps only the
+    largest blob; a fence cell draws two posts)."""
+    if floor_px is None:
+        edge = np.concatenate([px[0], px[-1], px[:, 0], px[:, -1]])
+        vals, counts = np.unique(edge.reshape(-1, 3), axis=0, return_counts=True)
+        bg = vals[counts >= max(2, counts.max() // 4)]
+    else:
+        bg = np.unique(floor_px.reshape(-1, 3), axis=0)
+    m = np.ones(px.shape[:2], bool)
+    for c in bg:
+        m &= ~(px[..., :3] == c).all(axis=-1)
+    return m
 
 
 def drawing_kind(px):
@@ -166,6 +304,8 @@ def families(r, cls, H, art, layer=0):
     sizes = np.bincount(lab.ravel())
     fam = np.empty((h, w), dtype=object)
     floor = np.zeros((h, w), np.int64)
+    ground = ground_palette(art, cls)
+    partial = (coll >= 1) & (coll <= 14)          # some quadrants blocked
     for cy in range(h):
         for cx in range(w):
             px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
@@ -180,20 +320,57 @@ def families(r, cls, H, art, layer=0):
                     f = BY_LIFT_ACT[int(act[cy, cx])]
                 elif v == PROP_TYPE and sizes[lab[cy, cx]] <= PROP_CLUSTER:
                     f = drawing_kind(px)
+                elif v == PROP_TYPE and _open_ns(walk, cy, cx) and all_wood(px, ground) and (
+                        any(is_rail(b) for b in fence_blobs(px, ground))
+                        or has_post(px, ground)):
+                    f = "fence"                 # a rail of logs, posts
                 elif (sizes[lab[cy, cx]] >= HEDGE_CLUSTER
                       and green_share(px, *HEDGE_HUE) > GREEN_SHARE and H[cy, cx] <= 16
                       and _hsv(px)[2].mean() >= HEDGE_BRIGHT
                       and _hsv(px)[1].mean() >= HEDGE_SAT):
                     f = "foliage"
-            elif (walk[cy, cx] and petal_count(px) >= PETALS and petal_blobs(px) >= 2
-                  and green_share(px) > 0.35):
+            elif walk[cy, cx] and partial[cy, cx]:
+                if has_post(px, ground) and all_wood(px, ground):
+                    f = "fence"                 # stakes, half the cell blocked
+            elif (walk[cy, cx] and coll[cy, cx] == 0 and petal_blobs(px, ground) >= 2
+                  and petal_count(px, ground) >= PETALS and green_share(px) > 0.35):
                 f = "flowers"
             fam[cy, cx] = f
-            if f in PROP_FAMILIES:
+    # a fence runs on: the rail cells beside a fence drawn mostly in wood
+    # (an end post, a gap between posts) are fence too
+    grew = True
+    while grew:
+        grew = False
+        for cy, cx in zip(*np.nonzero(blocked & (tt == PROP_TYPE) & (fam == None))):  # noqa: E711
+            if not any(0 <= x < w and fam[cy, x] == "fence" for x in (cx - 1, cx + 1)):
+                continue
+            px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+            if _open_ns(walk, cy, cx) and all_wood(px, ground):
+                fam[cy, cx] = "fence"
+                grew = True
+    for cy in range(h):
+        for cx in range(w):
+            f = fam[cy, cx]
+            if f in PROP_FAMILIES or f in UPRIGHT_FAMILIES:
                 nb = [int(H[y, x]) for y, x in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1))
                       if 0 <= y < h and 0 <= x < w and walk[y, x]]
                 floor[cy, cx] = min(nb) if nb else 0
     return fam, floor
+
+
+def _open_ns(walk, cy, cx):
+    """Open ground north or south of the cell: a fence stands in the open,
+    a roof or a wall's face does not."""
+    return any(0 <= y < walk.shape[0] and walk[y, cx] for y in (cy - 1, cy + 1))
+
+
+def _floor_beside(art, walk, cy, cx):
+    """The drawing of a walkable cell next to (cy, cx), or None."""
+    h, w = walk.shape
+    for y, x in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+        if 0 <= y < h and 0 <= x < w and walk[y, x]:
+            return art[y * 16:y * 16 + 16, x * 16:x * 16 + 16]
+    return None
 
 
 def outline(px, floor_px=None):
@@ -295,9 +472,9 @@ def foliage_hmaps(art, fam):
     return out
 
 
-def flower_hmap(px):
+def flower_hmap(px, ground=None):
     """Grass with its petals standing PETAL_H above it."""
-    return (1 + PETAL_H * petal_mask(px)).astype(np.int64)
+    return (1 + PETAL_H * petal_mask(px, ground)).astype(np.int64)
 
 
 # --------------------------------------------------------------------- CLI --

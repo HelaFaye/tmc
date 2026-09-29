@@ -55,6 +55,8 @@ cell places the model for its drawing on top of its height.
              compact, bright, saturated blob with a pale core, taller than
              wide, burning alone) over a blocked post. Their whole drawing
              is height; the silhouette is extruded upright on its foot.
+             Fences and signposts (tileid) are built the same way, 4px
+             deep, over the floor beside them.
 
   overlay    Where the top layer is drawn above the bottom one (outdoors),
              its cells are tiles too, cut out along the layer's
@@ -1263,7 +1265,8 @@ def upright_quads(u, ox, oz, lift):
     face shows the drawing as seen from the front."""
     mask = u["mask"]
     rows, cols = mask.shape
-    Hg = np.where(mask, UPRIGHT_DEPTH, 0).astype(int)
+    depth = u.get("depth", UPRIGHT_DEPTH)
+    Hg = np.where(mask, depth, 0).astype(int)
     q = []
     X0 = ox + u["x0"]
     base = u["base"] + lift
@@ -1275,13 +1278,42 @@ def upright_quads(u, ox, oz, lift):
             # emit frame: x across, y = extrusion, z = drawn row from top
             X = x
             Y = base + (u["foot"] - (u["top"] + z))
-            Z = zf - UPRIGHT_DEPTH + y
+            Z = zf - depth + y
             out.append((X, Y, Z))
         uv = [(x - ox, u["top"] + z) for (x, _y, z) in pts]
         q.append((out, uv))
     RE.emit_canopy(quad, (Hg, np.zeros((rows, cols, 3)), mask), X0, 0, 0,
                    step=1, uvf=None, merge=True)
     return q
+
+
+def drawn_upright(r, cls, fam, art, cy, cx, family, ground, base):
+    """A fence or a signpost as an upright: its drawing (the wood of a
+    fence, the whole of a sign, off the room's floor colours) stood on the
+    floor at its foot, TI.UPRIGHT_FAMILIES deep. The cell under it shows
+    the floor beside it -- the drawing is not also painted on the ground.
+    None if nothing is drawn."""
+    px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+    if family == "fence":
+        blobs = TI.fence_blobs(px, ground)
+        m = np.zeros((16, 16), bool)
+        for b in blobs:
+            m |= b
+    else:
+        m = TI.outline(px, None) & ~np.isin(TI._pack(px[..., :3]), ground)
+    if m.sum() < TI.POST_MIN:
+        return None
+    ys = np.nonzero(m.any(axis=1))[0]
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    h, w = cls.shape
+    under = (cy, cx)
+    for y, x in ((cy + 1, cx), (cy - 1, cx), (cy, cx - 1), (cy, cx + 1)):
+        if 0 <= y < h and 0 <= x < w and cls[y, x] == RE.CLASS_GROUND and fam[y, x] is None:
+            under = (y, x)
+            break
+    return dict(cx=cx, x0=cx * 16, top=cy * 16 + y0, foot=cy * 16 + y1, base=base,
+                mask=m[y0:y1], cells=[(cx, cy)], depth=TI.UPRIGHT_FAMILIES[family],
+                under=under)
 
 
 def tile_key(pixels, role, hmap=None):
@@ -1700,8 +1732,10 @@ def build_area(job):
             # own shape, foliage rounds off, flowers stand up
             fam = np.empty(cls.shape, dtype=object)
             shapes = {}
+            under = {}
             if not a.no_families:
                 fam, ffloor = TI.families(r, cls, H, art)
+                ground = TI.ground_palette(art, cls)
                 taken = set(covered) | {c for u in ups for c in u["cells"]} \
                     | {(d["cx"], y) for d in doors for y in range(d["top"], d["cy"] + 1)}
                 for (bcy, bcx) in bl:
@@ -1722,7 +1756,16 @@ def build_area(job):
                                 break
                         shapes[(cy, cx)] = (TI.shape_heights(px, f, fl_px), 0)
                     elif f == "flowers":
-                        shapes[(cy, cx)] = (TI.flower_hmap(px), 0)
+                        shapes[(cy, cx)] = (TI.flower_hmap(px, ground), 0)
+                    elif f in TI.UPRIGHT_FAMILIES:
+                        u = drawn_upright(r, cls, fam, art, cy, cx, f, ground,
+                                          int(ffloor[cy, cx]))
+                        if u is None:
+                            fam[cy, cx] = None
+                            continue
+                        ups.append(u)
+                        H[cy, cx] = u["base"]
+                        under[(cy, cx)] = u["under"]
                 # foliage: the solid stops FOLIAGE_ROUND short, and the
                 # rounded top rises from there -- walls end where it begins
                 fol = TI.foliage_hmaps(art, fam)
@@ -1732,13 +1775,15 @@ def build_area(job):
             role = room_roles(r, cls, H, bl, art)
             for (cy, cx) in shapes:
                 role[cy, cx] = fam[cy, cx]
+            for (cy, cx), (sy, sx) in under.items():
+                role[cy, cx] = role[sy, sx] if role[sy, sx] in ("floor", "grass") else "floor"
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
                     ro = role[cy, cx]
                     if ro is None:
                         continue
-                    sy, sx = cy, cx
+                    sy, sx = under.get((cy, cx), (cy, cx))
                     if (cx, cy) in covered:
                         # under or behind a building: the floor behind it,
                         # else the floor in front
