@@ -3128,6 +3128,12 @@ def build_area(job):
                                     and cls[yy, xx] == RE.CLASS_GROUND:
                                 fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
                                 break
+                        if fl_px is None:   # in water: what it stands in
+                            for yy, xx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                                if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w \
+                                        and fam[yy, xx] is None:
+                                    fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
+                                    break
                         shapes[(cy, cx)] = (TI.shape_heights(px, f, fl_px), 0)
                     elif f == "flowers":
                         shapes[(cy, cx)] = (TI.flower_hmap(px, ground), 0)
