@@ -2720,40 +2720,72 @@ def cuboid(x0, x1, y0, y1, z0, z1, front, top=None):
 STAIR_STEP = 4          # px: a stairwell's step, deep and tall
 
 
-def stairwell_pieces(r, cls, shell):
+def stairwell_pieces(r, cls, shell, art=None):
     """A box room's stairwell (Link's, up to his loft): a run of cells in
     the wall's band that the game marks as a way through (Picori's door
-    surfaces) but is neither the ring nor an exit. Built as a flight
-    climbing north from the floor to the top of the wall; by the camera's
-    rule each step shows its drawn top and riser (row = depth - height),
-    so the drawn steps land on the steps and the dark beyond them on the
-    ones out of sight."""
+    surfaces) but is neither the ring nor an exit. Its steps are built as
+    drawn: each lit tread (a blob of the stairs' lighter colours) is a
+    step, the dark band under it its riser -- as tall as it is drawn --
+    so the k-th tread from the bottom stands k risers high, its footprint
+    the drawn tread moved that far south (row = depth - height). A curved
+    flight stays curved; only the steps the doorway shows are built, the
+    dark beyond them left open."""
+    if art is None:
+        return []
     act = r.layers[0]["act"][:cls.shape[0], :cls.shape[1]]
     names = {v: PL.act_short(int(v)) or "" for v in np.unique(act)}
     door = np.vectorize(lambda v: "DOOR" in names[v])(act)
     well = door & (cls == RE.CLASS_WALL) & ~shell["R"] & ~shell["exits"]
-    H = shell["box"]["H"]
+    if not well.any():
+        return []
+    h, w = cls.shape
+    A = np.asarray(art)[:h * 16, :w * 16, :3].astype(np.int64)
+    lum = A @ np.array([299, 587, 114]) // 1000
+    cells = np.kron(well, np.ones((16, 16), bool))
+    drawn = cells & (lum >= STAIR_DARK)             # not the dark beyond
+    if drawn.sum() < 32:
+        return []
+    cut = np.median(lum[drawn])
+    tread = drawn & (lum >= cut)
+    riser = drawn & (lum < cut)
+    lab, n = RE._label(tread)
+    blobs = [lab == k for k in range(1, n + 1) if (lab == k).sum() >= STAIR_TREAD_MIN]
+    if not blobs:
+        return []
+    blobs.sort(key=lambda m: -np.nonzero(m)[0].mean())     # bottom step first
+    # a riser's height: the dark rows under a tread, the median over columns
+    rs = []
+    for x in np.nonzero(riser.any(axis=0))[0]:
+        col = riser[:, x]
+        k = 0
+        for v in col:
+            if v:
+                k += 1
+            elif k:
+                rs.append(k)
+                k = 0
+        if k:
+            rs.append(k)
+    e = int(np.clip(np.median(rs) if rs else STAIR_STEP, 2, 8))
+    F = np.zeros_like(cells)
     out = []
-    for cx in range(cls.shape[1]):
-        ys = np.nonzero(well[:, cx])[0]
-        if not len(ys):
-            continue
-        ya, yb = int(ys.min()), int(ys.max())
-        if not (ys == np.arange(ya, yb + 1)).all():
-            continue
-        D = (yb - ya + 1) * 16
-        n = max(2, D // STAIR_STEP)
-        d, e = D / n, H / n
-        x0, x1 = cx * 16, cx * 16 + 16
-        q = []
-        for k in range(1, n + 1):
-            z1 = (yb + 1) * 16 - d * (k - 1)
-            z0, h = z1 - d, e * k
-            q += cuboid(x0, x1, 0, h, z0, z1,
-                        (x0, x1, max(0.0, z1 - h), max(0.0, z1 - h + e)),
-                        (x0, x1, max(0.0, z0 - h), max(0.0, z1 - h)))
-        out.append(dict(quads=q, base=shell["base"]))
+    for k, m in enumerate(blobs, 1):
+        hh = e * k
+        # the tread and the riser drawn under it: one step, solid to the floor
+        D = m.copy()
+        for x in np.nonzero(m.any(axis=0))[0]:
+            z1 = int(np.nonzero(m[:, x])[0].max()) + 1
+            z2 = z1
+            while z2 < D.shape[0] and riser[z2, x]:
+                z2 += 1
+            D[z1:z2, x] = True
+        Wp, _fill = projective_plan(D, F, hh)
+        out.append(dict(Wp=Wp, Hw=hh, base=shell["base"], fill=[], F=F))
     return out
+
+
+STAIR_DARK = 40         # darker than this in a stairwell is the dark beyond
+STAIR_TREAD_MIN = 12    # px: a lit blob this big is a tread
 
 
 def table_quads(raw, fr, hh, art=None):
@@ -3535,7 +3567,7 @@ def build_area(job):
                 fh = furniture_heights(r, cls, shell, fam, taken_, art)
                 shell["pieces"] = [pz for _one, pz in furniture_prisms(cls, shell, fh, art)]
                 if shell.get("box") is not None:
-                    shell["pieces"] += stairwell_pieces(r, cls, shell)
+                    shell["pieces"] += stairwell_pieces(r, cls, shell, art)
                 for (y_, x_) in fh:
                     H[y_, x_] = shell["base"]
                     shell["R"][y_, x_] = True       # built by its prism, not a tile

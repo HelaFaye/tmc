@@ -564,7 +564,8 @@ def outline(px, floor_px=None):
 
 
 def shape_heights(px, family, floor_px=None):
-    """16x16 column heights (0 = nothing) for a prop family's model."""
+    """16x16 column heights for a prop family's model; round the prop, the
+    ground (or water) it stands in, flat at 1 -- never a hole."""
     kind, hmax = SHAPES[family]
     m = outline(px, floor_px)
     if family == "stone":
@@ -572,7 +573,7 @@ def shape_heights(px, family, floor_px=None):
         hue, sat, _v = _hsv(px)
         m = m & ~((hue >= 160) & (hue < 260) & (sat >= 0.25))
     if kind in ("box", "board"):
-        return np.where(m, hmax, 0).astype(np.int64)
+        return np.where(m, hmax, 1).astype(np.int64)
     # distance from the outline's edge, for domes and drums
     dist = np.where(m, 99, 0).astype(np.int64)
     P = np.pad(m, 1)
@@ -583,18 +584,18 @@ def shape_heights(px, family, floor_px=None):
         nb = np.minimum.reduce([P[:-2, 1:-1], P[2:, 1:-1], P[1:-1, :-2], P[1:-1, 2:]])
         dist = np.where(m, np.minimum(dist, nb + 1), 0)
     if kind == "drum":
-        return np.where(m, np.where(dist >= 2, hmax, hmax - 2), 0).astype(np.int64)
+        return np.where(m, np.where(dist >= 2, hmax, hmax - 2), 1).astype(np.int64)
     R = max(1.0, float(dist.max()))
     t = np.clip(dist / R, 0, 1)
     if kind == "spike":                     # a point: rising straight to it
-        return np.where(m, np.maximum(1, np.rint(hmax * t)), 0).astype(np.int64)
+        return np.where(m, np.maximum(1, np.rint(hmax * t)), 1).astype(np.int64)
     dome = 1 + np.rint((hmax - 1) * np.sqrt(1.0 - (1.0 - t) ** 2))
     if family in ("bush", "sapling"):
         # leaf clumps: lit pixels up a voxel, shadow down
         lum = px[..., :3].astype(float).mean(axis=-1)
         med = np.median(lum[m]) if m.any() else 0
         dome = dome + np.where(lum > med + 20, 1, np.where(lum < med - 30, -1, 0))
-    return np.where(m, np.maximum(dome, 1), 0).astype(np.int64)
+    return np.where(m, np.maximum(dome, 1), 1).astype(np.int64)
 
 
 FOLIAGE_ROUND = 8       # px: how far a leafy top falls off at its edge
