@@ -12,10 +12,11 @@ From those screenshots it builds:
   sprite  where that differs from the room's own tile layers: what the
           sprites draw
 
-Link is taken out by capturing each view twice with him standing in two
-places: where he stands in one, the other shows what is behind him. The
-HUD (hearts, buttons, rupees) sits in fixed places on the screen and is
-masked there. A capture is placed on the room where it best matches the
+The harness hides the HUD with the game's own flags (gHUD.hideFlags =
+HUD_HIDE_ALL) and stops drawing Link (TMC_ROOMCAP_CLEAN), so a capture is
+the room alone. (With CLEAN off -- a game built without that option --
+each view is captured twice with Link in two places, each showing what
+he hides in the other, and the HUD is masked where it sits.) A capture is placed on the room where it best matches the
 room's tile art; a room larger than the screen is covered by several
 views.
 
@@ -57,6 +58,9 @@ SETTLE = 300                    # frames after the warp before the capture
 PROGRESS = 1                    # dungeons cleared: past the prologue, whose scripts
                                 # take over a warp into Hyrule Field or the town
 MATCH_MIN = 0.7                 # a capture this much like the room's tile art is it
+CLEAN = True                    # the harness hides the HUD (the game's own
+                                # HUD_HIDE_ALL) and Link (TMC_ROOMCAP_CLEAN):
+                                # one capture a view, nothing to mask
 
 
 def layers(r):
@@ -71,18 +75,62 @@ def layers(r):
     return a0, a0
 
 
+BINARY = os.environ.get("TMC_BINARY", "tmc_pc")
+SHADE_SLOPES = np.arange(0.5, 0.97, 1 / 32)   # a blend keeps this share of the art
+SHADE_FIT = 12                  # px value: how close a pixel must follow the blend
+SHADE_SHARE = 0.25              # of the differing pixels the blend must explain
+
+
+def passing_shade(shown, comp):
+    """Pixels where the picture is the tile art under a blended layer --
+    out = s * art + t, the same s and t (per channel) wherever it passes:
+    the overworld's cloud shadows. The blend is learned from the pixels
+    that differ, the one that explains most of them; none if it explains
+    too few (they are sprites, not shade)."""
+    diff = np.abs(shown - comp).sum(axis=2) > 24
+    mask = np.zeros(diff.shape, bool)
+    passing_shade.mask = mask
+    if diff.sum() < 64:
+        return mask
+    a = comp[diff].astype(float)
+    b = shown[diff].astype(float)
+    best = None
+    for sl in SHADE_SLOPES:
+        t = np.median(b - sl * a, axis=0)
+        fit = (np.abs(b - (sl * a + t)) <= SHADE_FIT).all(axis=1)
+        if best is None or fit.sum() > best[0]:
+            best = (int(fit.sum()), sl, t)
+    n, sl, t = best
+    if n < SHADE_SHARE * len(a):
+        return mask
+    mask = diff & (np.abs(shown.astype(float) - (sl * comp + t)) <= SHADE_FIT).all(axis=2)
+    passing_shade.mask = mask
+    return mask
+
+
 def capture(game, area, room, x, y, out, settle=SETTLE):
-    """Run the game once: warp to (x, y) in world pixels and save the screen."""
+    """Run the game once: warp Link to (x, y) in the room's own pixels (the
+    debug warp's coordinates; above 0x3ff they mean "keep the position")
+    and save the screen. Returns (RGB, camera (x, y) in room pixels or
+    None); raises if the game ended up in another room."""
     env = dict(os.environ, TMC_AUTOPLAY="1", TMC_ROOMCAP="1",
                TMC_ROOMCAP_WARP=f"{area:#x},{room:#x},{x:#x},{y:#x},0",
                TMC_ROOMCAP_OUT=str(out), TMC_ROOMCAP_SETTLE=str(settle),
                TMC_ROOMCAP_PROGRESS=str(PROGRESS),
+               TMC_ROOMCAP_CLEAN="1" if CLEAN else "0",
                SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
-    subprocess.run(["./tmc_pc", "--no-audio"], cwd=game, env=env, timeout=600,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = subprocess.run([f"./{BINARY}", "--no-audio"], cwd=game, env=env, timeout=600,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
     if not Path(out).is_file():
         raise RuntimeError(f"no capture for room {area:02d}_{room:02d} at ({x}, {y})")
-    return np.asarray(Image.open(out).convert("RGB")).astype(np.int16)
+    cam = None
+    import re
+    m = re.search(r"\[roomcap\] view room=0x([0-9a-f]+)/0x([0-9a-f]+) scroll=(-?\d+),(-?\d+)", p.stderr)
+    if m:
+        if (int(m.group(1), 16), int(m.group(2), 16)) != (area, room):
+            raise RuntimeError(f"captured room {m.group(1)}_{m.group(2)}, not {area:02x}_{room:02x}")
+        cam = (int(m.group(3)), int(m.group(4)))
+    return np.asarray(Image.open(out).convert("RGB")).astype(np.int16), cam
 
 
 def learn_curve(caps, comp):
@@ -135,7 +183,7 @@ def place(cap, comp, guess):
     matches the room's tile art best (sprites and HUD are a small share)."""
     H, W = comp.shape[:2]
     sh, sw = cap.shape[:2]
-    ok = ~hud_mask(cap.shape)
+    ok = np.ones((sh, sw), bool) if CLEAN else ~hud_mask(cap.shape)
     best, at = None, guess
     gx, gy = guess
     for dy in range(-ALIGN_REACH, ALIGN_REACH + 1):
@@ -204,12 +252,16 @@ def room_capture(dumps, rid, game, out):
     with tempfile.TemporaryDirectory() as td:
         for k, (p, q) in enumerate(standing_spots(r, cls)):
             caps = []
-            for j, (lx, ly) in enumerate((p, q)):
-                c = capture(game, r.area, r.room, r.origin_x + lx, r.origin_y + ly,
-                            Path(td) / f"c{k}_{j}.png")
+            for j, (lx, ly) in enumerate((p,) if CLEAN else (p, q)):
+                try:
+                    c, cam = capture(game, r.area, r.room, lx, ly, Path(td) / f"c{k}_{j}.png")
+                except RuntimeError as e:
+                    print(f"[capture] {rid}: {e}", file=sys.stderr)
+                    continue
                 scr = (min(c.shape[1], W), min(c.shape[0], H))
                 c = c[:scr[1], :scr[0]]
-                g = camera_guess(lx, ly, W, H, scr)
+                g = cam if cam is not None else camera_guess(lx, ly, W, H, scr)
+                g = (min(max(g[0], 0), W - scr[0]), min(max(g[1], 0), H - scr[1]))
                 if lut is None:
                     ref = comp[g[1]:g[1] + scr[1], g[0]:g[0] + scr[0]]
                     same = (c == ref).all(axis=2)[~hud_mask(c.shape)].mean()
@@ -227,10 +279,15 @@ def room_capture(dumps, rid, game, out):
                           file=sys.stderr)
                     continue
                 caps.append((c, at, (lx, ly)))
-            if len(caps) < 2:
+            if len(caps) < (1 if CLEAN else 2):
                 continue
             for i, (c, (x, y), (lx, ly)) in enumerate(caps):
-                o, (ox, oy), _ = caps[1 - i]
+                if CLEAN:                       # the game drew neither
+                    sl = (slice(y, y + c.shape[0]), slice(x, x + c.shape[1]))
+                    new = ~have[sl]
+                    shown[sl][new] = c[new]
+                    have[sl] |= new
+                    continue
                 keep = ~hud_mask(c.shape)
                 # Link: his box, where the other capture (him elsewhere)
                 # differs -- that one shows what is behind him
@@ -245,6 +302,10 @@ def room_capture(dumps, rid, game, out):
                 have[sl] |= new
     # anything no capture saw (under the HUD in every view): the tile art
     shown[~have] = comp[~have]
+    # passing shade (the overworld's drifting cloud shadows): a layer
+    # blended over the ground, out = s * art + t per channel -- not a thing
+    # in the room, not part of its picture
+    shown[passing_shade(shown, comp)] = comp[passing_shade.mask]
     sprite = (np.abs(shown - comp).sum(axis=2) > 24) & (np.abs(shown - a0).sum(axis=2) > 24)
     out.mkdir(parents=True, exist_ok=True)
     Image.fromarray(shown.astype(np.uint8)).save(out / f"room_{rid}_shown.png")

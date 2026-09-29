@@ -28,6 +28,8 @@
 #include "port_repro.h"
 #include "port_gba_mem.h" /* gIoMem, gVram, gBgPltt, gObjPltt, gOamMem */
 #include "port_debug_actions.h"
+#include "ui.h"         /* gHUD, HUD_HIDE_ALL (TMC_ROOMCAP_CLEAN) */
+#include "player.h"     /* gPlayerEntity (TMC_ROOMCAP_CLEAN) */
 
 extern int Port_CaptureBaseFramebufferPNG(const char* path);
 extern void SetActiveSave(u32 idx); /* fileselect.c (no header decl) */
@@ -595,6 +597,28 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
         }
     }
 
+    /* TMC_ROOMCAP_CLEAN: the room alone, for tools/room_capture.py -- the
+     * game's own HUD hide flags (HUD_HIDE_ALL) and Link not drawn, held
+     * every frame from the warp to the capture. */
+    if (warp_done) {
+        static int clean = -1;
+        if (clean < 0) {
+            const char* c = getenv("TMC_ROOMCAP_CLEAN");
+            clean = (c && *c && strcmp(c, "0") != 0) ? 1 : 0;
+        }
+        if (clean) {
+            gHUD.hideFlags = HUD_HIDE_ALL;
+            gPlayerEntity.base.spriteSettings.draw = 0;
+            /* dialogue or a cutscene that takes control on arrival (the
+             * prologue's "Where are you going?"): advance it, as the voxel
+             * tour does (port_repro_npc_talk.c) */
+            if (gPlayerState.controlMode != CONTROL_ENABLED && frame % 40 < 2) {
+                extern void Port_Config_TestForceEdge(int input);
+                Port_Config_TestForceEdge(0 /* PORT_INPUT_A */);
+            }
+        }
+    }
+
     if (warp_done && cap_frame && (int)frame >= cap_frame) {
         /* TMC_ROOMCAP_SAVE: write a quicksave (state_quick.bin) at the warped
          * spot so it can be F6-loaded interactively, then exit. */
@@ -700,6 +724,13 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
         int ok = Port_CaptureBaseFramebufferPNG(out);
         fprintf(stderr, "[roomcap] frame %u: captured %s -> %d (area=0x%02x room=0x%02x)\n", frame, out, ok,
                 (unsigned)gRoomControls.area, (unsigned)gRoomControls.room);
+        /* where the screen shows the room: the camera, room pixels (as the
+         * voxel tour logs it) -- tools/room_capture.py places the capture by it */
+        fprintf(stderr, "[roomcap] view room=0x%02x/0x%02x scroll=%d,%d size=%d,%d\n",
+                (unsigned)gRoomControls.area, (unsigned)gRoomControls.room,
+                (int)(gRoomControls.scroll_x - gRoomControls.origin_x),
+                (int)(gRoomControls.scroll_y - gRoomControls.origin_y),
+                (int)gRoomControls.width, (int)gRoomControls.height);
         const char* dump = getenv("TMC_ROOMCAP_DUMP");
         if (dump && *dump)
             RoomCap_DumpPpu(dump);
