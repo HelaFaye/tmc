@@ -198,7 +198,8 @@ OPEN_AIR_WORDS = ("_OUTSIDE", "_TOP", "_ROOF", "_BRIDGE")
 
 # Rooms the flags cannot tell: drawn another way than top-down
 SPECIAL_VIEW = {
-    (45, 16): "side",       # the library bookshelf, seen from the front
+    (45, 16): "terrace",    # the library bookshelf: shelf boards stacked,
+                            # each above the books under it
     (72, 32): "rotating",   # inside the Deepwood barrel: an affine background
 }
 

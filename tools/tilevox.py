@@ -100,7 +100,7 @@ import picori_labels as PL  # noqa: E402
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
 RELIEF = {"floor": 1, "wall": 1, "block": 1, "water": 0, "pit": 0, "deck": 1,
-          "grass": 5, "indoor": 0}  # indoors: planks and tiles lie flat; their
+          "grass": 5, "indoor": 0, "wallflat": 0}  # indoors: planks and tiles lie flat; their
                                     # seams read as speckle in relief
 RELIEF_STEPS = {"grass": 1}     # per role; others use RELIEF_STEP
 RELIEF_STEP = 2         # px: relief is measured on blocks this size
@@ -192,6 +192,71 @@ FLOOR_MATCH = 8         # mean |difference| per channel: drawn as the floor
 FLOOR_LONE = 2          # cells: only a blocked cluster this small
 
 
+def terrace_levels(cls, H):
+    """Floors stacked one above another -- the library bookshelf's boards,
+    each on the books below it. Going up a column, a floor above a run of
+    wall stands at the floor below plus the run's drawn height (16px a
+    cell: the wall's front is drawn as tall as it is), and the run's cells
+    are that tall; ladders (ledge cells) count as wall. The lowest floor
+    keeps its height. Whatever wall is left above the top floor stands on
+    it by its own drawn run."""
+    h, w = cls.shape
+    walk = cls == RE.CLASS_GROUND
+    wall = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    lab, n = RE._label(walk)
+    if n < 2:
+        return H
+    H = np.array(H, dtype=np.int64)
+    level = {}
+    # the floor reaching lowest in the room is the ground
+    bottom = max(range(1, n + 1), key=lambda k: np.nonzero(lab == k)[0].max())
+    level[bottom] = int(np.median(H[lab == bottom]))
+    # floors whose fronts are one row are one board, split by a post: they
+    # share a level, the median of what each of their columns says
+    span = {k: (int(np.nonzero(lab == k)[0].min()), int(np.nonzero(lab == k)[0].max()))
+            for k in range(1, n + 1)}
+    groups = {}
+    for k, sp in span.items():
+        groups.setdefault(sp[1], []).append(k)          # by the board's front row
+    for sp in sorted(groups, key=lambda b: -b):          # bottom up
+        ks = [k for k in groups[sp] if k != bottom]
+        cand = []
+        for x in range(w):
+            for y in range(h):
+                if not (walk[y, x] and lab[y, x] in ks):
+                    continue
+                if y + 1 < h and walk[y + 1, x] and lab[y + 1, x] in ks:
+                    continue                    # the bottom row of the floor
+                b = y + 1
+                while b < h and wall[b, x]:
+                    b += 1
+                if b > y + 1 and b < h and walk[b, x] and lab[b, x] in level:
+                    cand.append(level[lab[b, x]] + 16 * (b - y - 1))
+        if cand:
+            for k in ks:
+                level[k] = int(np.median(cand))
+    for k, v in level.items():
+        H[lab == k] = v
+    # wall runs take the height of the floor above them, or stand on the
+    # floor below by their own run
+    for x in range(w):
+        y = 0
+        while y < h:
+            if wall[y, x]:
+                a = y
+                while y < h and wall[y, x]:
+                    y += 1
+                below = lab[y, x] if y < h and walk[y, x] else 0
+                above = lab[a - 1, x] if a > 0 and walk[a - 1, x] else 0
+                if above in level:
+                    H[a:y, x] = level[above]
+                elif below in level:
+                    H[a:y, x] = level[below] + 16 * (y - a)
+            else:
+                y += 1
+    return H
+
+
 def undrawn_void(r, cls, layer=0):
     """In an 8bpp room (the Minish-sized interiors) the picture is the
     room: a cell it leaves transparent or all black -- the black round an
@@ -258,8 +323,8 @@ def interior_walls(r, cls, H):
     and every cell of it stands 16px per cell of the run. Only the wall
     mass joined to the room's edge, in columns solid from the floor to that
     edge: furniture and chests stand apart."""
-    if RE.overlay_overhead(r):
-        return H
+    if RE.overlay_overhead(r) and PL.location(r.area, r.room)["open_air"]:
+        return H            # out of doors: no ring of wall
     L = r.layers[0]
     rows, cols = H.shape
     tt = L["tiletype"][np.clip(L["tile"], 0, len(L["tiletype"]) - 1)][:rows, :cols]
@@ -381,6 +446,8 @@ def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     if bl:
         H = RE.block_heights(H, bl, 16)
     H = RE.flatten_cells(H, RE.sprite_footprints(r, cls, layer), 16)
+    if layer == 0 and PL.location(r.area, r.room)["view"] == "terrace":
+        H = terrace_levels(cls, H)
     flights = []
     if path is not None and layer == 0:
         H, flights = stair_levels(path, r, cls, H)
@@ -1443,7 +1510,7 @@ def tile_key(pixels, role, hmap=None):
     return k.hexdigest()[:12] + ROLE_CODE.get(role, role[:2])
 
 
-ROLE_CODE = {"floor": "f", "indoor": "i", "wall": "w", "block": "k", "water": "a", "pit": "p",
+ROLE_CODE = {"floor": "f", "indoor": "i", "wallflat": "wf", "wall": "w", "block": "k", "water": "a", "pit": "p",
              "deck": "d", "grass": "g", "bush": "bu", "sapling": "sa", "rock": "ro",
              "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr",
              "signpost": "si", "foliage": "fo", "flowers": "fl"}
@@ -1559,6 +1626,183 @@ def tile_quads(px, R, mask=None, step=None, hmap=None):
                     quads.append((p, uv))
                 run = (z, seg) if seg else None
     return quads
+
+
+# ----------------------------------------------------------------- shell --
+# An enclosed room -- a house, a Minish home, a dungeon room -- is a floor
+# inside a ring of wall of one height. Cell by cell the ring came out a
+# staircase: the back wall stood as tall as its drawn face, the sides and
+# the front 16, and an oval room was squares. The shell builds the ring as
+# one prism, at pixel resolution, from the 45-degree rule: a wall's top is
+# drawn Hw rows above where it stands, so its plan is the drawn wall moved
+# down Hw -- less wherever floor is drawn, which is where the back wall's
+# face ends and doorways open. That one rule gives the back wall its drawn
+# face (moulding, moss), shows the sides and front by their tops, keeps
+# doorways in any wall, and follows an oval. Every face is textured by
+# projection: a point (x, y, z) shows the art at (x, z - y).
+SHELL_REACH = 4         # cells: wall this far from the floor is the ring
+SHELL_H = (16, 48)      # px: the ring's height, from the back wall's
+
+
+def room_shell(r, cls, H, fam, doors, exclude=()):
+    """The ring of an enclosed room: dict(R cells, Wp plan mask in px,
+    Hw, base, fill runs), or None out of doors or where there is no ring."""
+    loc = PL.location(r.area, r.room)
+    if loc["open_air"] or loc["view"] != "top":
+        return None
+    L = r.layers[0]
+    h, w = cls.shape
+    t = L["tile"][:h, :w]
+    tt = L["tiletype"][np.clip(t, 0, len(L["tiletype"]) - 1)][:h, :w]
+    walk = cls == RE.CLASS_GROUND
+    objects = np.isin(tt, list(RE.BLOCK_TYPES) + [0x73, 0x74]) & (t < 0x4000)
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~objects
+    for y, x in zip(*np.nonzero(fam != None)):  # noqa: E711 -- props stand apart
+        blocked[y, x] = False
+    for d in doors:
+        for y in range(d["top"], d["cy"] + 1):
+            blocked[y, d["cx"]] = False
+    for (x, y) in exclude:
+        blocked[y, x] = False
+    # exits -- SURFACE_DOOR cells with no door under them -- are openings
+    # in the ring, walked through at floor height: the two doors of a Minish
+    # house, the way out of Link's
+    act = L["act"][:h, :w]
+    below = np.zeros_like(act)
+    below[:-1] = act[1:]
+    exits = blocked & (act == ARCH_ACT) & (below != DOOR_ACT)
+    blocked &= ~exits
+    walk = walk | exits
+    if not walk.any() or not blocked.any():
+        return None
+    # the room's floor: walkable ground walls enclose -- not the grass round
+    # a shrine, open to the edge; all of it if nothing is enclosed
+    wl, wn = RE._label(walk)
+    open_ = set(wl[0].tolist()) | set(wl[-1].tolist()) | set(wl[:, 0].tolist()) | set(wl[:, -1].tolist())
+    open_.discard(0)
+    inner = walk & ~np.isin(wl, list(open_))
+    if not inner.any():
+        inner = walk
+    # near that floor
+    near = inner.copy()
+    for _ in range(SHELL_REACH):
+        P = np.pad(near, 1)
+        near = near | P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:] | \
+            P[:-2, :-2] | P[:-2, 2:] | P[2:, :-2] | P[2:, 2:]
+    # wall, not furniture: some straight line from it gets out -- to the
+    # room's edge or open ground -- without crossing the floor
+    R = np.zeros_like(blocked)
+    for y, x in zip(*np.nonzero(blocked & near)):
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            yy, xx = y + dy, x + dx
+            while 0 <= yy < h and 0 <= xx < w and not inner[yy, xx] \
+                    and (blocked[yy, xx] or cls[yy, xx] == RE.CLASS_VOID or fam[yy, xx] is not None):
+                yy, xx = yy + dy, xx + dx
+            if not (0 <= yy < h and 0 <= xx < w) or not inner[yy, xx]:
+                R[y, x] = True
+                break
+    if R.sum() < 4:
+        return None
+    walk = inner
+    # the height: the back wall's, over the floor below it
+    backs = [int(H[y, x]) for y, x in zip(*np.nonzero(R)) if y + 1 < h and walk[y + 1, x]]
+    Hw = int(np.clip(max(backs) if backs else 16, *SHELL_H))
+    fl = [int(H[y, x]) for y, x in zip(*np.nonzero(walk))]
+    base = int(np.median(fl)) if fl else 0
+    # pixel masks: drawn wall, and whatever is drawn at floor level
+    Dw = np.kron(R, np.ones((16, 16), bool))
+    if L.get("bpp8"):
+        # outside the picture: undrawn or black, joined to the room's edge
+        # (black inside is the moulding's line)
+        import extract_art
+        a = np.asarray(extract_art.room_art(r, 0))[:h * 16, :w * 16]
+        blank = (a[..., 3] == 0) | (a[..., :3].max(axis=-1) == 0)
+        bl, _bn = RE._label(blank)
+        out = set(bl[0].tolist()) | set(bl[-1].tolist()) | set(bl[:, 0].tolist()) | set(bl[:, -1].tolist())
+        out.discard(0)
+        Dw &= ~np.isin(bl, list(out))
+    F = np.kron(~R & (cls != RE.CLASS_VOID), np.ones((16, 16), bool))
+    Hp, Wpx = h * 16, w * 16
+    Wp = np.zeros((Hp + Hw, Wpx), bool)
+    Wp[Hw:Hw + Hp] = Dw
+    Wp[:Hp] &= ~F
+    # the floor hidden behind the front wall: ring pixels the plan leaves,
+    # below floor drawn in the same column; they take that floor's colour
+    fill = []
+    for x in range(Wpx):
+        z = 0
+        while z < Hp:
+            if Dw[z, x] and not Wp[z, x]:
+                z0 = z
+                while z < Hp and Dw[z, x] and not Wp[z, x]:
+                    z += 1
+                if z0 > 0 and F[z0 - 1, x]:
+                    fill.append((x, z0, z, z0 - 1))
+            else:
+                z += 1
+    return dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F)
+
+
+def shell_quads(sh, ox, oz, lift):
+    """The ring's prism and the floor behind its front, projected."""
+    Wp, Hw = sh["Wp"], sh["Hw"]
+    y0 = sh["base"] + lift
+    y1 = y0 + Hw
+    rows, cols = Wp.shape
+
+    def uv(pts):
+        return [(x - ox, (z - oz) - (y - y0)) for x, y, z in pts]
+    q = []
+    for x, z, wd, d in RE.greedy_quads(Wp):
+        p = [(ox + x, y1, oz + z), (ox + x + wd, y1, oz + z),
+             (ox + x + wd, y1, oz + z + d), (ox + x, y1, oz + z + d)]
+        q.append((p, uv(p)))
+
+    def at(z, x):
+        return 0 <= z < rows and 0 <= x < cols and Wp[z, x]
+    for dz in (1, -1):                  # faces along x
+        for z in range(rows):
+            x = 0
+            while x < cols:
+                if at(z, x) and not at(z + dz, x):
+                    x0 = x
+                    while x < cols and at(z, x) and not at(z + dz, x):
+                        x += 1
+                    zz = oz + (z + 1 if dz == 1 else z)
+                    if dz == 1:
+                        p = [(ox + x0, y1, zz), (ox + x, y1, zz), (ox + x, y0, zz), (ox + x0, y0, zz)]
+                    else:
+                        p = [(ox + x, y1, zz), (ox + x0, y1, zz), (ox + x0, y0, zz), (ox + x, y0, zz)]
+                    if dz == 1 and not (z + 1 < sh["F"].shape[0] and sh["F"][z + 1, x0:x].any()):
+                        # the outside of the front wall: never drawn; it
+                        # wears the wall top's outer edge
+                        v = min(z - Hw - 2, sh["F"].shape[0] - 1) + 0.5
+                        q.append((p, [(xp - ox, v) for xp, _y, _z in p]))
+                    else:
+                        q.append((p, uv(p)))
+                else:
+                    x += 1
+    for dx in (1, -1):                  # faces along z
+        for x in range(cols):
+            z = 0
+            while z < rows:
+                if at(z, x) and not at(z, x + dx):
+                    z0 = z
+                    while z < rows and at(z, x) and not at(z, x + dx):
+                        z += 1
+                    xx = ox + (x + 1 if dx == 1 else x)
+                    if dx == 1:
+                        p = [(xx, y1, oz + z0), (xx, y1, oz + z), (xx, y0, oz + z), (xx, y0, oz + z0)]
+                    else:
+                        p = [(xx, y1, oz + z), (xx, y1, oz + z0), (xx, y0, oz + z0), (xx, y0, oz + z)]
+                    q.append((p, uv(p)))
+                else:
+                    z += 1
+    for x, z0, z1, src in sh["fill"]:   # floor behind the front wall
+        p = [(ox + x, y0, oz + z0), (ox + x + 1, y0, oz + z0),
+             (ox + x + 1, y0, oz + z1), (ox + x, y0, oz + z1)]
+        q.append((p, [(x + 0.5, src + 0.5)] * 4))
+    return q
 
 
 # ----------------------------------------------------------------- faces --
@@ -1908,13 +2152,25 @@ def build_area(job):
             loc = PL.location(r.area, r.room)
             if not RE.overlay_overhead(r) or not loc["open_air"]:
                 role[role == "floor"] = "indoor"
+                # built walls are flat: their drawing's shading is moss and
+                # moulding, not relief
+                role[role == "wall"] = "wallflat"
             for (cy, cx), (sy, sx) in under.items():
                 role[cy, cx] = role[sy, sx] if role[sy, sx] in ("floor", "grass", "indoor") else "floor"
+            # an enclosed room's ring of wall is one shell, not cells
+            shell = None if a.no_shell else room_shell(
+                r, cls, H, fam, doors,
+                exclude={c for u in ups for c in u["cells"]} | set(covered))
+            if shell is not None:
+                H = np.array(H)
+                H[shell["R"]] = shell["base"]
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
                     ro = role[cy, cx]
                     if ro is None:
+                        continue
+                    if shell is not None and shell["R"][cy, cx]:
                         continue
                     sy, sx = under.get((cy, cx), (cy, cx))
                     if (cx, cy) in covered:
@@ -1967,7 +2223,7 @@ def build_area(job):
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ, top)
             placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
-                           flights, doors, blds, ups))
+                           flights, doors, blds, ups, shell))
 
     # voxelate: one model per drawing, packed into the area's atlas
     n = len(lib)
@@ -1992,7 +2248,7 @@ def build_area(job):
     nfaces = ncell = 0
     with open(out / "placements.txt", "w") as place:
         place.write("# key room cx cy x y z role -- tile model origin, world pixels\n")
-        for r, lift, art, H, solid, cells, ov, flights, doors, blds, ups in placed:
+        for r, lift, art, H, solid, cells, ov, flights, doors, blds, ups, shell in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
             for k, cx, cy, y, ro in cells:
@@ -2009,6 +2265,8 @@ def build_area(job):
                 m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16))
             skip = {(d["cx"], d["cy"]) for d in doors}
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip))
+            if shell is not None:
+                m.quads(shell_quads(shell, ox, oz, lift))
             for d in doors:
                 m.quads(door_quads(d, ox, oz, lift))
             for b in blds:
@@ -2032,7 +2290,7 @@ def build_area(job):
     with open(out / "stairs.txt", "w") as st:
         st.write("# room cx0,cy0,cx1,cy1 rise steps up base top -- flights of "
                  "steps; up/base/top are '-' where the landings are one level\n")
-        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors, _b, _u in placed:
+        for r, lift, _art, _H, _solid, _cells, _ov, flights, _doors, _b, _u, _s in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             for fl in flights:
                 raised = fl.get("up") is not None
@@ -2069,6 +2327,8 @@ def main():
                     help="leave braziers and torches to the heightfield")
     ap.add_argument("--no-buildings", action="store_true",
                     help="leave buildings to the heightfield")
+    ap.add_argument("--no-shell", action="store_true",
+                    help="build an enclosed room's ring of wall cell by cell")
     ap.add_argument("--no-blocks", action="store_true",
                     help="leave dungeon blocks to the measured heights")
     ap.add_argument("--relief-step", type=int, default=RELIEF_STEP,
