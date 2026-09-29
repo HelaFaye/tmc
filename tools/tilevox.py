@@ -205,6 +205,7 @@ def interior_walls(r, cls, H):
     blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~objects
     walk = cls == RE.CLASS_GROUND
     H = np.array(H, dtype=np.int64)
+    raised = np.zeros_like(H)
     # the house's walls are the blocked mass joined to the room's edge;
     # furniture stands apart from it and keeps its height
     lab, _n = RE._label(blocked)
@@ -231,6 +232,17 @@ def interior_walls(r, cls, H):
             top = 16 * len(run)
             for yy in run:
                 H[yy, x] = max(int(H[yy, x]), top)
+                raised[yy, x] = max(int(raised[yy, x]), top)
+    # the wall behind a dresser or a shelf is the same wall: carry each
+    # raised row sideways along the wall it belongs to
+    for y, x in zip(*np.nonzero(raised)):
+        top = int(raised[y, x])
+        for step in (-1, 1):
+            xx = x + step
+            while 0 <= xx < cols and blocked[y, xx] and lab[y, xx] in edge \
+                    and tt[y, xx] == tt[0, xx] and blocked[:y + 1, xx].all():
+                H[y, xx] = max(int(H[y, xx]), top)
+                xx += step
     return H
 
 
