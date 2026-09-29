@@ -1650,11 +1650,29 @@ SHELL_H = (16, 48)      # px: the ring's height, from the back wall's
 # furniture takes the same pixel heights; a human thing seen at Minish
 # scale -- a 25cm book on the library shelf -- is ~108px, and the shelves
 # there stand ~100px apart. By Picori's furniture type, else a table's.
+def cell_labels(r, h, w):
+    """{(cy, cx): LABEL} from the overrides file's label= rules: what a
+    person has said a thing is (vr/tiles/overrides.txt)."""
+    out = {}
+    for rule in TI.load_overrides():
+        if "label" in rule:
+            m = TI.override_mask(r, rule)
+            for y, x in zip(*np.nonzero(m[:h, :w])):
+                out[(int(y), int(x))] = rule["label"].upper()
+    return out
+
+
+# a thing on the wall, drawn on it: part of the wall, not an object
+RELIEF_WORDS = ("WINDOW", "CURTAIN", "POSTER", "PAINTING", "PICTURE", "RELIEF",
+                "MOULDING", "MOLDING", "TRIM", "EMBLEM", "SHELF_ON_WALL")
+
+
 LINK_PX = 24
 FURNITURE_PX = (        # (words in the object's name, px)
     (("STOOL", "CHAIR", "SEAT", "BENCH", "SHOES", "MUG", "CHEESE", "APPLE", "COOKIES"), 8),
     (("BED", "HAY", "SACK", "CUSHION"), 10),
     (("POT", "JUG", "CAULDRON"), 12),
+    (("SMALL_DRESSER", "NIGHTSTAND", "PLANT", "VASE"), 16),
     (("TABLE", "DESK", "COUNTER"), 14),
     (("BARREL", "CRATE", "LOGS", "CART", "MACHINE"), 16),
     (("FORGE", "STOVE", "OVEN"), 20),
@@ -1671,7 +1689,7 @@ def furniture_px(name):
     return FURNITURE_DEFAULT
 
 
-def furniture_heights(r, cls, shell, fam, taken=()):
+def furniture_heights(r, cls, shell, fam, taken=(), art=None):
     """{(cy, cx): px above the floor} for the furniture of an enclosed room:
     blocked cells off the ring, not a prop family, block, door or upright.
     A connected piece takes the height of the object standing on it (by
@@ -1683,6 +1701,8 @@ def furniture_heights(r, cls, shell, fam, taken=()):
     for y, x in taken:
         if 0 <= y < h and 0 <= x < w:
             blocked[y, x] = False
+    if "exits" in shell:
+        blocked &= ~shell["exits"]
     if not blocked.any():
         return {}
     names = {}
@@ -1692,15 +1712,120 @@ def furniture_heights(r, cls, shell, fam, taken=()):
         cx, cy = int(e["x"] - r.origin_x) // 16, int(e["y"] - r.origin_y) // 16
         if 0 <= cx < w and 0 <= cy < h:
             names.setdefault((cy, cx), PL.entity_name(e["kind"], e["id"], e["type"]))
-    lab, n = RE._label(blocked)
+    sprites = set(names)                        # objects: sprites, not art
+    labels = cell_labels(r, h, w)
+    names.update(labels)                        # a person's word wins
+    sprites -= set(labels)
+    for c, nm in list(names.items()):
+        if any(wd in nm for wd in RELIEF_WORDS):
+            blocked[c] = False                  # on the wall: the ring's
+    # pieces: each named object's cells on their own (a cabinet the table
+    # touches is not the table), then what is left, joined
+    lab = np.zeros((h, w), np.int32)
+    n = 0
+    byname = {}
+    for c, nm in names.items():
+        if blocked[c]:
+            byname.setdefault(nm, []).append(c)
+    for nm, cs in byname.items():
+        m = np.zeros((h, w), bool)
+        for c in cs:
+            m[c] = True
+        ml, mn = RE._label(m)
+        for j in range(1, mn + 1):
+            n += 1
+            lab[ml == j] = n
+    rest, rn = RE._label(blocked & (lab == 0))
+    if art is not None and rn:
+        # an unnamed piece may be several things side by side -- stools
+        # and dressers along a wall: each blob of its own drawing (not the
+        # floor's colours) is one, and a cell goes with its biggest blob
+        one16_ = np.ones((16, 16), bool)
+        for j in range(1, rn + 1):
+            piece = rest == j
+            Fp = np.kron(~piece & ~shell["R"] & (cls != RE.CLASS_VOID), one16_)
+            D = drawn_piece(art, piece, Fp, np.kron(piece, one16_))
+            bl_, bn_ = RE._label(D)
+            if bn_ < 2:
+                n += 1
+                lab[piece] = n
+                continue
+            base_n = n
+            for (cy, cx) in zip(*np.nonzero(piece)):
+                sub = bl_[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+                ids, cnt = np.unique(sub[sub > 0], return_counts=True)
+                lab[cy, cx] = base_n + (int(ids[cnt.argmax()]) if len(ids) else bn_ + 1)
+            n = base_n + bn_ + 1
+    else:
+        lab[rest > 0] = rest[rest > 0] + n
+        n += rn
     out = {}
+    one16 = np.ones((16, 16), bool)
     for k in range(1, n + 1):
-        cells = list(zip(*np.nonzero(lab == k)))
+        piece = lab == k
+        cells = list(zip(*np.nonzero(piece)))
+        Fp = np.kron(~piece & ~shell["R"] & (cls != RE.CLASS_VOID), one16)
+        if all(c in sprites for c in cells):
+            continue            # an object (furniture.c draws a sprite and
+                                # marks its cells): the entity stage's
+        if art is not None:
+            D = drawn_piece(art, piece, Fp, np.kron(piece, one16))
+            if D.sum() < 0.25 * 256 * len(cells) or all(drawn_as_floor(art, cls, c) for c in cells):
+                continue        # not in the room's art: a sprite on bare floor,
+                                # the entity stage's to build
         px = [furniture_px(names[c]) for c in cells if c in names]
-        hh = max(px) if px else FURNITURE_DEFAULT
+        if px:
+            hh = max(px)
+        elif art is not None:
+            hh = drawn_height(art, piece, Fp, shell.get("W"))
+        else:
+            hh = FURNITURE_DEFAULT
         for c in cells:
             out[(int(c[0]), int(c[1]))] = hh
     return out
+
+
+def drawn_as_floor(art, cls, cell):
+    """Is this cell drawn as some walkable cell of the room is (within
+    FLOOR_MATCH)? Then what stands there is a sprite, not the art."""
+    y, x = cell
+    A = np.asarray(art)
+    px = A[y * 16:y * 16 + 16, x * 16:x * 16 + 16, :3].astype(np.int16)
+    if px.shape[:2] != (16, 16):
+        return False
+    best = 1e9
+    for yy, xx in zip(*np.nonzero(cls == RE.CLASS_GROUND)):
+        q = A[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16, :3].astype(np.int16)
+        if q.shape[:2] == (16, 16):
+            best = min(best, float(np.abs(q - px).mean()))
+            if best <= FLOOR_MATCH:
+                return True
+    return False
+
+
+def drawn_height(art, piece, F, wall=None):
+    """An unnamed thing's height from its drawing: drawn as its depth plus
+    its height (45 degrees), and no deeper than it is wide -- height =
+    extent - min(width, extent / 2). A table: 14; a stool: 8. A thing
+    against the back wall is drawn up over the wall band: its drawing is
+    followed upward past its cells while it is neither floor nor wall."""
+    D = drawn_piece(art, piece, F, np.kron(piece, np.ones((16, 16), bool)))
+    if wall is not None and len(wall) and D.any():
+        A = np.asarray(art)[:D.shape[0], :D.shape[1], :3].astype(np.int64)
+        key = (A[..., 0] << 16) | (A[..., 1] << 8) | A[..., 2]
+        floorc = np.unique(key[F]) if F.any() else np.zeros(0, np.int64)
+        other = ~np.isin(key, wall) & ~np.isin(key, floorc)
+        for x in np.nonzero(D.any(axis=0))[0]:
+            z = int(np.nonzero(D[:, x])[0].min()) - 1
+            while z >= 0 and other[z, x] and z >= int(np.nonzero(D[:, x])[0].min()) - 48:
+                D[z, x] = True
+                z -= 1
+    ys, xs = np.nonzero(D)
+    if not len(ys):
+        return FURNITURE_DEFAULT
+    ext = int(np.median([np.count_nonzero(D[:, x]) for x in np.unique(xs)]))
+    wid = int(xs.max() - xs.min() + 1)
+    return int(np.clip(ext - min(wid, ext // 2), 6, 40))
 
 
 def room_shell(r, cls, H, fam, doors, exclude=()):
@@ -1763,40 +1888,145 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     if R.sum() < 4:
         return None
     walk = inner
-    # the height: the back wall's, over the floor below it
-    backs = [int(H[y, x]) for y, x in zip(*np.nonzero(R)) if y + 1 < h and walk[y + 1, x]]
-    Hw = int(np.clip(max(backs) if backs else 16, *SHELL_H))
     fl = [int(H[y, x]) for y, x in zip(*np.nonzero(walk))]
     base = int(np.median(fl)) if fl else 0
-    # pixel masks: drawn wall, and whatever is drawn at floor level
-    Dw = np.kron(R, np.ones((16, 16), bool))
+    # The ring is a band of wall round the outline, told by its trim: the
+    # walls' own colours, learned where nothing stands against them, and
+    # its thickness there. Whatever stands in the band drawn in other
+    # colours -- a plant, a stool, a dresser, a cabinet against the back
+    # wall -- is a thing of its own, built as furniture. Rays through the
+    # collision could not tell a cabinet from the wall it stands against.
+    Hp, Wpx = h * 16, w * 16
+    A = RE.room_art_rgb(r, 0)
+    if A is None:
+        return None
+    A = np.asarray(A)[:Hp, :Wpx, :3].astype(np.int64)
+    key = (A[..., 0] << 16) | (A[..., 1] << 8) | A[..., 2]
+    one = np.ones((16, 16), bool)
+    O = np.kron(R | walk | (blocked & near), one)
     if L.get("bpp8"):
         # outside the picture: undrawn or black, joined to the room's edge
-        # (black inside is the moulding's line)
+        # (black inside is a line of the moulding)
         import extract_art
-        a = np.asarray(extract_art.room_art(r, 0))[:h * 16, :w * 16]
-        blank = (a[..., 3] == 0) | (a[..., :3].max(axis=-1) == 0)
+        a8 = np.asarray(extract_art.room_art(r, 0))[:Hp, :Wpx]
+        blank = (a8[..., 3] == 0) | (a8[..., :3].max(axis=-1) == 0)
         bl, _bn = RE._label(blank)
-        out = set(bl[0].tolist()) | set(bl[-1].tolist()) | set(bl[:, 0].tolist()) | set(bl[:, -1].tolist())
-        out.discard(0)
-        Dw &= ~np.isin(bl, list(out))
-    F = np.kron(~R & (cls != RE.CLASS_VOID), np.ones((16, 16), bool))
-    Wp, fill = projective_plan(Dw, F, Hw)
-    sh = dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F)
-    # a rounded room (the Minish homes) has sloped walls: they rise from
-    # the floor's edge to their full height across the band, not a slab
-    region = Dw | F
-    ys, xs = np.nonzero(region)
-    if len(ys):
-        box = region[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
-        c = SHELL_CORNER
-        corners = [box[:c, :c], box[:c, -c:], box[-c:, :c], box[-c:, -c:]]
-        if sum(k.mean() < 0.5 for k in corners) >= 3:
-            sh["slope"] = sloped_heights(Wp, fill, F, Hw)
-    return sh
+        outl = set(bl[0].tolist()) | set(bl[-1].tolist()) | set(bl[:, 0].tolist()) | set(bl[:, -1].tolist())
+        outl.discard(0)
+        O &= ~np.isin(bl, list(outl))
+    Q = np.pad(~O, 1, constant_values=True)
+    edge = O & (Q[:-2, 1:-1] | Q[2:, 1:-1] | Q[1:-1, :-2] | Q[1:-1, 2:])
+    d = _grow_dist(edge, O, 256)
+    Rp = np.kron(R, one)
+    ys, xs = np.nonzero(O)
+    if not len(ys):
+        return None
+    ylo = ys.min() + (2 * (ys.max() - ys.min())) // 3
+    rows_ = np.arange(Hp)[:, None]
+    sel = O & Rp & (d <= 32) & (rows_ >= ylo)
+    if sel.sum() < 32:
+        sel = O & Rp & (d <= 32)
+    vals, counts = np.unique(key[sel], return_counts=True)
+    W = vals[counts >= SHELL_PALETTE * counts.sum()]
+    inW = np.isin(key, W) & O
+    x0, x1 = xs.min(), xs.max()
+    mid = range(x0 + (x1 - x0) // 3, x1 - (x1 - x0) // 3 + 1)
+
+    def run(x, down):
+        col = np.nonzero(O[:, x])[0]
+        if not len(col):
+            return None
+        z, n = (col.min(), 0) if down else (col.max(), 0)
+        while 0 <= z < Hp and O[z, x] and inW[z, x]:
+            n += 1
+            z += 1 if down else -1
+        return n
+    south = [v for v in (run(x, False) for x in mid) if v]
+    north = [v for v in (run(x, True) for x in mid) if v]
+    T = int(np.clip(np.median(south) if south else 16, 6, 64))
+    Tn = int(np.median(north)) if north else T
+    Hw = int(np.clip(max(Tn - T, SHELL_WALL_MIN), *SHELL_H))
+    # the sides may be thicker than the front: measure each, in the
+    # middle third of its rows, where a window or curtain may interrupt
+    # the trim -- the plain stretches (75th percentile) say how thick
+    y0_, y1_ = ys.min(), ys.max()
+    rmid = range(y0_ + (y1_ - y0_) // 3, y1_ - (y1_ - y0_) // 3 + 1)
+
+    def hrun(y, right):
+        row = np.nonzero(O[y])[0]
+        if not len(row):
+            return None
+        x, n = (row.max(), 0) if right else (row.min(), 0)
+        while 0 <= x < Wpx and O[y, x] and inW[y, x]:
+            n += 1
+            x += -1 if right else 1
+        return n
+    Ts = {}
+    for side, right in (("west", False), ("east", True)):
+        rr = [v for v in (hrun(y, right) for y in rmid) if v]
+        Ts[side] = int(np.clip(np.percentile(rr, 75), T, 96)) if rr else T
+    xc = (xs.min() + xs.max()) / 2.0
+    cols_ = np.arange(Wpx)[None, :]
+    Tmap = np.where(cols_ < xc, Ts["west"], Ts["east"])
+    band = O & (d <= np.minimum(np.maximum(T, Tmap), 96))
+    # the back wall's face, as deep as it is drawn below its top
+    vtop = np.zeros((Hp, Wpx), np.int32)
+    for x in range(Wpx):
+        col = np.nonzero(O[:, x])[0]
+        if len(col):
+            vtop[col.min():, x] = np.arange(Hp - col.min())
+    band |= O & (vtop <= Tn) & (rows_ < (ys.min() + ys.max()) // 2)
+    # things in the band: blocked cells mostly beyond it, or mostly not in
+    # the wall's colours
+    objs = np.zeros_like(R)
+    for y, x in zip(*np.nonzero(R)):
+        co = O[y * 16:y * 16 + 16, x * 16:x * 16 + 16]
+        if not co.any():
+            continue
+        cb = band[y * 16:y * 16 + 16, x * 16:x * 16 + 16][co]
+        cw = inW[y * 16:y * 16 + 16, x * 16:x * 16 + 16][co]
+        share = cb.mean()
+        if share >= SHELL_RELIEF:
+            continue            # within the band: wall, reliefs and posters too
+        if cw.mean() >= SHELL_IN_WALL:
+            continue            # the wall's own trim where the curve runs wide
+        if share < SHELL_IN_BAND or cw[cb].mean() < SHELL_IN_WALL:
+            objs[y, x] = True
+    for (y, x), nm in cell_labels(r, h, w).items():
+        if not (blocked[y, x] or objs[y, x] or R[y, x]):
+            continue
+        if any(wd in nm for wd in RELIEF_WORDS):
+            objs[y, x] = False
+            R[y, x] = True
+        elif nm not in ("WALL",):
+            objs[y, x] = True                   # a person named a thing here
+    R = R & ~objs
+    # doorways the game marks with an object -- an archway, a door: the
+    # blocked cells of the ring under it and beside it open
+    for e in r.entities[1:]:
+        nm = PL.entity_name(e["kind"], e["id"], e["type"])
+        if e["kind"] != 6 or not any(wd in nm for wd in ("ARCHWAY", "DOOR")):
+            continue
+        cx, cy = int(e["x"] - r.origin_x) // 16, int(e["y"] - r.origin_y) // 16
+        for yy, xx in ((cy + dy_, cx + dx_) for dy_ in (-1, 0, 1) for dx_ in (-1, 0, 1)):
+            if 0 <= yy < h and 0 <= xx < w and (R[yy, xx] or objs[yy, xx]) \
+                    and np.asarray(A[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]).mean() < DOOR_DARK:
+                R[yy, xx] = objs[yy, xx] = False
+                exits[yy, xx] = True
+    if R.sum() < 4:
+        return None
+    Dw = O & np.kron(R, one)            # every drawn pixel of a wall cell
+    F = np.kron(~R & ~objs & (cls != RE.CLASS_VOID), one)
+    # the wall's plan stops at what stands in front of it
+    Wp, fill = projective_plan(Dw, F | np.kron(objs, one), Hw)
+    return dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F, exits=exits, T=T, W=W)
 
 
-SHELL_CORNER = 12       # px: a room whose box corners are this empty is rounded
+SHELL_PALETTE = 0.005   # a colour this common in the plain band is the wall's
+SHELL_RELIEF = 0.9      # a cell this much in the band is wall, whatever is drawn
+SHELL_IN_BAND = 0.6     # a wall cell lies this much in the band ...
+SHELL_IN_WALL = 0.6     # ... and is drawn this much in the wall's colours
+SHELL_WALL_MIN = 32     # px: a wall stands at least this tall (Link is 24)
 
 
 def _grow_dist(seed, mask, limit):
@@ -2083,36 +2313,55 @@ def inside_room(y, x, rows, cols):
 
 
 def grain_face(pts, grain, dx, dz):
-    """A face tiled with a 16x16 patch of wood grain (grain = its top-left
-    in room-art pixels), one quad per 16px of height: the sides of a
-    bookcase, which the game never draws."""
-    gx, gy = grain
+    """A face wearing one strip of wood grain (grain = (x0, y0, length),
+    a clean run of the shelf board's grain in room-art pixels, 16 rows
+    deep): the strip runs up the face, continuous across faces by the
+    face's height above the room's floor, split only where it wraps. The
+    sides of a bookcase, which the game never draws."""
+    x0, y0, length = grain
     ys = sorted({p[1] for p in pts})
     lo, hi = ys[0], ys[-1]
+    xs = sorted({p[0] for p in pts})
+    zs = sorted({p[2] for p in pts})
+    along_z = len(zs) > 1                  # east/west faces run along z
     out = []
-    y = hi
-    while y > lo:
-        y2 = max(lo, y - 16)
-        seg = [(px, (y if py == hi else y2), pz) for px, py, pz in pts]
-        d = y - y2
-        uv = [(gx + (16 if i in (0, 3) else 0), gy + (0 if py == hi else d))
-              for i, (_px, py, _pz) in enumerate(pts)]
+    y = lo
+    while y < hi:
+        u0 = y % length
+        y2 = min(hi, y + (length - u0))
+        seg, uv = [], []
+        for px, py, pz in pts:
+            yy = y2 if py == hi else y
+            seg.append((px, yy, pz))
+            t = (pz - zs[0]) if along_z else (px - xs[0])
+            uv.append((x0 + (yy - y) + u0, y0 + min(16, t)))
         out.append((seg, uv))
         y = y2
     return out
 
 
 def wood_patch(art):
-    """The top-left of the 16x16 window of the drawing most made of wood
-    (light brown, the grain of a shelf board), or None."""
+    """(x0, y0, length): the longest clean run of plain wood -- a shelf
+    board's grain -- 16 rows deep, in the drawing; or None."""
     hue, sat, v = _hsv(np.asarray(art)[:, :, :3].astype(np.uint8))
-    wood = ((hue >= 15) & (hue < 50) & (sat >= 0.25) & (sat < 0.75) & (v >= 0.55)).astype(np.int32)
-    I = np.pad(wood.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
-    win = I[16:, 16:] - I[:-16, 16:] - I[16:, :-16] + I[:-16, :-16]
-    if win.size == 0 or win.max() < 200:
-        return None
-    y, x = np.unravel_index(int(win.argmax()), win.shape)
-    return int(x), int(y)
+    wood = (hue >= 15) & (hue < 50) & (sat >= 0.2) & (sat < 0.75) & (v >= 0.6)
+    best = None
+    for y in range(0, wood.shape[0] - 16):
+        colok = wood[y:y + 16].mean(axis=0) >= 0.95
+        x, run_start, bestrun = 0, 0, (0, 0)
+        while x < len(colok):
+            if colok[x]:
+                s0 = x
+                while x < len(colok) and colok[x]:
+                    x += 1
+                if x - s0 > bestrun[1] - bestrun[0]:
+                    bestrun = (s0, x)
+            else:
+                x += 1
+        n = bestrun[1] - bestrun[0]
+        if n >= 32 and (best is None or n > best[2]):
+            best = (bestrun[0], y, n)
+    return best
 
 
 def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None):
@@ -2435,11 +2684,18 @@ def build_area(job):
                 taken_ = {(y_, x_) for (y_, x_) in bl} | \
                     {(y_, d["cx"]) for d in doors for y_ in range(d["top"], d["cy"] + 1)} | \
                     {(c[1], c[0]) for u in ups for c in u["cells"]}
-                fh = furniture_heights(r, cls, shell, fam, taken_)
+                fh = furniture_heights(r, cls, shell, fam, taken_, art)
                 shell["pieces"] = [pz for _one, pz in furniture_prisms(cls, shell, fh, art)]
                 for (y_, x_) in fh:
                     H[y_, x_] = shell["base"]
                     shell["R"][y_, x_] = True       # built by its prism, not a tile
+                # what is left blocked off the ring is where a sprite stands
+                # (furniture objects): floor, for the entity stage to stand on
+                left = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~shell["R"] & (fam == None)  # noqa: E711
+                for (y_, x_) in zip(*np.nonzero(left)):
+                    if (int(y_), int(x_)) not in taken_ and not shell["exits"][y_, x_]:
+                        H[y_, x_] = shell["base"]
+                        role[y_, x_] = "indoor"
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
