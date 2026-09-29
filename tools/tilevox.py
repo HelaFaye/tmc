@@ -92,6 +92,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import room_explore as RE  # noqa: E402
+import tileid as TI  # noqa: E402
 
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
@@ -182,6 +183,57 @@ def despeckle_walls(cls, H):
     return out
 
 
+INTERIOR_WALL_MAX = 3   # cells: tallest drawn back wall indoors
+
+
+def interior_walls(r, cls, H):
+    """Indoors, a back wall stands as tall as it is drawn.
+
+    A house's back wall is drawn as a face of two or three cells above the
+    floor; the measured drop reads the lowest band and gives 16. In rooms
+    whose top layer is not overhead (interiors), a run of blocked cells
+    straight above a floor cell -- up to INTERIOR_WALL_MAX -- is that face,
+    and every cell of it stands 16px per cell of the run. Only the wall
+    mass joined to the room's edge, in columns solid from the floor to that
+    edge: furniture and chests stand apart."""
+    if RE.overlay_overhead(r):
+        return H
+    L = r.layers[0]
+    rows, cols = H.shape
+    tt = L["tiletype"][np.clip(L["tile"], 0, len(L["tiletype"]) - 1)][:rows, :cols]
+    objects = np.isin(tt, list(RE.BLOCK_TYPES) + [0x73, 0x74])   # chests, torches
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~objects
+    walk = cls == RE.CLASS_GROUND
+    H = np.array(H, dtype=np.int64)
+    # the house's walls are the blocked mass joined to the room's edge;
+    # furniture stands apart from it and keeps its height
+    lab, _n = RE._label(blocked)
+    edge = set(lab[0].tolist()) | set(lab[-1].tolist()) | \
+        set(lab[:, 0].tolist()) | set(lab[:, -1].tolist())
+    edge.discard(0)
+    for y in range(1, rows):
+        for x in range(cols):
+            if not walk[y, x] or not blocked[y - 1, x] or lab[y - 1, x] not in edge:
+                continue
+            run = []
+            yy = y - 1
+            while yy >= 0 and blocked[yy, x] and len(run) < INTERIOR_WALL_MAX:
+                run.append(yy)
+                yy -= 1
+            # a back wall is solid from the floor to the room's edge; a
+            # table with floor behind it is not
+            if not blocked[:y, x].all():
+                continue
+            # ... and drawn as the wall is at the edge: a table pushed
+            # against it is not the wall
+            if any(tt[yy, x] != tt[0, x] for yy in run):
+                continue
+            top = 16 * len(run)
+            for yy in run:
+                H[yy, x] = max(int(H[yy, x]), top)
+    return H
+
+
 def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     """The terrain's cell heights, built exactly as `voxel` builds them,
     plus the upper landings of flights of steps when path is given
@@ -189,6 +241,8 @@ def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     Returns (cls, H, blocks, flights, doors)."""
     cls = RE.classify_room(r, layer)
     H = despeckle_walls(cls, RE.heightfield(r, cls, layer))
+    if layer == 0:
+        H = interior_walls(r, cls, H)
     if relief:
         Hr, _solid = RE.relief_field(r, cls, 16, layer)
         H = np.array(Hr, dtype=np.int64)
@@ -1218,8 +1272,19 @@ def upright_quads(u, ox, oz, lift):
     return q
 
 
-def tile_key(pixels, role):
-    return hashlib.sha1(pixels.tobytes()).hexdigest()[:12] + role[0]
+def tile_key(pixels, role, hmap=None):
+    """A model's key: its drawing, its role and, for models whose shape is
+    not the drawing's own relief, the shape."""
+    k = hashlib.sha1(pixels.tobytes())
+    if hmap is not None:
+        k.update(np.ascontiguousarray(hmap, dtype=np.int16).tobytes())
+    return k.hexdigest()[:12] + ROLE_CODE.get(role, role[:2])
+
+
+ROLE_CODE = {"floor": "f", "wall": "w", "block": "k", "water": "a", "pit": "p",
+             "deck": "d", "grass": "g", "bush": "bu", "sapling": "sa", "rock": "ro",
+             "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr",
+             "signpost": "si", "foliage": "fo", "flowers": "fl"}
 
 
 # -------------------------------------------------------------- voxelate --
@@ -1255,7 +1320,7 @@ def tile_relief(px, R, step=None, mask=None):
     return np.kron(t, np.ones((step, step), np.int64))
 
 
-def tile_quads(px, R, mask=None, step=None):
+def tile_quads(px, R, mask=None, step=None, hmap=None):
     """The voxel model of one drawing: [(4 corners, 4 texels)], y up from 0.
 
     Columns of 1 + relief voxels, one per pixel. Colour comes from the
@@ -1270,8 +1335,12 @@ def tile_quads(px, R, mask=None, step=None):
     mask (16x16 bool) keeps only the pixels a layer actually draws: a
     top-layer tile is cut out along its transparency, so a fence or a roof
     edge has the drawn silhouette instead of a square plate.
+
+    hmap (16x16, 0 = no column) gives the columns' heights outright, for
+    the identified families (tileid): a bush's dome, a stump's drum.
     """
-    h = 1 + tile_relief(px, R, step=step, mask=mask)
+    h = (np.asarray(hmap, dtype=np.int64) if hmap is not None
+         else 1 + tile_relief(px, R, step=step, mask=mask))
     if mask is not None:
         h = np.where(mask, h, 0)
     quads = []
@@ -1443,6 +1512,15 @@ def room_overlay(r, H, canopy=True):
             crown = RE.crown_cells(r, cmask, np.asarray(_top))
             cf = RE.canopy_field(r, step=2,
                                  lift=RE.CLASS_HEIGHT[RE.CLASS_GROUND] + OVERLAY_LIFT)
+            if cf is not None:
+                # crowns moved south by their height run past the room's
+                # south edge, over nothing; seen from outside, their
+                # undersides and edges were thin spikes. Keep the room's plan.
+                Hc, Cc, Mc = cf
+                Mc = Mc.copy()
+                Mc[(r.cells_h * 16) // 2:, :] = False
+                Mc[:, (r.cells_w * 16) // 2:] = False
+                cf = (Hc, Cc, Mc)
     decks = []
     for cy in range(h):
         for cx in range(w):
@@ -1606,7 +1684,42 @@ def build_area(job):
             ups = []
             if not a.no_uprights:
                 H, ups = find_uprights(r, cls, H, art)
+            # what each cell is (tileid): props stand on the floor as their
+            # own shape, foliage rounds off, flowers stand up
+            fam = np.empty(cls.shape, dtype=object)
+            shapes = {}
+            if not a.no_families:
+                fam, ffloor = TI.families(r, cls, H, art)
+                taken = set(covered) | {c for u in ups for c in u["cells"]} \
+                    | {(d["cx"], y) for d in doors for y in range(d["top"], d["cy"] + 1)}
+                for (bcy, bcx) in bl:
+                    taken.add((bcx, bcy))
+                for cy, cx in zip(*np.nonzero(fam != None)):  # noqa: E711
+                    if (cx, cy) in taken:
+                        fam[cy, cx] = None
+                        continue
+                    f = fam[cy, cx]
+                    px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+                    if f in TI.PROP_FAMILIES:
+                        H[cy, cx] = ffloor[cy, cx]
+                        fl_px = None
+                        for yy, xx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                            if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w \
+                                    and cls[yy, xx] == RE.CLASS_GROUND:
+                                fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
+                                break
+                        shapes[(cy, cx)] = (TI.shape_heights(px, f, fl_px), 0)
+                    elif f == "flowers":
+                        shapes[(cy, cx)] = (TI.flower_hmap(px), 0)
+                # foliage: the solid stops FOLIAGE_ROUND short, and the
+                # rounded top rises from there -- walls end where it begins
+                fol = TI.foliage_hmaps(art, fam)
+                for key_, hm in fol.items():
+                    H[key_] = int(H[key_]) - TI.FOLIAGE_ROUND
+                    shapes[key_] = (hm, 0)
             role = room_roles(r, cls, H, bl, art)
+            for (cy, cx) in shapes:
+                role[cy, cx] = fam[cy, cx]
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
@@ -1626,10 +1739,11 @@ def build_area(job):
                     pix = art[sy * 16:sy * 16 + 16, sx * 16:sx * 16 + 16]
                     if pix.shape[:2] != (16, 16):
                         continue
-                    k = tile_key(pix, ro)
+                    hm, dy_ = shapes.get((cy, cx), (None, 0))
+                    k = tile_key(pix, ro, hm)
                     if k not in lib:
-                        lib[k] = (len(lib), pix, ro)
-                    cells.append((k, cx, cy, int(H[cy, cx]) + lift, ro))
+                        lib[k] = (len(lib), pix, ro, hm)
+                    cells.append((k, cx, cy, int(H[cy, cx]) + dy_ + lift, ro))
             ov = None
             if overlay is not None:
                 decks, cf, top, occ, _c1, _crown = overlay
@@ -1659,7 +1773,7 @@ def build_area(job):
                     pix[pix[:, :, 3] == 0] = 0
                     k = tile_key(pix, "deck")
                     if k not in lib:
-                        lib[k] = (len(lib), pix, "deck")
+                        lib[k] = (len(lib), pix, "deck", None)
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ, top)
             placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
@@ -1673,12 +1787,12 @@ def build_area(job):
     lib_obj = Obj(out / "tiles.obj", HEADER + f"# area {area}: tile library, "
                   f"{n} drawings; atlas tiles.png, {ATLAS_COLS} per row\n",
                   "tiles.png", ATLAS_COLS * 16, arows * 16)
-    for k, (i, pix, ro) in lib.items():
+    for k, (i, pix, ro, hm) in lib.items():
         ty, tx = divmod(i, ATLAS_COLS)
         atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix[:, :, :3]
-        models[k] = tile_quads(pix, RELIEF[ro],
+        models[k] = tile_quads(pix, RELIEF.get(ro, 1),
                                pix[:, :, 3] > 0 if pix.shape[2] == 4 else None,
-                               RELIEF_STEPS.get(ro))
+                               RELIEF_STEPS.get(ro), hm)
         lib_obj.obj(f"t_{k}")
         lib_obj.quads(models[k], toff=(tx * 16, ty * 16))
     lib_obj.close()
@@ -1758,6 +1872,9 @@ def main():
     ap.add_argument("--no-stairs", action="store_true",
                     help="leave flights of steps flat (no raised landings, "
                          "no steps)")
+    ap.add_argument("--no-families", action="store_true",
+                    help="leave identified props, foliage and flowers to their "
+                         "terrain roles (tileid.py)")
     ap.add_argument("--no-uprights", action="store_true",
                     help="leave braziers and torches to the heightfield")
     ap.add_argument("--no-buildings", action="store_true",
