@@ -1472,6 +1472,150 @@ def upright_quads(u, ox, oz, lift):
     return q
 
 
+def hang_between(ups):
+    """A rope (or chain) between two posts is drawn in the air: its
+    drawing ends above the ground. It shares the posts' foot -- the line
+    they stand on -- so each drawn row is as high above it as the game
+    draws it, and it hangs between them."""
+    at = {}
+    for u in ups:
+        for (cx, cy) in u["cells"]:
+            at[(cx, cy)] = u
+    for u in ups:
+        cx, cy = u["cells"][0]
+        feet = [at[(cx + d, cy)]["foot"] for d in (-1, 1)
+                if (cx + d, cy) in at and at[(cx + d, cy)] is not u]
+        if not feet:
+            continue
+        f = max(feet)
+        if f > u["foot"] + HANG_MIN:
+            u["foot"] = f
+            u["hung"] = True
+
+
+HANG_MIN = 2            # px: a drawing ending this far above its posts' foot hangs
+
+
+CLIFF_DROP = 6          # px: ground this much lower lies below a cliff
+CLIFF_BEHIND = 3        # cells: how far behind the band the ground above may be
+
+
+def cliff_bands(r, cls, H, fam, art, role, taken=()):
+    """Cliffs drawn folded out: a band of rock between the ground above and
+    the ground below where the face could not be seen from the south (it
+    faces north, east or west) -- the game draws it laid out beyond the
+    top, like a room's walls (docs/vr/06). The band's pixels are the ones
+    in neither ground's colours, with any of its teeth reaching into the
+    next cell. Each becomes a face standing at the band's low edge (its
+    foot), from the ground below to the ground above, wearing the band --
+    the foot's edge at the bottom, the top's at the top -- a strip per
+    pixel column (row, facing east or west); the band's cells become the
+    ground above, drawn as the ground behind them.
+
+    Returns dict(cells: {(cy, cx): (height, role, 16x16 pixels)},
+    faces: [(corners in room px, texels)], skip: {(cx, cy, dx, dz)})."""
+    h, w = cls.shape
+    A = np.asarray(art)[:h * 16, :w * 16, :3]
+    key = TI._pack(A)
+    Hh = np.asarray(H)
+    low_ok = np.isin(cls, [RE.CLASS_GROUND, RE.CLASS_WATER])
+    out = dict(cells={}, faces=[], skip=set())
+    found = {}
+    for cy, cx in zip(*np.nonzero(cls == RE.CLASS_WALL)):
+        if fam[cy, cx] is not None or (cx, cy) in taken:
+            continue
+        for dx, dz in ((0, -1), (1, 0), (-1, 0)):
+            ny, nx = cy + dz, cx + dx
+            if not (0 <= ny < h and 0 <= nx < w) or not low_ok[ny, nx]:
+                continue
+            behind = None
+            for k in range(1, CLIFF_BEHIND + 1):
+                by, bx = cy - dz * k, cx - dx * k
+                if not (0 <= by < h and 0 <= bx < w):
+                    break
+                if cls[by, bx] == RE.CLASS_GROUND and fam[by, bx] is None:
+                    behind = (by, bx)
+                    break
+            if behind is None:
+                continue
+            lo, hi = int(Hh[ny, nx]), int(Hh[behind])
+            if hi - lo < CLIFF_DROP:
+                continue
+            found[(cy, cx)] = (dx, dz, lo, hi, behind, (ny, nx))
+            break
+    if not found:
+        return out
+
+    def cellpx(c):
+        return key[c[0] * 16:c[0] * 16 + 16, c[1] * 16:c[1] * 16 + 16]
+    for (cy, cx), (dx, dz, lo, hi, behind, below) in found.items():
+        grounds = np.concatenate([cellpx(behind).ravel(), cellpx(below).ravel()])
+        own = cellpx((cy, cx))
+        band = ~np.isin(own, grounds)
+        if band.sum() < 16:
+            continue
+        pal = np.unique(own[band])
+        # its teeth: the band's colours reaching on into the cell beyond,
+        # joined to it
+        ty, tx = cy - dz, cx - dx
+        big = np.zeros((48, 48), bool)
+        big[16:32, 16:32] = band
+        if 0 <= ty < h and 0 <= tx < w and (tx, ty) != (behind[1], behind[0]) or True:
+            if 0 <= ty < h and 0 <= tx < w:
+                tp = np.isin(cellpx((ty, tx)), pal)
+                big[16 - dz * 16:32 - dz * 16, 16 - dx * 16:32 - dx * 16] |= tp
+        lab_, _n = RE._label(big)
+        ids = np.unique(lab_[16:32, 16:32][band])
+        big = np.isin(lab_, ids[ids > 0])
+        # the cell becomes the ground above: its band drawn as the ground
+        # behind it
+        px = np.array(A[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16])
+        bpx = A[behind[0] * 16:behind[0] * 16 + 16, behind[1] * 16:behind[1] * 16 + 16]
+        px[band] = bpx[band]
+        out["cells"][(cy, cx)] = (hi, role[behind] or "floor", px)
+        out["skip"].add((int(cx), int(cy), dx, dz))
+        # the face, strip by strip
+        X0, Z0 = cx * 16 - 16, cy * 16 - 16          # big's origin in room px
+        runs = []
+        for i in range(16):
+            if dz:                                   # facing north: columns
+                col = big[:, 16 + i]
+                zs = np.nonzero(col)[0]
+                runs.append((int(zs.min()) + Z0, int(zs.max()) + 1 + Z0) if len(zs) else None)
+            else:                                    # east or west: rows
+                row = big[16 + i, :]
+                xs_ = np.nonzero(row)[0]
+                runs.append((int(xs_.min()) + X0, int(xs_.max()) + 1 + X0) if len(xs_) else None)
+        known = [q_ for q_ in runs if q_ is not None]
+        if not known:
+            continue
+        for i in range(16):                          # a gap takes its neighbour's
+            if runs[i] is None:
+                j = min((j for j in range(16) if runs[j] is not None), key=lambda j: abs(j - i))
+                runs[i] = runs[j]
+        i = 0
+        while i < 16:
+            j = i
+            while j + 1 < 16 and runs[j + 1] == runs[i]:
+                j += 1
+            a_, b_ = runs[i]
+            if dz:                                   # north: foot at a_, top at b_
+                x0_, x1_, Z = cx * 16 + i, cx * 16 + j + 1, cy * 16
+                p = [(x1_, hi, Z), (x0_, hi, Z), (x0_, lo, Z), (x1_, lo, Z)]
+                uv = [(x1_, b_), (x0_, b_), (x0_, a_), (x1_, a_)]
+            elif dx == 1:                            # east: foot at b_, top at a_
+                z0_, z1_, X = cy * 16 + i, cy * 16 + j + 1, cx * 16 + 16
+                p = [(X, hi, z0_), (X, hi, z1_), (X, lo, z1_), (X, lo, z0_)]
+                uv = [(a_, z0_), (a_, z1_), (b_, z1_), (b_, z0_)]
+            else:                                    # west: foot at a_, top at b_
+                z0_, z1_, X = cy * 16 + i, cy * 16 + j + 1, cx * 16
+                p = [(X, hi, z1_), (X, hi, z0_), (X, lo, z0_), (X, lo, z1_)]
+                uv = [(b_, z1_), (b_, z0_), (a_, z0_), (a_, z1_)]
+            out["faces"].append((p, uv))
+            i = j + 1
+    return out
+
+
 def drawn_upright(r, cls, fam, art, cy, cx, family, ground, base):
     """A fence or a signpost as an upright: its drawing (the wood of a
     fence, the whole of a sign, off the room's floor colours) stood on the
@@ -2573,6 +2717,45 @@ def cuboid(x0, x1, y0, y1, z0, z1, front, top=None):
     return q
 
 
+STAIR_STEP = 4          # px: a stairwell's step, deep and tall
+
+
+def stairwell_pieces(r, cls, shell):
+    """A box room's stairwell (Link's, up to his loft): a run of cells in
+    the wall's band that the game marks as a way through (Picori's door
+    surfaces) but is neither the ring nor an exit. Built as a flight
+    climbing north from the floor to the top of the wall; by the camera's
+    rule each step shows its drawn top and riser (row = depth - height),
+    so the drawn steps land on the steps and the dark beyond them on the
+    ones out of sight."""
+    act = r.layers[0]["act"][:cls.shape[0], :cls.shape[1]]
+    names = {v: PL.act_short(int(v)) or "" for v in np.unique(act)}
+    door = np.vectorize(lambda v: "DOOR" in names[v])(act)
+    well = door & (cls == RE.CLASS_WALL) & ~shell["R"] & ~shell["exits"]
+    H = shell["box"]["H"]
+    out = []
+    for cx in range(cls.shape[1]):
+        ys = np.nonzero(well[:, cx])[0]
+        if not len(ys):
+            continue
+        ya, yb = int(ys.min()), int(ys.max())
+        if not (ys == np.arange(ya, yb + 1)).all():
+            continue
+        D = (yb - ya + 1) * 16
+        n = max(2, D // STAIR_STEP)
+        d, e = D / n, H / n
+        x0, x1 = cx * 16, cx * 16 + 16
+        q = []
+        for k in range(1, n + 1):
+            z1 = (yb + 1) * 16 - d * (k - 1)
+            z0, h = z1 - d, e * k
+            q += cuboid(x0, x1, 0, h, z0, z1,
+                        (x0, x1, max(0.0, z1 - h), max(0.0, z1 - h + e)),
+                        (x0, x1, max(0.0, z0 - h), max(0.0, z1 - h)))
+        out.append(dict(quads=q, base=shell["base"]))
+    return out
+
+
 def table_quads(raw, fr, hh, art=None):
     """A table as a table: its top (the drawing above its front), its
     apron (the front rows drawn full width) and four legs (the front
@@ -2751,7 +2934,8 @@ def shell_quads(sh, ox, oz, lift):
                         p = [(xx, y1, oz + z0), (xx, y1, oz + z), (xx, y0, oz + z), (xx, y0, oz + z0)]
                     else:
                         p = [(xx, y1, oz + z), (xx, y1, oz + z0), (xx, y0, oz + z0), (xx, y0, oz + z)]
-                    q.append((p, uv(p)))
+                    # its own edge column, not the one beside it
+                    q.append((p, [(x + 0.5, v) for _u, v in uv(p)]))
                 else:
                     z += 1
     for x, z0, z1, src in sh["fill"]:   # floor behind the front wall
@@ -2999,7 +3183,7 @@ def bookcase_quads(cls, H, art, ox, oz, lift):
     return q, Em
 
 
-def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None):
+def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None, skipd=()):
     """Vertical faces wherever a cell drops to a lower neighbour; not the
     south face of the cells in skip (doorways, built by door_quads). With
     grain, faces other than south fronts wear that wood patch."""
@@ -3014,7 +3198,8 @@ def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None):
                 ny, nx = cy + dz, cx + dx
                 nh = (int(H[ny, nx]) if 0 <= ny < rows and 0 <= nx < cols
                       and solid[ny, nx] else outside)
-                if nh < hh and not (dz == 1 and (cx, cy) in skip):
+                if nh < hh and not (dz == 1 and (cx, cy) in skip) \
+                        and (cx, cy, dx, dz) not in skipd:
                     # above the floor, the drawn front; below it, the pit's
                     # own drawing (pit_face)
                     split = min(hh, max(nh, 0)) if nh < 0 and inside_room(ny, nx, rows, cols) else nh
@@ -3229,6 +3414,7 @@ def build_area(job):
     lib = {}                      # key -> (index, pixels, role)
     placed = []                   # (r, lift, art, H, solid, cells, overlay, flights)
     cases = {}                    # (area, room): a standing bookcase's inputs
+    cliffs = {}                   # (area, room): cliff_bands' faces
     for li, lv in enumerate(levels):
         lift = li * a.floor_height
         for r in lv:
@@ -3297,6 +3483,7 @@ def build_area(job):
                         ups.append(u)
                         H[cy, cx] = u["base"]
                         under[(cy, cx)] = u["under"]
+                hang_between(ups)
                 # foliage: the solid stops FOLIAGE_ROUND short, and the
                 # rounded top rises from there -- walls end where it begins
                 fol = TI.foliage_hmaps(art, fam)
@@ -3318,6 +3505,21 @@ def build_area(job):
                 role[role == "wall"] = "wallflat"
             for (cy, cx), (sy, sx) in under.items():
                 role[cy, cx] = role[sy, sx] if role[sy, sx] in ("floor", "grass", "indoor") else "floor"
+            # a cliff drawn folded out beyond its top (facing north, east or
+            # west) is a face from the ground above to the ground below; the
+            # cells it was drawn in are the ground above
+            cb = cliff_bands(r, cls, H, fam, art, role,
+                             taken={c for u in ups for c in u["cells"]})
+            tilepix = {}
+            if cb["cells"]:
+                H = np.array(H)
+                for (cy, cx), (hh_, ro_, px_) in cb["cells"].items():
+                    H[cy, cx] = hh_
+                    role[cy, cx] = ro_
+                    tilepix[(cy, cx)] = px_
+                cliffs[(r.area, r.room)] = cb
+                if os.environ.get("TV_DBG"):
+                    print("CLIFF", f"{r.area:02d}_{r.room:02d}", len(cb["cells"]), len(cb["faces"]), file=sys.stderr)
             # an enclosed room's ring of wall is one shell, not cells
             shell = None if a.no_shell else room_shell(
                 r, cls, H, fam, doors,
@@ -3332,6 +3534,8 @@ def build_area(job):
                     {(c[1], c[0]) for u in ups for c in u["cells"]}
                 fh = furniture_heights(r, cls, shell, fam, taken_, art)
                 shell["pieces"] = [pz for _one, pz in furniture_prisms(cls, shell, fh, art)]
+                if shell.get("box") is not None:
+                    shell["pieces"] += stairwell_pieces(r, cls, shell)
                 for (y_, x_) in fh:
                     H[y_, x_] = shell["base"]
                     shell["R"][y_, x_] = True       # built by its prism, not a tile
@@ -3381,7 +3585,8 @@ def build_area(job):
                         if sy is None:
                             fy = max(b["foot"] for b in blds)
                             sy = min(fy, r.cells_h - 1)
-                    pix = art[sy * 16:sy * 16 + 16, sx * 16:sx * 16 + 16]
+                    pix = tilepix[(cy, cx)] if (sy, sx) == (cy, cx) and (cy, cx) in tilepix \
+                        else art[sy * 16:sy * 16 + 16, sx * 16:sx * 16 + 16]
                     if pix.shape[:2] != (16, 16):
                         continue
                     hm, dy_ = shapes.get((cy, cx), (None, 0))
@@ -3470,7 +3675,12 @@ def build_area(job):
             if shell is not None and shell.get("box") is not None:
                 # the box draws its walls and floor: no cell faces there
                 solid = np.zeros_like(solid)
-            m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip, grain))
+            cb = cliffs.get((r.area, r.room))
+            m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip, grain,
+                               cb["skip"] if cb else ()))
+            if cb:
+                m.quads([([(ox + x, y + lift, oz + z) for x, y, z in p], uv)
+                         for p, uv in cb["faces"]])
             if (r.area, r.room) in cases:
                 bc = bookcase_quads(*cases[(r.area, r.room)], ox, oz, lift)
                 if bc is not None:
