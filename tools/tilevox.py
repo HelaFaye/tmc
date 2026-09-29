@@ -1064,6 +1064,21 @@ def find_uprights(r, cls, H, art):
         mask = np.ones(region.shape[:2], bool)
         for c in bg:
             mask &= ~(region == c).all(axis=2)
+        # the flame and its glow leave the post: the flame is built as
+        # voxels (upright_flame), and the glow ringed the cut-out as fringe
+        fy, fx = ys - top, xs - x0
+        inside = (fy >= 0) & (fy < mask.shape[0]) & (fx >= 0) & (fx < 16)
+        fl = np.zeros(mask.shape, bool)
+        fl[fy[inside], fx[inside]] = True
+        near = fl.copy()
+        for _i in range(FLAME_GLOW):
+            P = np.pad(near, 1)
+            near = near | P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:]
+        hue_, sat_, _v = _hsv(region.astype(np.uint8))
+        fhue = float(np.median(_hsv(A[ys, xs][None])[0]))
+        dh = np.abs(hue_ - fhue) % 360
+        glow = near & (np.minimum(dh, 360 - dh) < 40) & (sat_ >= 0.35)
+        mask &= ~(fl | glow)
         if mask.sum() < FLAME_MIN * 2:
             continue
         free = all((cx - 1 >= 0 and walk[yy, cx - 1]) and (cx + 1 < w and walk[yy, cx + 1])
@@ -1072,8 +1087,104 @@ def find_uprights(r, cls, H, art):
             for yy in run:
                 H[yy, cx] = base
         ups.append(dict(cx=cx, x0=x0, top=top, foot=foot, base=base, mask=mask,
+                        flame=(ys, xs),
                         cells=[(cx, yy) for yy in run]))
     return H, ups
+
+
+# ----------------------------------------------------------------- flames --
+# A flame is built as a solid, not a cut-out: the drawn flame spun about
+# its upright axis, one ring per drawn row as wide as that row, so it is a
+# round teardrop that shows the drawing from every side. Each voxel wears
+# the drawn pixel over its offset from the axis, so the pale core stays in
+# the middle and the rim outside. Flames go in their own material,
+# tmc_flame, which the MTL marks emissive.
+FLAME_GLOW = 2          # px: glow pixels this close to a flame leave the post
+
+
+def flame_voxels(ys, xs):
+    """{(x, h, dz): (u, v)} for a drawn flame: x in art columns, h voxels
+    above its base, dz across the axis; (u, v) the drawn pixel."""
+    vox = {}
+    bottom = int(ys.max())
+    for y in sorted(set(ys.tolist())):
+        row = xs[ys == y]
+        lo, hi = int(row.min()), int(row.max())
+        R = (hi - lo + 1) / 2.0
+        c = (lo + hi + 1) / 2.0
+        n = int(np.ceil(R))
+        for dx in range(-n, n):
+            for dz in range(-n, n):
+                if (dx + 0.5) ** 2 + (dz + 0.5) ** 2 > R * R:
+                    continue
+                x = int(np.floor(c + dx))
+                u = min(max(x, lo), hi)
+                vox[(x, bottom - int(y), dz)] = (u, int(y))
+    return vox
+
+
+def voxel_quads(vox, X0, Y0, Z0):
+    """Exposed faces of a voxel set, one flat-coloured texel each, placed
+    with voxel (x, h, dz) at world (X0 + x, Y0 + h, Z0 + dz). Windings as
+    side_face's."""
+    q = []
+    S_ = set(vox)
+    for (x, h, dz), (u, v) in vox.items():
+        X, Y, Z = X0 + x, Y0 + h, Z0 + dz
+        t = (u + 0.5, v + 0.5)
+        faces = []
+        if (x, h + 1, dz) not in S_:
+            faces.append([(X, Y + 1, Z), (X + 1, Y + 1, Z), (X + 1, Y + 1, Z + 1), (X, Y + 1, Z + 1)])
+        if (x, h - 1, dz) not in S_:
+            faces.append([(X, Y, Z + 1), (X + 1, Y, Z + 1), (X + 1, Y, Z), (X, Y, Z)])
+        if (x, h, dz + 1) not in S_:
+            faces.append([(X, Y + 1, Z + 1), (X + 1, Y + 1, Z + 1), (X + 1, Y, Z + 1), (X, Y, Z + 1)])
+        if (x, h, dz - 1) not in S_:
+            faces.append([(X + 1, Y + 1, Z), (X, Y + 1, Z), (X, Y, Z), (X + 1, Y, Z)])
+        if (x + 1, h, dz) not in S_:
+            faces.append([(X + 1, Y + 1, Z), (X + 1, Y + 1, Z + 1), (X + 1, Y, Z + 1), (X + 1, Y, Z)])
+        if (x - 1, h, dz) not in S_:
+            faces.append([(X, Y + 1, Z + 1), (X, Y + 1, Z), (X, Y, Z), (X, Y, Z + 1)])
+        for f in faces:
+            q.append((f, [t, t, t, t]))
+    return q
+
+
+def torch_flames(r, art, H, lift, ox, oz):
+    """Voxel flames on the torches (TORCH_TYPES, built as blocks): the
+    flame drawn in the cell, standing on the box's top, centred where it
+    is drawn across and in the middle of the cell front to back."""
+    L = r.layers[0]
+    h, w = r.cells_h, r.cells_w
+    tt = L["tiletype"][np.clip(L["tile"], 0, len(L["tiletype"]) - 1)][:h, :w]
+    q = []
+    for cy, cx in zip(*np.nonzero(np.isin(tt, RE.TORCH_TYPES))):
+        px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
+        if px.shape[:2] != (16, 16):
+            continue
+        fm = flame_mask(px)
+        if fm.sum() < FLAME_MIN:
+            continue
+        lab, n = RE._label(fm)
+        best = max(range(1, n + 1), key=lambda k: (lab == k).sum())
+        ys, xs = np.nonzero(lab == best)
+        if len(ys) < FLAME_MIN:
+            continue
+        vox = flame_voxels(ys + cy * 16, xs + cx * 16)
+        q += voxel_quads(vox, ox, int(H[cy, cx]) + lift, oz + cy * 16 + 8)
+    return q
+
+
+def upright_flame(u, ox, oz, lift):
+    """The voxel flame of an upright, on its bowl: the flame's base is the
+    drawn row under it, which by the 45-degree rule is that high above the
+    upright's foot."""
+    if u.get("flame") is None:
+        return []
+    ys, xs = u["flame"]
+    Y0 = u["base"] + lift + (u["foot"] - (int(ys.max()) + 1))
+    return voxel_quads(flame_voxels(ys, xs), ox, Y0,
+                       oz + u["foot"] - UPRIGHT_DEPTH // 2)
 
 
 def upright_quads(u, ox, oz, lift):
@@ -1403,7 +1514,9 @@ class Obj:
         with open(mtl, "w") as m:
             m.write("# Derived from the user's own ROM. Not redistributable.\n"
                     "newmtl tmc\nKa 1 1 1\nKd 1 1 1\nd 1\nillum 1\n"
-                    f"map_Kd {texture}\n")
+                    f"map_Kd {texture}\n"
+                    "newmtl tmc_flame\nKa 1 1 1\nKd 1 1 1\nKe 1 1 1\nd 1\nillum 1\n"
+                    f"map_Kd {texture}\nmap_Ke {texture}\n")
         self.f = open(self.path, "w")
         self.f.write(header + f"mtllib {mtl.name}\nusemtl tmc\n")
         self.tw, self.th = float(tw), float(th)
@@ -1412,6 +1525,9 @@ class Obj:
 
     def obj(self, name):
         self.f.write(f"o {name}\n")
+
+    def use(self, material):
+        self.f.write(f"usemtl {material}\n")
 
     def quads(self, quads, off=(0, 0, 0), toff=(0, 0)):
         ox, oy, oz = off
@@ -1595,6 +1711,11 @@ def build_area(job):
                 m.quads(building_quads(b, ox, oz, lift))
             for u in ups:
                 m.quads(upright_quads(u, ox, oz, lift))
+            m.use("tmc_flame")
+            for u in ups:
+                m.quads(upright_flame(u, ox, oz, lift))
+            m.quads(torch_flames(r, art, H, lift, ox, oz))
+            m.use("tmc")
             for fl in flights:
                 m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
