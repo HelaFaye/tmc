@@ -2629,7 +2629,8 @@ def grain_face(pts, grain, dx, dz):
             yy = y2 if py == hi else y
             seg.append((px, yy, pz))
             t = (pz - zs[0]) if along_z else (px - xs[0])
-            uv.append((x0 + (yy - y) + u0, y0 + min(16, t)))
+            span = max(16, (zs[-1] - zs[0]) if along_z else (xs[-1] - xs[0]))
+            uv.append((x0 + (yy - y) + u0, y0 + min(16, t * 16 / span)))
         out.append((seg, uv))
         y = y2
     return out
@@ -2657,6 +2658,143 @@ def wood_patch(art):
         if n >= 32 and (best is None or n > best[2]):
             best = (bestrun[0], y, n)
     return best
+
+
+CASE_EDGE_SHARE = 0.5   # a row this much board front is a shelf's edge
+
+
+def bookcase_edges(cls):
+    """The rows of a bookcase's board fronts (docs/vr/06): the first wall
+    row under a board -- walk one or two rows above it -- across at least
+    CASE_EDGE_SHARE of the room; of adjacent such rows, the top one."""
+    h, w = cls.shape
+    walk = cls == RE.CLASS_GROUND
+    wall = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    E = []
+    for y in range(1, h):
+        above = walk[y - 1] | (walk[y - 2] if y >= 2 else False)
+        if (wall[y] & above).mean() >= CASE_EDGE_SHARE and not (E and E[-1] == y - 1):
+            E.append(y)
+    return E
+
+
+def bookcase_quads(cls, H, art, ox, oz, lift):
+    """A bookcase standing up: (quads, rows it covers) or None.
+
+    The camera draws a point z deep and y high at row z - y (docs/vr/06),
+    so a bookcase drawn as boards and books stacked up the screen is one
+    upright case, not a terrace: every board's front edge (the one-row
+    strip under its top) is in one plane, Zf, and the band above an edge
+    row e -- the board's top and the books standing on it -- is at level
+    Zf - 16 e. Each board cell lies at depth row*16 + level; each run of
+    books stands where it meets its board, a vertical face; what stands
+    on no board stands at the front. Its sides and back wear the shelf's
+    grain, which the game never draws."""
+    E = bookcase_edges(cls)
+    if not E:
+        return None
+    h, w = cls.shape
+    walk = cls == RE.CLASS_GROUND
+    wall = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    Em = E[-1]
+    fl = walk[Em + 1:]
+    floor = int(np.median(np.asarray(H)[Em + 1:][fl])) if fl.any() else 0
+    Zf = (Em + 1) * 16 + floor
+    q = []
+    X, Zs = ox, oz
+
+    def up(x, y_, z0, z1, v0, v1):
+        p = [(X + x, y_, Zs + z0), (X + x + 16, y_, Zs + z0),
+             (X + x + 16, y_, Zs + z1), (X + x, y_, Zs + z1)]
+        return p, [(x, v0), (x + 16, v0), (x + 16, v1), (x, v1)]
+
+    def down(x, y_, z0, z1, v):
+        p = [(X + x, y_, Zs + z1), (X + x + 16, y_, Zs + z1),
+             (X + x + 16, y_, Zs + z0), (X + x, y_, Zs + z0)]
+        return p, [(x, v), (x + 16, v), (x + 16, v + 1), (x, v + 1)]
+
+    def front(x, z, lo, hi, v_lo, v_hi):
+        p = [(X + x, hi, Zs + z), (X + x + 16, hi, Zs + z),
+             (X + x + 16, lo, Zs + z), (X + x, lo, Zs + z)]
+        return p, [(x, v_hi), (x + 16, v_hi), (x + 16, v_lo), (x, v_lo)]
+
+    zmin = Zf
+    top = floor
+    prev = -1
+    for i, e in enumerate(E):
+        L = Zf - 16 * e
+        r0, r1 = prev + 1, e - 1                # the band above edge e
+        ceil_ = (Zf - 16 * E[i - 1] - 16) if i else None   # next board's underside
+        for cx in range(w):
+            x = cx * 16
+            # the board's front edge
+            q.append(front(x, Zf, L - 16 + lift, L + lift, e * 16 + 16, e * 16))
+            y = r0
+            while y <= r1:
+                if walk[y, cx]:
+                    z0 = y * 16 + L
+                    q.append(up(x, L + lift, z0, z0 + 16, y * 16, y * 16 + 16))
+                    q.append(down(x, L - 16 + lift, z0, z0 + 16, e * 16 + 8))
+                    zmin = min(zmin, z0)
+                    y += 1
+                    continue
+                if not wall[y, cx]:
+                    y += 1
+                    continue
+                a = y
+                while y <= r1 and wall[y, cx]:
+                    y += 1
+                b = y                                   # run [a, b)
+                on = b <= r1 and walk[b, cx]
+                if not on and walk[r0:a, cx].any():
+                    # in the board's top (a ladder's hole): lies with it
+                    for yy in range(a, b):
+                        z0 = yy * 16 + L
+                        q.append(up(x, L + lift, z0, z0 + 16, yy * 16, yy * 16 + 16))
+                    continue
+                z = b * 16 + L if on else Zf
+                hi = L + 16 * (b - a)
+                q.append(front(x, z, L + lift, hi + lift, z - L, z - hi))
+                zmin = min(zmin, z)
+                top = max(top, hi)
+                if ceil_ is not None and ceil_ > hi:
+                    # up to the board above, behind its edge: the run's top row
+                    q.append(front(x, z, hi + lift, ceil_ + lift, a * 16 + 1, a * 16))
+        prev = e
+    # the case's sides, back and top, in the shelf's grain
+    grain = wood_patch(art)
+    Zb = zmin - 16
+    full = [cx for cx in range(w) if wall[:Em + 1, cx].all()]
+    xl = (min(full) if full and min(full) < w // 2 else 0) * 16
+    xr = ((max(full) + 1) if full and max(full) >= w // 2 else w) * 16
+    lo, hi = floor + lift, top + lift
+    faces = []
+    for xx, dx in ((xl, -1), (xl + 16, 1), (xr - 16, -1), (xr, 1)):
+        if dx == 1:
+            p = [(X + xx, hi, Zs + Zb), (X + xx, hi, Zs + Zf), (X + xx, lo, Zs + Zf), (X + xx, lo, Zs + Zb)]
+        else:
+            p = [(X + xx, hi, Zs + Zf), (X + xx, hi, Zs + Zb), (X + xx, lo, Zs + Zb), (X + xx, lo, Zs + Zf)]
+        faces.append((p, dx, 0))
+    # inside, the back is the dark wood of the boards' edges, as the
+    # game draws it where a book is missing
+    v = E[0] * 16 + 8
+    q.append(([(X + xl, hi, Zs + Zb), (X + xr, hi, Zs + Zb),
+               (X + xr, lo, Zs + Zb), (X + xl, lo, Zs + Zb)],
+              [(xl, v), (xr, v), (xr, v + 1), (xl, v + 1)]))
+    faces.append(([(X + xr, hi, Zs + Zb), (X + xl, hi, Zs + Zb),
+                   (X + xl, lo, Zs + Zb), (X + xr, lo, Zs + Zb)], 0, -1))     # back, outside
+    for p, dx, dz in faces:
+        if grain is not None:
+            q.extend(grain_face(p, grain, dx, dz))
+        else:
+            q.append((p, [(0, 0)] * 4))
+    if grain is not None:                                               # top
+        gx, gy, gl = grain
+        gw = min(gl, xr - xl)
+        q.append(([(X + xl, hi, Zs + Zb), (X + xr, hi, Zs + Zb),
+                   (X + xr, hi, Zs + Zf), (X + xl, hi, Zs + Zf)],
+                  [(gx, gy), (gx + gw, gy), (gx + gw, gy + 16), (gx, gy + 16)]))
+    return q, Em
 
 
 def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None):
@@ -2888,6 +3026,7 @@ def build_area(job):
     # identify: every cell's drawing and role, keyed; heights as the terrain
     lib = {}                      # key -> (index, pixels, role)
     placed = []                   # (r, lift, art, H, solid, cells, overlay, flights)
+    cases = {}                    # (area, room): a standing bookcase's inputs
     for li, lv in enumerate(levels):
         lift = li * a.floor_height
         for r in lv:
@@ -2991,11 +3130,24 @@ def build_area(job):
                     if (int(y_), int(x_)) not in taken_ and not shell["exits"][y_, x_]:
                         H[y_, x_] = shell["base"]
                         role[y_, x_] = "indoor"
+            # a bookcase stands up by itself (bookcase_quads): its rows are
+            # no tiles, and the floor before it no drop
+            caserows = -1
+            if PL.location(r.area, r.room)["view"] == "terrace":
+                E_ = bookcase_edges(cls)
+                if E_:
+                    caserows = E_[-1]
+                    cases[(r.area, r.room)] = (cls.copy(), np.array(H), art)
+                    H = np.array(H)
+                    fl_ = (cls == RE.CLASS_GROUND)[caserows + 1:]
+                    H[:caserows + 1] = int(np.median(H[caserows + 1:][fl_])) if fl_.any() else 0
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
                     ro = role[cy, cx]
                     if ro is None:
+                        continue
+                    if cy <= caserows:
                         continue
                     if shell is not None and shell["R"][cy, cx]:
                         continue
@@ -3057,7 +3209,9 @@ def build_area(job):
                         lib[k] = (len(lib), pix, "deck", None)
                     cells.append((k, cx, cy, hh + lift, "deck"))
                 ov = (decks, cf, occ, top)
-            placed.append((r, lift, art, H, cls != RE.CLASS_VOID, cells, ov,
+            solid_ = cls != RE.CLASS_VOID
+            solid_[:caserows + 1] = False           # the bookcase's own
+            placed.append((r, lift, art, H, solid_, cells, ov,
                            flights, doors, blds, ups, shell))
 
     # voxelate: one model per drawing, packed into the area's atlas
@@ -3105,6 +3259,10 @@ def build_area(job):
                 # the box draws its walls and floor: no cell faces there
                 solid = np.zeros_like(solid)
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip, grain))
+            if (r.area, r.room) in cases:
+                bc = bookcase_quads(*cases[(r.area, r.room)], ox, oz, lift)
+                if bc is not None:
+                    m.quads(bc[0])
             if shell is not None:
                 m.quads(shell_quads(shell, ox, oz, lift))
                 for pz in shell.get("pieces", []):
