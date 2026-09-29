@@ -1903,7 +1903,10 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     A = np.asarray(A)[:Hp, :Wpx, :3].astype(np.int64)
     key = (A[..., 0] << 16) | (A[..., 1] << 8) | A[..., 2]
     one = np.ones((16, 16), bool)
-    O = np.kron(R | walk | (blocked & near), one)
+    # the room and all in it: its wall, its floor, whatever blocks near the
+    # floor (blocks, furniture) -- not the grass or leaves round a shrine
+    solidall = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & (fam == None)  # noqa: E711
+    O = np.kron(R | walk | (solidall & near), one)
     if L.get("bpp8"):
         # outside the picture: undrawn or black, joined to the room's edge
         # (black inside is a line of the moulding)
@@ -2019,7 +2022,251 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     F = np.kron(~R & ~objs & (cls != RE.CLASS_VOID), one)
     # the wall's plan stops at what stands in front of it
     Wp, fill = projective_plan(Dw, F | np.kron(objs, one), Hw)
-    return dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F, exits=exits, T=T, W=W)
+    sh = dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F, exits=exits, T=T, W=W)
+    # the walls themselves: the box convention (docs/vr/06): every band
+    # round the floor is a wall's inner face, standing at the floor's edge
+    gap = np.kron(exits, one)
+    for dd in doors:
+        for yy in range(dd["top"], dd["cy"] + 1):
+            gap[yy * 16:yy * 16 + 16, dd["cx"] * 16:dd["cx"] * 16 + 16] = True
+    # the floor and everything on it: all but the ring, the void, the exits
+    stand = ~R & (cls != RE.CLASS_VOID) & ~exits
+    for dd in doors:
+        for yy in range(dd["top"], dd["cy"] + 1):
+            stand[yy, dd["cx"]] = False
+    things = np.kron(solidall & ~R, one) & O     # what stands on the floor
+    sh["box"] = box_walls(O, inW, np.kron(walk, one), gap, things,
+                          np.kron(stand, one) & O)
+    return sh
+
+
+BOX_RAYS = 720          # rays from the floor's middle round the room
+BOX_SMOOTH = 15         # rays: a band's thickness is the median over this many
+BOX_H = (24, 64)        # px: a wall's height, from the back wall's face
+
+
+def box_walls(O, inW, floor, gap, objs, stand=None):
+    """The walls of an enclosed room as the game draws them: a box seen
+    from above its middle, every inner face folded out round the floor
+    (Link's house draws its corners as diagonal seams from the floor's
+    corner to the room's). Along rays from the floor's middle: the
+    outline, and inward from it the run in the wall's colours -- the band,
+    that wall's face. A thing drawn over the band (a plant, a dresser)
+    breaks the run; the median over neighbouring rays is the wall's.
+    Returns dict(inner, outer: [(x, z)], gap: [bool], H, floor mask), or
+    None."""
+    ys, xs = np.nonzero(floor)
+    if not len(ys):
+        return None
+    cz, cx = ys.mean(), xs.mean()
+    Hp, Wpx = O.shape
+    outer, run, gapr, runc, lasts, okc, dobj = [], [], [], [], [], [], []
+    for i in range(BOX_RAYS):
+        th = 2 * np.pi * i / BOX_RAYS
+        dx, dz = np.cos(th), np.sin(th)
+        t, last, miss = 0.0, None, 0
+        while True:
+            x, z = int(round(cx + dx * t)), int(round(cz + dz * t))
+            if not (0 <= x < Wpx and 0 <= z < Hp):
+                break
+            if O[z, x]:
+                last, miss = t, 0
+            elif last is not None:
+                miss += 1
+                if miss > 3:
+                    break
+            t += 0.5
+        if last is None:
+            outer.append((cx, cz)); run.append(0); gapr.append(True); runc.append(0); lasts.append(0)
+            okc.append(False)
+            dobj.append(None)
+            continue
+        lasts.append(last)
+        ox_, oz_ = cx + dx * last, cz + dz * last
+        outer.append((ox_, oz_))
+        # inward from the outline, in the wall's colours
+        k, bad = 0.0, 0
+        while k < last:
+            x, z = int(round(ox_ - dx * k)), int(round(oz_ - dz * k))
+            if inW[z, x]:
+                bad = 0
+            else:
+                bad += 1
+                if bad > 2:
+                    k -= bad * 0.5
+                    break
+            k += 0.5
+        # from the outline in to the first thing standing on the floor
+        q, dob = 0.0, None
+        while q < last:
+            x, z = int(round(ox_ - dx * q)), int(round(oz_ - dz * q))
+            if objs[z, x]:
+                dob = q
+                break
+            q += 0.5
+        dobj.append(dob)
+        runc.append(max(0.0, k))                # by the wall's colours
+        # clean: just inside that run is walkable floor, not a thing
+        px_, pz_ = int(round(ox_ - dx * (k + 3))), int(round(oz_ - dz * (k + 3)))
+        okc.append(0 <= px_ < Wpx and 0 <= pz_ < Hp and bool(floor[pz_, px_]))
+        if stand is not None:
+            # where the floor ends -- walkable ground and what stands on it
+            f, lastf = 0.0, 0.0
+            while f < last:
+                x, z = int(round(cx + dx * f)), int(round(cz + dz * f))
+                if stand[z, x]:
+                    lastf = f
+                elif f > lastf + 2:
+                    break
+                f += 0.5
+            k = max(0.0, last - lastf - 0.5)
+        run.append(max(0.0, k))
+        # a doorway: the ray crosses an opening in the band
+        seg = [(int(round(cx + dx * u)), int(round(cz + dz * u)))
+               for u in np.arange(max(0.0, last - 64), last, 1.0)]
+        gapr.append(any(gap[z, x] for x, z in seg if 0 <= x < Wpx and 0 <= z < Hp))
+    run = np.array(run)
+    runc = np.array(runc)
+    n = len(run)
+    inner = fit_wall_foot(outer, run, runc, gapr, lasts, (cx, cz), okc, dobj)
+    sm = np.array([np.hypot(outer[i][0] - inner[i][0], outer[i][1] - inner[i][1]) for i in range(n)])
+    north = [sm[i] for i in range(n) if np.sin(2 * np.pi * i / n) < -0.94]
+    H = int(np.clip(np.median(north) if north else 32, *BOX_H))
+    from PIL import Image, ImageDraw
+    im = Image.new("1", (Wpx, Hp), 0)
+    ImageDraw.Draw(im).polygon([(float(x), float(z)) for x, z in inner], fill=1)
+    fm = np.asarray(im, dtype=bool) & ~gap
+    return dict(inner=inner, outer=outer, gap=gapr, H=H, floor=fm)
+
+
+BOX_CLEAN = 12          # px: where the wall's colours and the floor agree
+BOX_N = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 12.0, 20.0, 40.0)
+
+
+def fit_wall_foot(outer, run, runc, gap, lasts, origin, okc=None, dobj=None):
+    """The wall's foot round the room, fitted: a superellipse (an oval at
+    n=2, a stadium near 4, a rectangle as n grows), each side its own
+    extent. Fitted to the rays where the band's colours end where the
+    floor does -- the moulding, nothing standing in front of it; a side
+    with none of those (the back row of a Minish home is all furniture)
+    takes the floor's edge. Every ray's foot is where it meets the curve,
+    behind the plants and dressers as much as anywhere."""
+    n = len(run)
+    th = 2 * np.pi * np.arange(n) / n
+    dxs, dzs = np.cos(th), np.sin(th)
+    cx, cz = origin
+    outer = np.array(outer, float)
+    foot_c = outer - np.stack([dxs, dzs], 1) * np.array(runc)[:, None]
+    foot_f = outer - np.stack([dxs, dzs], 1) * np.array(run)[:, None]
+    clean = (np.abs(np.array(runc) - np.array(run)) <= BOX_CLEAN) & ~np.array(gap) & (np.array(runc) > 0)
+    if okc is not None:
+        clean &= np.array(okc, bool)
+    x0 = (outer[:, 0].min() + outer[:, 0].max()) / 2.0
+    z0 = (outer[:, 1].min() + outer[:, 1].max()) / 2.0
+
+    def reach(mask_side, coord, sign):
+        """(outline's extent, wall foot's extent or None) on one side."""
+        c0 = (x0, z0)[coord]
+        o = float(np.median(sign * (outer[mask_side, coord] - c0))) if mask_side.any() else 8.0
+        pts = foot_c[clean & mask_side]
+        f = float(np.median(sign * (pts[:, coord] - c0))) if len(pts) >= 3 else None
+        return o, f
+    sides = {"w": reach(dxs < -0.9, 0, -1), "e": reach(dxs > 0.9, 0, 1),
+             "n": reach(dzs < -0.9, 1, -1), "s": reach(dzs > 0.9, 1, 1)}
+    opposite = {"w": "e", "e": "w", "n": "s", "s": "n"}
+    ext = {}
+    for k, (o, f) in sides.items():
+        if f is None:
+            # nothing clean on this side (the back row of a Minish home is
+            # all furniture): things stand in front of the wall, so its foot
+            # is where its colours stop and their drawings begin
+            m_ = {"w": dxs < -0.9, "e": dxs > 0.9, "n": dzs < -0.9, "s": dzs > 0.9}[k]
+            c = 0 if k in "we" else 1
+            sg = -1 if k in "wn" else 1
+            hit = np.array([d is not None for d in (dobj or [None] * n)])
+            if dobj is not None and (m_ & hit).sum() >= 3:
+                dd = np.array([d if d is not None else 0.0 for d in dobj])
+                pc = outer - np.stack([dxs, dzs], 1) * dd[:, None]
+                f = float(np.median(sg * (pc[m_ & hit, c] - (x0, z0)[c])))
+            elif len(foot_c[m_ & ~np.array(gap) & (np.array(runc) > 0)]):
+                pc = foot_c[m_ & ~np.array(gap) & (np.array(runc) > 0)]
+                f = float(np.median(sg * (pc[:, c] - (x0, z0)[c])))
+            else:
+                pts = foot_f[m_ & ~np.array(gap)]
+                f = float(np.median(sg * (pts[:, c] - (x0, z0)[c]))) if len(pts) else o - 16
+        ext[k] = max(4.0, f)
+    aw, ae, bn, bs = ext["w"], ext["e"], ext["n"], ext["s"]
+
+    def level(px, pz, e):
+        a = np.where(px < x0, aw, ae)
+        b = np.where(pz < z0, bn, bs)
+        return (np.abs(px - x0) / a) ** e + (np.abs(pz - z0) / b) ** e
+    pts = foot_c[clean]
+    best, e_best = None, 8.0
+    for e in BOX_N:
+        if len(pts) < 8:
+            break
+        res = float(np.mean((level(pts[:, 0], pts[:, 1], e) ** (1.0 / e) - 1.0) ** 2))
+        if best is None or res < best:
+            best, e_best = res, e
+    inner = []
+    for i in range(n):
+        lo, hi = 0.0, float(lasts[i]) if lasts[i] else 1.0
+        for _ in range(40):
+            mid = (lo + hi) / 2
+            if level(cx + dxs[i] * mid, cz + dzs[i] * mid, e_best) < 1.0:
+                lo = mid
+            else:
+                hi = mid
+        inner.append((cx + dxs[i] * lo, cz + dzs[i] * lo))
+    return inner
+
+
+def box_quads(b, ox, oz, base):
+    """A box's walls standing on its floor's edge, each wall face wearing
+    its band (inner edge at the floor, outline at the top), a thin cap in
+    the outline's colour, and the floor inside, flat."""
+    q = []
+    inner, outer, gap, H = b["inner"], b["outer"], b["gap"], b["H"]
+    n = len(inner)
+    cxm = np.mean([p[0] for p in inner])
+    czm = np.mean([p[1] for p in inner])
+    y0, y1 = base, base + H
+    CAP = 3
+    for i in range(n):
+        j = (i + 1) % n
+        if gap[i] or gap[j]:
+            continue
+        (x0, z0), (x1, z1) = inner[i], inner[j]
+        if abs(x1 - x0) + abs(z1 - z0) < 1e-6:
+            continue
+        mx, mz = (x0 + x1) / 2, (z0 + z1) / 2
+        nx, nz = cxm - mx, czm - mz                     # facing into the room
+        ax, az = nz, nx                                 # room_explore's winding
+        fwd = (x1 - x0) * ax + (z1 - z0) * az > 0
+        a, bb = ((x0, z0, outer[i]), (x1, z1, outer[j])) if fwd else \
+            ((x1, z1, outer[j]), (x0, z0, outer[i]))
+        pts = [(ox + a[0], y1, oz + a[1]), (ox + bb[0], y1, oz + bb[1]),
+               (ox + bb[0], y0, oz + bb[1]), (ox + a[0], y0, oz + a[1])]
+        uv = [a[2], bb[2], (bb[0], bb[1]), (a[0], a[1])]
+        q.append((pts, uv))
+        # the cap: a thin top, outward, in the outline's colour
+        l = np.hypot(nx, nz) or 1.0
+        ux, uz = -nx / l * CAP, -nz / l * CAP
+        cap = [(ox + x0, y1, oz + z0), (ox + x1, y1, oz + z1),
+               (ox + x1 + ux, y1, oz + z1 + uz), (ox + x0 + ux, y1, oz + z0 + uz)]
+        area = sum(cap[k][0] * cap[(k + 1) % 4][2] - cap[(k + 1) % 4][0] * cap[k][2] for k in range(4))
+        if area < 0:
+            cap = cap[::-1]
+        uvc = [outer[i], outer[j], outer[j], outer[i]]
+        if area < 0:
+            uvc = uvc[::-1]
+        q.append((cap, uvc))
+    for x, z, wd, d in RE.greedy_quads(b["floor"]):
+        p = [(ox + x, y0, oz + z), (ox + x + wd, y0, oz + z),
+             (ox + x + wd, y0, oz + z + d), (ox + x, y0, oz + z + d)]
+        q.append((p, [(x, z), (x + wd, z), (x + wd, z + d), (x, z + d)]))
+    return q
 
 
 SHELL_PALETTE = 0.005   # a colour this common in the plain band is the wall's
@@ -2201,7 +2448,10 @@ def heightmap_quads(hm, ox, oz, y0):
 
 
 def shell_quads(sh, ox, oz, lift):
-    """The ring's prism and the floor behind its front, projected."""
+    """The ring's prism and the floor behind its front, projected; for a
+    room with its box walls found, those instead."""
+    if sh.get("box") is not None:
+        return box_quads(sh["box"], ox, oz, sh["base"] + lift)
     if "slope" in sh:
         return heightmap_quads(sh["slope"], ox, oz, sh["base"] + lift)
     Wp, Hw = sh["Wp"], sh["Hw"]
@@ -2704,6 +2954,11 @@ def build_area(job):
                         continue
                     if shell is not None and shell["R"][cy, cx]:
                         continue
+                    if shell is not None and shell.get("box") is not None \
+                            and not shell["exits"][cy, cx]:
+                        continue            # the box draws the room: its floor
+                                            # one surface, its walls and doors
+                                            # openings; exits alone stay tiles
                     sy, sx = under.get((cy, cx), (cy, cx))
                     if (cx, cy) in covered:
                         # under or behind a building: the floor behind it,
@@ -2798,13 +3053,18 @@ def build_area(job):
             skip = {(d["cx"], d["cy"]) for d in doors}
             grain = (wood_patch(art) if PL.location(r.area, r.room)["view"] == "terrace"
                      else None)
+            if shell is not None and shell.get("box") is not None:
+                # the box draws its walls and floor: no cell faces there
+                solid = np.zeros_like(solid)
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip, grain))
             if shell is not None:
                 m.quads(shell_quads(shell, ox, oz, lift))
                 for pz in shell.get("pieces", []):
                     m.quads(shell_quads(pz, ox, oz, lift))
+            box_ = shell is not None and shell.get("box") is not None
             for d in doors:
-                m.quads(door_quads(d, ox, oz, lift))
+                if not box_:            # in a box, a doorway is its wall's opening
+                    m.quads(door_quads(d, ox, oz, lift))
             for b in blds:
                 m.quads(building_quads(b, ox, oz, lift))
             for u in ups:
