@@ -2222,7 +2222,7 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     sh = dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F, exits=exits, T=T, W=W)
     # the walls themselves: the box convention (docs/vr/06): every band
     # round the floor is a wall's inner face, standing at the floor's edge
-    gap = np.kron(exits, one)
+    gap = open_doorways(r, cls, exits | stairwell_cells(r, cls, R, exits), one)
     for dd in doors:
         for yy in range(dd["top"], dd["cy"] + 1):
             gap[yy * 16:yy * 16 + 16, dd["cx"] * 16:dd["cx"] * 16 + 16] = True
@@ -2331,7 +2331,7 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
         run.append(max(0.0, k))
         # a doorway: the ray crosses an opening in the band
         seg = [(int(round(cx + dx * u)), int(round(cz + dz * u)))
-               for u in np.arange(max(0.0, last - 64), last, 1.0)]
+               for u in np.arange(max(0.0, last - BOX_GAP_REACH), last, 1.0)]
         gapr.append(any(gap[z, x] for x, z in seg if 0 <= x < Wpx and 0 <= z < Hp))
     run = np.array(run)
     runc = np.array(runc)
@@ -2718,6 +2718,41 @@ def cuboid(x0, x1, y0, y1, z0, z1, front, top=None):
 
 
 STAIR_STEP = 4          # px: a stairwell's step, deep and tall
+BOX_GAP_REACH = 40      # px in from the outline: a ray meets a doorway in the band
+DOORWAY_DARK = 0.5      # a column (row) this much dark beyond is the opening
+
+
+def stairwell_cells(r, cls, R, exits):
+    """Cells of a box room's wall band the game marks as a way through
+    (Picori's door surfaces) that are neither ring nor exit."""
+    act = r.layers[0]["act"][:cls.shape[0], :cls.shape[1]]
+    names = {v: PL.act_short(int(v)) or "" for v in np.unique(act)}
+    door = np.vectorize(lambda v: "DOOR" in names[v])(act)
+    return door & (cls == RE.CLASS_WALL) & ~R & ~exits
+
+
+def open_doorways(r, cls, ways, one):
+    """The pixels of a room's doorways that are open: where a doorway is
+    drawn opening onto the dark (a stairwell, a back door), only the dark
+    between its jambs -- the jambs and the plates above them are the
+    wall's; where it is lit (the way out, onto the path), all of it."""
+    h, w = cls.shape
+    gap = np.kron(ways, one)
+    A = np.asarray(RE.room_art_rgb(r, 0))[:h * 16, :w * 16, :3].astype(np.int64)
+    dark = (A @ np.array([299, 587, 114]) // 1000) < STAIR_DARK
+    lab, n = RE._label(ways)
+    for k in range(1, n + 1):
+        m = np.kron(lab == k, one)
+        if not (dark & m).any():
+            continue                                # lit: all of it
+        ys, xs = np.nonzero(m)
+        wide = (xs.max() - xs.min()) >= (ys.max() - ys.min())
+        frac = ((dark & m).sum(axis=0) / np.maximum(1, m.sum(axis=0))) if wide else \
+               ((dark & m).sum(axis=1) / np.maximum(1, m.sum(axis=1)))
+        openl = frac >= DOORWAY_DARK
+        keep = m & (openl[None, :] if wide else openl[:, None])
+        gap[m] = keep[m]
+    return gap
 
 
 def stairwell_pieces(r, cls, shell, art=None):
@@ -2732,10 +2767,7 @@ def stairwell_pieces(r, cls, shell, art=None):
     dark beyond them left open."""
     if art is None:
         return []
-    act = r.layers[0]["act"][:cls.shape[0], :cls.shape[1]]
-    names = {v: PL.act_short(int(v)) or "" for v in np.unique(act)}
-    door = np.vectorize(lambda v: "DOOR" in names[v])(act)
-    well = door & (cls == RE.CLASS_WALL) & ~shell["R"] & ~shell["exits"]
+    well = stairwell_cells(r, cls, shell["R"], shell["exits"])
     if not well.any():
         return []
     h, w = cls.shape
