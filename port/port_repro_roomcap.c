@@ -285,6 +285,30 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
                 since = frame;
             if (!booted || gMain.task != TASK_GAME)
                 return;
+            /* past the prologue (TMC_ROOMCAP_PROGRESS dungeons cleared), as
+             * the managed TMC_VR PROGRESS block does at boot -- that block
+             * exists only in TMC_VR builds, and without it Hyrule Town
+             * redirects to Festival Town (roomInit.c) and never arrives */
+            {
+                static int progressed = 0;
+                if (!progressed) {
+                    progressed = 1;
+                    const char* pg = getenv("TMC_ROOMCAP_PROGRESS");
+                    if (pg && *pg) {
+                        int np = atoi(pg);
+                        if (np < 0) np = 0;
+                        if (np > 6) np = 6;
+                        static const u32 kLv[6] = { LV1_CLEAR, LV2_CLEAR, LV3_CLEAR,
+                                                    LV4_CLEAR, LV5_CLEAR, LV6_CLEAR };
+                        SetGlobalFlag(TABIDACHI);
+                        for (int i = 0; i < np; i++)
+                            SetGlobalFlag(kLv[i]);
+                        UpdateGlobalProgress();
+                        fprintf(stderr, "[roomcap] tour progress: %d dungeons, global_progress=%u\n", np,
+                                (unsigned)gSave.global_progress);
+                    }
+                }
+            }
             if (ti >= tn) {
                 fprintf(stderr, "[roomcap] tour done\n");
                 fflush(stderr);
