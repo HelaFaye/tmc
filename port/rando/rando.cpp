@@ -2,8 +2,8 @@
  * port/rando/rando.cpp — fixed-array graph randomizer for Project Picori.
  *
  * Derived from the GPL-3.0 Minish Cap randomizer (MinishMaker,
- * minishmaker/randomizer): placement algorithm provenance is documented in
- * THIRD-PARTY-LICENSES.md. Distributed under the GPL-3.0.
+ * minishmaker/randomizer): shares its .logic format and randomization
+ * behaviour. Distributed under the GPL-3.0; see THIRD-PARTY-LICENSES.md.
  */
 
 #include "rando.h"
@@ -14,7 +14,6 @@
 #include "rando_keymap.h"
 #ifdef PC_PORT
 #include "rando_runtime.h"
-#include "port_debug_query.h"
 #endif
 
 #include <stdarg.h>
@@ -3035,109 +3034,16 @@ static void BuildSpoiler(uint64_t seed, const RandomizerSettings* settings) {
     AppendEntranceSpoiler();
 }
 
-static const char* SpoilerScriptedSite(const char* name) {
-    static const struct {
-        const char* key;
-        const char* site;
-    } kSites[] = {
-        { "Smith_Floor_Item1", "Smith's house - floor pickup 1" },
-        { "Smith_Floor_Item2", "Smith's house - floor pickup 2" },
-        { "Droplets_Entrance_B2_WestIceblock", "Temple of Droplets - entrance B2 - west ice block" },
-        { "Town_Shop_80Item", "Hyrule Town - Stockwell's shop - 80-rupee item" },
-        { "Town_Shop_300Item", "Hyrule Town - Stockwell's shop - 300-rupee item" },
-        { "Town_Dojo_NPC1", "Hyrule Town - Swiftblade's dojo - Spin Attack lesson" },
-        { "Town_Dojo_NPC2", "Hyrule Town - Swiftblade's dojo - Rock Breaker lesson" },
-        { "Town_Dojo_NPC3", "Hyrule Town - Swiftblade's dojo - Dash Attack lesson" },
-        { "Town_Dojo_NPC4", "Hyrule Town - Swiftblade's dojo - Down Thrust lesson" },
-        { "Crenel_Dojo_NPC", "Mt Crenel - Grayblade's dojo - Roll Attack lesson" },
-        { "Castle_Dojo_NPC", "Hyrule Castle - Grimblade's dojo - Sword Beam lesson" },
-        { "Hylia_Dojo_NPC", "Lake Hylia - Waveblade's dojo - Peril Beam lesson" },
-        { "Swamp_Dojo_NPC", "Castor Wilds - Swiftblade the First - Great Spin lesson" },
-        { "Swamp_WaterfallFusion_DojoNPC", "Castor Wilds waterfall - Scarblade - Fast Spin lesson" },
-        { "FallsLower_WaterfallFusion_DojoNPC", "Veil Falls waterfall - Splitblade - Fast Split lesson" },
-        { "NorthField_WaterfallFusion_DojoNPC", "North Hyrule Field waterfall - Greatblade - Long Spin lesson" },
-        { "Town_Cuccos_Lv_10_NPC", "Hyrule Town - Anju's Cucco game - round 10 reward" },
-        { "Hylia_DogNPC", "Lake Hylia - Stockwell's lake house - feed the dog" },
-        { "MinishVillage_BarrelHouse_Item", "Minish Village - barrel house - Jabber Nut" },
-        { "Town_Jullieta_Item", "Hyrule Town - Julietta's house - Red Book" },
-        { "Town_DrLeft_AtticItem", "Hyrule Town - Dr. Left's attic - Green Book" },
-        { "Hylia_MayorCabin_Item", "Lake Hylia - mayor's cabin - Blue Book" },
-        { "Crenel_Melari_NPC", "Mt Crenel - Melari's mine - Melari reward" },
-        { "Town_ShoeShop_NPC", "Hyrule Town - Rem's shoe shop - wake-up reward" },
-        { "MinishWoods_BombMinish_NPC1", "Minish Woods - Bomb Minish - Bomb Bag reward" },
-        { "MinishWoods_BombMinish_NPC2", "Minish Woods - Bomb Minish - Remote Bombs reward" },
-        { "Minish_GreatFairy_NPC", "Minish Woods - Great Fairy reward" },
-        { "Crenel_GreatFairy_NPC", "Mt Crenel - Great Fairy reward" },
-        { "Valley_GreatFairy_NPC", "Royal Valley - Great Fairy reward" },
-        { "Valley_DampeNPC", "Royal Valley - Dampe's house - Graveyard Key reward" },
-        { "MinishWoods_WitchHut_Item", "Minish Woods - Syrup's witch hut - Mushroom purchase" },
-        { "Falls_Biggoron", "Veil Falls - Biggoron shield exchange" },
-        { "Town_Library_YellowMinish_NPC", "Hyrule Town library bookshelf - yellow Minish reward" },
-        { "Deepwood_Prize", "Deepwood Shrine - post-boss element pickup" },
-        { "CoF_Prize", "Cave of Flames - post-boss element pickup" },
-        { "Droplets_Prize", "Temple of Droplets - post-boss element pickup" },
-        { "Palace_Prize", "Palace of Winds - post-boss element pickup" },
-        { "Town_CafeLady_NPC", "Hyrule Town cafe - seated woman's Kinstone reward" },
-        { "Crypt_Prize", "Royal Crypt - King Gustaf's Kinstone reward" },
-        { "WindTribe_2F_Gregal_NPC1", "Wind Tribe Tower 2F - Gregal's Shells reward" },
-        { "WindTribe_2F_Gregal_NPC2", "Wind Tribe Tower 2F - Gregal's Light Arrows reward" },
-        { "Trilby_Scrub_NPC", "Trilby Highlands - Business Scrub bottle sale" },
-        { "Crenel_Scrub_NPC", "Mt Crenel - Business Scrub Grip Ring sale" },
-        { "Fortress_Prize", "Fortress of Winds - Ocarina bird drop after boss" },
-        { "Town_Bell_HP", "Hyrule Town - bell heart piece" },
-        { "SouthField_Tingle_NPC", "South Hyrule Field - Tingle trophy reward" },
-    };
-    for (const auto& site : kSites) {
-        if (strcmp(name, site.key) == 0)
-            return site.site;
-    }
-    return NULL;
-}
-
 static void BuildLogicSpoiler(uint64_t seed) {
     sSpoiler.clear();
     SpoilerAppend("Seed: %llu\nLogic: Picori (%zu locations, fingerprint %016llX)\n\n",
                   (unsigned long long)seed, sLogicCount, (unsigned long long)sLogicFingerprint);
     for (size_t i = 0; i < sLogicCount; ++i) {
-        const uint32_t key = RandoLogic_GetLocationKeyAt((uint32_t)i);
-        if (sLogicItems[i] == ITEM_NONE || key == UINT32_MAX ||
+        if (sLogicItems[i] == ITEM_NONE || RandoLogic_GetLocationKeyAt((uint32_t)i) == UINT32_MAX ||
             RandoLogic_LocationHasTagName((uint32_t)i, "NoSpoiler"))
             continue;
-        const char* name = RandoLogic_GetLocationName((uint32_t)i);
-        const char* scripted_site = SpoilerScriptedSite(name);
         const std::string item_name = SpoilerItemName(sLogicItems[i], sLogicSubtypes[i]);
-        if ((key & 0xFF000000u) != 0) {
-            if (scripted_site != NULL)
-                SpoilerAppend("%s [%s] : %s\n", scripted_site, name, item_name.c_str());
-            else
-                SpoilerAppend("%-40s : %s\n", name, item_name.c_str());
-            continue;
-        }
-
-        const unsigned area = (key >> 16) & 0xFFu;
-        const unsigned room = (key >> 8) & 0xFFu;
-        const unsigned check = key & 0xFFu;
-        const bool chest = strncmp(name, "Chest_", 6) == 0;
-        if (scripted_site != NULL)
-            SpoilerAppend("%s ", scripted_site);
-        SpoilerAppend("%-40s [", name);
-#ifdef PC_PORT
-        const char* area_name = Port_DebugQuery_AreaName((uint8_t)area);
-        if (area_name != NULL)
-            SpoilerAppend("%s; ", area_name);
-#endif
-        SpoilerAppend("area 0x%02X, room 0x%02X, ", area, room);
-        if (chest)
-            SpoilerAppend("chest #%u", check + 1);
-        else
-            SpoilerAppend("ground flag 0x%02X", check);
-#ifdef PC_PORT
-        unsigned x, y;
-        bool tile_coords;
-        if (Rando_Runtime_GetCheckPosition(key, chest, &x, &y, &tile_coords))
-            SpoilerAppend(", %s (%u,%u)", tile_coords ? "room tile" : "room pixel", x, y);
-#endif
-        SpoilerAppend("] : %s\n", item_name.c_str());
+        SpoilerAppend("%-40s : %s\n", RandoLogic_GetLocationName((uint32_t)i), item_name.c_str());
     }
     AppendEntranceSpoiler();
 }
@@ -3172,7 +3078,6 @@ static RandoStatus ActivateLogicSeed(uint64_t seed, const RandomizerSettings* se
         fingerprint == 0 || fingerprint != RandoLogic_SourceFingerprint() ||
         count != RandoLogic_GetLocationCountRaw())
         return RANDO_BAD_SETTINGS;
-    size_t shuffled_checks = 0;
     for (size_t i = 0; i < count; ++i) {
         RandoLogicLocationType type = RandoLogic_GetLocationType((uint32_t)i);
         if (type == RANDO_LOGIC_LOCATION_DUNGEON_PRIZE || type == RANDO_LOGIC_LOCATION_MAJOR ||
@@ -3184,13 +3089,7 @@ static RandoStatus ActivateLogicSeed(uint64_t seed, const RandomizerSettings* se
                 fprintf(stderr, "[RANDO] no native award source for %s\n", RandoLogic_GetLocationName((uint32_t)i));
                 return RANDO_BAD_SETTINGS;
             }
-            ++shuffled_checks;
         }
-    }
-    if (shuffled_checks < 259) {
-        fprintf(stderr, "[RANDO] only %zu keyed shuffled checks; Picori rules require at least 259\n",
-                shuffled_checks);
-        return RANDO_BAD_SETTINGS;
     }
     extern void Rando_Music_ClearAssignments(void);
     Rando_Music_ClearAssignments();
@@ -3303,11 +3202,10 @@ extern "C" RandoStatus Rando_GenerateSeed(uint64_t seed, const RandomizerSetting
     if (local.item_difficulty < RANDO_ITEM_POOL_NORMAL || local.item_difficulty >= RANDO_ITEM_POOL_COUNT) {
         return RANDO_BAD_SETTINGS;
     }
-    if (!local.glitchless_logic || !local.shuffle_kinstones || local.shuffle_entrances ||
-        local.shuffle_dungeon_items || local.accessibility != RANDO_ACCESS_GOAL)
+    if (!local.glitchless_logic || !local.shuffle_kinstones)
         return RANDO_BAD_SETTINGS;
 
-    /* A loaded save owns its rule overrides. Start a new roll from the
+    /* A loaded save owns its parser overrides. Start a new roll from the
      * selected PC settings, while ordinary rerolls keep deliberate UI edits. */
     if (sRestoredSeed)
         Rando_Reset();
@@ -3315,17 +3213,50 @@ extern "C" RandoStatus Rando_GenerateSeed(uint64_t seed, const RandomizerSetting
     if (seed == 0)
         seed = ChooseAutoSeed();
 
-    /* Fresh seeds use only options declared by Picori's ruleset. */
-    RandoLogic_SetOverride("RUPEEMANIA", local.obscure_locations ? "true" : "false");
+    /* Native saves keep the old graph; fresh seeds use the bundled upstream
+     * logic. Progressive awards need their own native item behavior, so this
+     * first PC profile explicitly selects upstream's nonprogressive pools. */
+    static const char* const kProgressiveFlags[] = {
+        "YES_SWORD_PROG", "YES_BOW_PROG", "YES_BOOM_PROG", "YES_SHIELD_PROG", "YES_SCROLL_PROG",
+    };
+    for (const char* flag : kProgressiveFlags) {
+        bool set = false;
+        for (uint32_t i = 0; i < RandoLogic_GetOverrideCount(); ++i) {
+            const char* name = NULL;
+            if (RandoLogic_GetOverride(i, &name, NULL) && name != NULL && strcmp(name, flag) == 0) {
+                set = true;
+                break;
+            }
+        }
+        if (!set)
+            RandoLogic_SetOverride(flag, "false");
+    }
+    /* The Obscure control enables four extra pickup pools.
+     * Write all four on every roll so a previous seed cannot leave stale
+     * values behind when this setting changes. */
+    static const char* const kObscureFlags[] = {
+        "RUPEEMANIA", "SPECIALPOTS", "DIGGING", "UNDERWATER",
+    };
+    for (const char* flag : kObscureFlags)
+        RandoLogic_SetOverride(flag, local.obscure_locations ? "true" : "false");
     RandoLogic_SetOverride("START_SMITH_SWORD", local.start_sword ? "true" : "false");
     RandoLogic_SetOverride("ACCESSIBILITY", local.accessibility == RANDO_ACCESS_ALL_LOCATIONS ? "ACCESS_LOCATIONS" :
                                                 local.accessibility == RANDO_ACCESS_ALL_NONKEYS ? "ACCESS_INVENTORY" :
                                                                                                   "ACCESS_BEATABLE");
+    RandoLogic_SetOverride("OPENWORLD", local.open_world ? "OPENWORLD_ON" : "OPENWORLD_OFF");
+    RandoLogic_SetOverride("ENTRANCES", local.shuffle_entrances ? "ENTRANCES_COUPLED" : "ENTRANCES_VANILLA");
     RandoLogic_SetOverride("DOJO", local.shuffle_dojos ? "DOJOANY" : "DOJOVANILLA");
     RandoLogic_SetOverride("ITEM_POOL", local.item_difficulty == RANDO_ITEM_POOL_HARD ? "ITEM_POOL_RIP" :
                                         local.item_difficulty == RANDO_ITEM_POOL_CHAOS ? "ITEM_POOL_PLENTIFUL" :
                                                                                           "ITEM_POOL_NORMAL");
-    if (!RandoLogic_LoadBuiltIn()) {
+    RandoLogic_SetOverride("SMALL_KEYS_SETTING", local.shuffle_dungeon_items ? "SMALL_KEYSANITY" :
+                                                                         "SMALL_KEYS_STANDARD");
+    RandoLogic_SetOverride("BIG_KEYS_SETTING", local.shuffle_dungeon_items ? "BIG_KEYSANITY" :
+                                                                       "BIG_KEYS_STANDARD");
+    RandoLogic_SetOverride("MAP_SETTING", local.shuffle_dungeon_items ? "MAP_KEYSANITY" : "MAP_STANDARD");
+    RandoLogic_SetOverride("COMPASS_SETTING", local.shuffle_dungeon_items ? "COMPASS_KEYSANITY" :
+                                                                      "COMPASS_STANDARD");
+    if (!RandoLogic_LoadDefaultFiles()) {
         Rando_Reset();
         return RANDO_BAD_SETTINGS;
     }
@@ -3376,7 +3307,7 @@ extern "C" void Rando_Reset(void) {
     sRestoredSeed = false;
     RandoLogic_ClearOverrides();
     if (RandoLogic_IsLoaded())
-        RandoLogic_Rebuild();
+        RandoLogic_Reparse();
     for (size_t i = 0; i < RANDO_LOCATION_COUNT; ++i) {
         randomized_item_table[i] = kLocations[i].vanilla_item;
         randomized_item_subtype_table[i] = 0;

@@ -1,6 +1,6 @@
 set_project("tmc")
 -- Keep in sync with port/port_version.h.
-local TMC_PC_VERSION = "0.9.3"
+local TMC_PC_VERSION = "0.9.5"
 set_version(TMC_PC_VERSION)
 set_xmakever("2.7.0")
 
@@ -84,6 +84,19 @@ option("ra")
     set_default(true)
     set_showmenu(true)
     set_description("Compile RetroAchievements support (rcheevos + libcurl; default ON)")
+option_end()
+
+-- Headless auto-repro / capture harnesses (port/port_repro_*.c, driven by
+-- TMC_REPRO_* / TMC_PERFCAP / TMC_ROOMCAP env vars). "default" follows the
+-- build mode (on for debug, off for release); --repro_harness=y/n forces it.
+-- Off compiles the entry points to empty inlines via port/port_repro.h.
+-- A string default is deliberate: an option without one is probed and stored
+-- as false, hiding the mode fallback. Not "auto": xmake's config.get maps
+-- that string to nil and `xmake f --repro_harness=auto` then errors.
+option("repro_harness")
+    set_default("default")
+    set_showmenu(true)
+    set_description("Compile the TMC_REPRO_* test harnesses (default = on in debug, off in release)", "default", "y", "n")
 option_end()
 
 -- Framebuffer capacity. At >240, the WIP runtime option reveals room-backed
@@ -698,16 +711,13 @@ target("tmc_pc")
     add_files("port/port_imgui_menu.cpp")
     add_files("port/port_level_editor.cpp")
     add_files("port/port_prelaunch_logo.cpp")
+    -- Embed docs/picori-logo.png into the binary so the prelaunch
+    -- screen always has the logo regardless of cwd / install layout.
+    add_rules("utils.bin2c", {extensions = {".png"}})
+    add_files("docs/picori-logo.png", {rule = "utils.bin2c", nozeroend = true})
     add_files("port/port_tts.cpp")
     add_files("port/port_a11y_cues.c")     -- accessibility audio cues (surroundings scan, F10)
     add_files("port/port_a11y_audio.c")    -- spatialized tone cues (audio-thread mixer)
-    -- Embed docs/picori-logo.png into the binary so the prelaunch
-    -- screen always has the logo regardless of cwd / install layout.
-    -- xmake's utils.bin2c rule writes a "0xNN, 0xNN, ..." byte sequence
-    -- to a header we include inside an array initializer
-    -- (see port_prelaunch_logo.cpp).
-    add_rules("utils.bin2c", {extensions = {".png"}})
-    add_files("docs/picori-logo.png", {rule = "utils.bin2c", nozeroend = true})
     add_files("port/port_debug_actions.c")
     add_files("port/port_flag_names.cpp")
     add_files("port/port_debug_entities.c")
@@ -742,14 +752,22 @@ target("tmc_pc")
     -- Minish Cap Reborn parity toggles, ported from Admentus64/The-Minish-Cap-
     -- Reborn (GPL-3.0); GPL-3.0, see THIRD-PARTY-LICENSES.md.
     add_files("port/port_reborn.cpp")
-    -- Env-gated auto-repro / capture harnesses (no-op when off).
-    add_files("port/port_repro_perfcap.c")
-    add_files("port/port_repro_rando.c")
-    add_files("port/port_repro_a11y.c")
-    add_files("port/port_repro_roomcap.c")  -- generic in-game room capture (TMC_ROOMCAP)
-    add_files("port/port_repro_roll_macro.c") -- roll-attack macro e2e test (TMC_REPRO_ROLL_MACRO)
-    add_files("port/port_repro_npc_talk.c") -- NPC-talk e2e test (TMC_REPRO_NPC_TALK)
-    add_files("port/port_repro_itemget.c") -- item-get perf repro (TMC_REPRO_ITEMGET)
+    -- Env-gated auto-repro / capture harnesses (no-op when env unset;
+    -- compiled out entirely with --repro_harness=n, see option above).
+    local repro_harness = get_config("repro_harness")
+    if repro_harness == "default" then
+        repro_harness = is_mode("debug")
+    end
+    if repro_harness then
+        add_defines("TMC_REPRO_HARNESS")
+        add_files("port/port_repro_perfcap.c")
+        add_files("port/port_repro_rando.c")
+        add_files("port/port_repro_a11y.c")
+        add_files("port/port_repro_roomcap.c")  -- generic in-game room capture (TMC_ROOMCAP)
+        add_files("port/port_repro_roll_macro.c") -- roll-attack macro e2e test (TMC_REPRO_ROLL_MACRO)
+        add_files("port/port_repro_npc_talk.c") -- NPC-talk e2e test (TMC_REPRO_NPC_TALK)
+        add_files("port/port_repro_itemget.c") -- item-get perf repro (TMC_REPRO_ITEMGET)
+    end
     -- Link the asset extractor implementation directly so tmc_pc can
     -- run extraction in-process at startup (no shell-out) and share
     -- the engine's already-loaded ROM buffer.
@@ -759,6 +777,7 @@ target("tmc_pc")
     add_files("port/port_ppu.cpp")      -- PPU bridge (C++ → ViruaPPU)
     add_files("port/port_gpu_renderer.cpp")  -- SDL_GPU presentation (Stage 1: scaffold; gated on --gpu_renderer=y)
     add_files("port/port_gpu_raster.cpp")    -- SDL_GPU PPU rasterizer (docs/gpu-rasterizer-design.md; gated on --gpu_renderer=y)
+    add_files("port/port_voxel.cpp")         -- experimental 3D room view (SDL_GPU; stubs without --gpu_renderer)
     add_files("port/port_gpu_obj_cull.c")    -- per-line OBJ candidate cull (shared by GPU raster backends)
     add_files("port/port_gpu_raster_gl.cpp") -- GLES 3.1 compute PPU rasterizer (no-Vulkan devices; docs/gpu-rasterizer-design.md)
     add_files("port/port_glslp_parser.cpp")  -- libretro .glslp parser — steps 1-4 of the runtime scaffold (Stage 5+C)
@@ -788,6 +807,8 @@ target("tmc_pc")
         add_files("port/shaders/build/crt_rf_p2.frag.spv")
         add_files("port/shaders/build/ppu_raster.vert.spv")
         add_files("port/shaders/build/ppu_raster.frag.spv")
+        add_files("port/shaders/build/voxel.vert.spv")
+        add_files("port/shaders/build/voxel.frag.spv")
         -- GLES compute backend: embed the shared core GLSL (built at runtime).
         add_files("port/shaders/ppu_core.glsl")
     end
@@ -827,13 +848,12 @@ target("tmc_pc")
         -- Raw ROM blobs intentionally back many differently typed decomp symbols.
         -- Keep the gate focused on cross-TU code/runtime ABI, not ROM storage casts.
         add_files("port/data_stubs_autogen.c", {force = {cxflags = "-fno-lto"}})
-        add_files("port/data_const_stubs.c", {force = {cxflags = "-fno-lto"}})
+        add_files("port/port_rom_stubs.c", {force = {cxflags = "-fno-lto"}})
     else
         add_files("port/data_stubs_autogen.c")
-        add_files("port/data_const_stubs.c") -- Const ROM data (generated tools/generate_const_data.py)
+        add_files("port/port_rom_stubs.c")
     end
     add_files("port/flag_remap_generated.c")  -- Per-region flag-ordinal remap (generated by tools/generate_flag_remap.py)
-    add_files("port/port_rom_tables.c")   -- Compile-time ROM offset tables (generated by tools/generate_rom_tables.py)
     add_files("port/port_bios.c")
     add_files("port/port_bugreport.cpp")     -- F9 bug-report capture (screenshot + save + state dump)
     add_files("port/port_bugreport_state.c") -- Crash-handler state snapshot
@@ -1096,6 +1116,7 @@ target("rando_logic_test")
     add_includedirs("include")
     add_files("port/rando/rando.cpp")
     add_files("port/rando/rando_logic.cpp")
+    add_files("port/port_exe_path.cpp")
     add_files("port/rando/rando_save.c")
     add_files("port/rando/rando_entrance.cpp")
     add_files("port/rando/rando_music.c")

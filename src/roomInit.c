@@ -4412,7 +4412,12 @@ u32 sub_unk3_HyruleTown_0(void) {
     }
     sub_0804AFB0(
 #ifdef PC_PORT
-        (void**)(((void**)gAreaTable[2])[gSave.global_progress])
+        /* Story-skip (TABIDACHI at gp 1, see the gate below): Area_HyruleTown[1]
+         * is the festival room (Npc4EIntroTown + Zelda), which would replay the
+         * festival cutscene in the real town. Use the post-intro gp 2 set. */
+        (void**)(((void**)gAreaTable[2])[(gSave.global_progress == 1 && CheckGlobalFlag(TABIDACHI))
+                                              ? 2
+                                              : gSave.global_progress])
 #else
         (void**)(Area_HyruleTown[gSave.global_progress])
 #endif
@@ -4431,7 +4436,7 @@ u32 sub_unk3_HyruleTown_0(void) {
     if (gSave.global_progress != 1) {
 #endif
 #ifdef PC_PORT
-        sub_0804AFB0((void**)(((void**)gAreaTable[2])[0]));
+        gCurrentRoomProperties = (void**)(((void**)gAreaTable[2])[0]);
 #else
         gCurrentRoomProperties = (void**)*Area_HyruleTown;
 #endif
@@ -5037,11 +5042,11 @@ extern EntityData gUnk_080F2E94;
 extern EntityData gUnk_080F2EC4;
 
 #ifdef PC_PORT
-/* Randomizer: Picori rules declare two floor items in the smith
+/* Randomizer: The `.logic` file declares two floor items in the smith
  * house (Smith_Floor_Item1/2, vanilla the starting sword + shield) that the
  * GBA randomizer creates by rewriting two furniture records in the room's
  * entity data. Natively, spawn the equivalent ground items at room load when
- * a rule-backed seed is active and has those locations. Flags 0xE0/0xE1 are
+ * a real .logic seed is active and has those locations. Flags 0xE0/0xE1 are
  * unused across every LOCAL_BANK_2 area's entity data; ItemOnGround_Init
  * deletes an already-collected item via CheckFlags, and the pickup routes
  * through the standard area-room-flag location hook (rando_keymap.c binds

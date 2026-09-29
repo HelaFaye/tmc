@@ -351,12 +351,12 @@ void Port_A11y_ScanSurroundings(void) {
  * nearby threats. */
 #define A11Y_RADAR_TILES 8
 
-/* Per-category enables — config (Port_Config_*) drives these; default off. */
-static bool sCuePassive   = false;
-static bool sCueFootsteps = false;
-static bool sCueHazards   = false;
-static bool sCueRadar     = false;
-static bool sCueWalls     = false;
+/* Per-category enables — config (Port_Config_*) drives these; default on. */
+static bool sCuePassive   = true;
+static bool sCueFootsteps = true;
+static bool sCueHazards   = true;
+static bool sCueRadar     = true;
+static bool sCueWalls     = true;
 
 /* Frame-to-frame state (game thread only). */
 static int  sLastPx, sLastPy;
@@ -506,13 +506,11 @@ void Port_A11y_Update(void) {
         }
     }
 
-    /* Wall bump: trying to move (directional input held and speed set)
-     * but position didn't change. Rate-limited so a held direction into
-     * a wall ticks, not buzzes. */
+    /* Wall bump: trying to move (speed set) but position didn't change.
+     * Rate-limited so a held direction into a wall ticks, not buzzes. */
     if (sCueWalls) {
         if (sWallTimer > 0) sWallTimer--;
-        if ((gPlayerState.playerInput.heldInput & INPUT_ANY_DIRECTION) &&
-            player->speed > 0 && moved == 0 && sWallTimer == 0) {
+        if (player->speed > 0 && moved == 0 && sWallTimer == 0) {
             float pan = 0.0f;
             int d = player->direction & 0x18;
             if (d == DirectionEast) pan = 0.7f;

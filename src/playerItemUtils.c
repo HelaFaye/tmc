@@ -48,7 +48,8 @@ bool32 InitItemGetSequence(u32 type, u32 type2, u32 delay) {
 #include <stdbool.h>
 /* Generic randomizer hook — called at the centralized point where any
  * item entity gets spawned (chests, NPC gifts, drops, cutscenes...).
- * Location-specific hooks run at source call sites for keyed checks. */
+ * Location-specific hooks run at source call sites when an external
+ * .logic file supplies address keys. */
 extern bool Rando_OverrideItem(u8* type, u8* subtype);
 extern bool Rando_OverrideLocationKey(u32 location_key, u8* type, u8* subtype);
 #endif
