@@ -142,7 +142,16 @@ def render_metatile(idx, chars, pal, subtile, char_base=0):
     return out
 
 
-def subtilemap_pixels(stm, sh, sw, chars, char_base=0):
+def decode_chars8(bg_vram):
+    """64 KB of 8bpp char data -> (1024, 8, 8) uint8 palette indices: one
+    byte a pixel, indexing the whole 256-colour palette. The Minish-sized
+    interiors (areas 32 and 45, and 72_32) draw layer 0 so; decoded as 4bpp
+    they came out scrambled."""
+    n = len(bg_vram) // 64
+    return np.asarray(bg_vram[:n * 64], dtype=np.uint8).reshape(n, 8, 8).copy()
+
+
+def subtilemap_pixels(stm, sh, sw, chars, char_base=0, bpp8=False):
     """Decode the top-left sh x sw subtiles of a 128x128 subtile map.
 
     Returns (index, valid), both (sh*8, sw*8): index is bank*16 + colour, the
@@ -160,7 +169,10 @@ def subtilemap_pixels(stm, sh, sw, chars, char_base=0):
     rows = k[None, None, :, None] ^ (((ent >> 11) & 1)[:, :, None, None] * 7)
     cols = k[None, None, None, :] ^ (((ent >> 10) & 1)[:, :, None, None] * 7)
     px = chars[char, rows, cols]                          # (sh, sw, 8, 8)
-    idx = ((ent >> 12) & 0xF)[:, :, None, None] * 16 + px
+    if bpp8:                                              # no palette bank
+        idx = px.astype(np.int32)
+    else:
+        idx = ((ent >> 12) & 0xF)[:, :, None, None] * 16 + px
     valid = np.broadcast_to(valid[:, :, None, None], idx.shape)
     # (sh, sw, 8, 8) -> (sh*8, sw*8): rows of subtiles, then rows within one.
     flat = lambda a: a.transpose(0, 2, 1, 3).reshape(sh * 8, sw * 8)
@@ -181,15 +193,22 @@ def room_art(room, layer_index):
     layer = room.layers[layer_index]
     if not layer["present"] or room.cells_w == 0:
         return None
-    chars = decode_chars(room.bg_vram)
+    bpp8 = bool(layer.get("bpp8"))
+    chars = decode_chars8(room.bg_vram) if bpp8 else decode_chars(room.bg_vram)
     pal = room_palette(room)
-    cb = layer.get("char_base", 0) // 32          # as a char-index offset
+    if bpp8:
+        # one 256-colour palette: only colour 0 is transparent, not the
+        # first of every 16
+        pal = pal.copy()
+        pal[:, 3] = 255
+        pal[0, 3] = 0
+    cb = layer.get("char_base", 0) // (64 if bpp8 else 32)   # as a char-index offset
     img = np.zeros((room.cells_h * 16, room.cells_w * 16, 4), dtype=np.uint8)
 
     stm = layer.get("subtilemap")
     if stm is not None:
         sh, sw = room.cells_h * 2, room.cells_w * 2
-        idx, valid = subtilemap_pixels(stm, sh, sw, chars, cb)
+        idx, valid = subtilemap_pixels(stm, sh, sw, chars, cb, bpp8)
         rgba = pal[idx]
         rgba[~valid] = 0
         img[:sh * 8, :sw * 8] = rgba

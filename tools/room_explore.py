@@ -178,6 +178,12 @@ def load_room(path: Path) -> Room:
         for li in range(2):
             r.layers[li]["subtilemap"] = np.frombuffer(d, "<u2", 0x4000, off)
             off += 0x8000
+            # a layer whose every map entry is 0 draws nothing: 73 rooms
+            # (house and Minish interiors, beanstalks) leave layer 1 so, and
+            # entry 0 points at char data another layer overwrote -- the
+            # stripes over the Minish holes
+            if r.layers[li]["present"] and not r.layers[li]["subtilemap"].any():
+                r.layers[li]["present"] = False
 
     if ver >= 2:
         (n,) = struct.unpack_from("<H", d, off); off += 2
@@ -352,7 +358,10 @@ def classify_cell_src(area, layer, cx, cy):
     if (area, tile) in PINS:                      # 1. authored pin
         return PINS[(area, tile)], SRC_PIN, coll
 
-    if tile == 0 and coll == 0:                   # empty cell
+    # empty cell -- except in an 8bpp layer, which draws the whole room as
+    # one picture over metatile 0 (the Minish-sized interiors): there tile
+    # 0 with no collision is the floor
+    if tile == 0 and coll == 0 and not layer.get("bpp8"):
         return CLASS_VOID, SRC_EMPTY, coll
 
     tt = int(layer["tiletype"][tile]) if tile < TILESET else 0

@@ -165,6 +165,65 @@ def entity_name(kind, eid, etype=None):
     return " ".join(x for x in (k, n, t) if x)
 
 
+@lru_cache(maxsize=None)
+def area_flags():
+    """{area: {AR_IS_OVERWORLD, AR_IS_DUNGEON, AR_HAS_KEYS, AR_IS_MOLE_CAVE,
+    ...}} from gAreaMetadata (src/data/areaMetadata.c), in area order."""
+    names = _enum_names(_named_enum(_read("include/area.h"), "AreaFlags"))
+    bits = {v: n for v, n in names.items()}
+    text = _read("src/data/areaMetadata.c")
+    m = re.search(r"gAreaMetadata\[\]\s*=\s*\{(.*?)\n\};", text, re.S)
+    macros = dict(re.findall(r"#define\s+(\w+)\s+\(([^)]*)\)", text))
+    out = {}
+    for n, row in enumerate(re.findall(r"\{\s*([^,}]*),", m.group(1) if m else "")):
+        expr = row
+        for k, v in macros.items():
+            expr = expr.replace(k, v)
+        flags = set()
+        for tok in re.findall(r"[A-Za-z_]\w*|0x[0-9a-fA-F]+|\d+", expr):
+            if tok in bits.values():
+                flags.add(tok)
+            elif re.fullmatch(r"0x[0-9a-fA-F]+|\d+", tok):
+                flags |= {nm for v, nm in bits.items() if int(tok, 0) & v}
+        out[n] = flags
+    return out
+
+
+# Areas the flags do not call overworld that are out of doors: the Minish
+# village is a clearing in the woods
+OUTDOOR_AREAS = {"AREA_MINISH_VILLAGE"}
+# dungeon areas under the sky: a castle's courtyard and bridge, a tower's
+# top or roof
+OPEN_AIR_WORDS = ("_OUTSIDE", "_TOP", "_ROOF", "_BRIDGE")
+
+# Rooms the flags cannot tell: drawn another way than top-down
+SPECIAL_VIEW = {
+    (45, 16): "side",       # the library bookshelf, seen from the front
+    (72, 32): "rotating",   # inside the Deepwood barrel: an affine background
+}
+
+
+def location(area, room):
+    """Where a room is, for the tile stage's rules: kind is 'outdoors',
+    'dungeon', 'cave' or 'indoors'; minish when Link is Minish-sized there;
+    view is 'top' unless SPECIAL_VIEW says otherwise."""
+    f = area_flags().get(area, set())
+    name = areas().get(area, "")
+    if "AR_IS_OVERWORLD" in f or name in OUTDOOR_AREAS:
+        kind = "outdoors"
+    elif "AR_IS_DUNGEON" in f or "AR_HAS_KEYS" in f:
+        kind = "dungeon"
+    elif "AR_IS_MOLE_CAVE" in f or "CAVE" in name:
+        kind = "cave"
+    else:
+        kind = "indoors"
+    minish = "MINISH" in name and "WOODS" not in name
+    open_air = kind == "outdoors" or any(w in name for w in OPEN_AIR_WORDS)
+    return dict(kind=kind, minish=minish, open_air=open_air,
+                view=SPECIAL_VIEW.get((area, room), "top"),
+                flags=sorted(f), area_name=name)
+
+
 def act_short(act):
     """The surface a cell's action gives (SURFACE_DOOR, SURFACE_WATER), or
     None. Picori's TILE_ACT_* notes name what an item does to a tile --

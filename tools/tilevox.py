@@ -95,6 +95,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import room_explore as RE  # noqa: E402
 import tileid as TI  # noqa: E402
+import picori_labels as PL  # noqa: E402
 
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
@@ -189,6 +190,26 @@ def despeckle_walls(cls, H):
 INTERIOR_WALL_MAX = 3   # cells: tallest drawn back wall indoors
 FLOOR_MATCH = 8         # mean |difference| per channel: drawn as the floor
 FLOOR_LONE = 2          # cells: only a blocked cluster this small
+
+
+def undrawn_void(r, cls, layer=0):
+    """In an 8bpp room (the Minish-sized interiors) the picture is the
+    room: a cell it leaves transparent or all black -- the black round an
+    oval Minish house -- is outside it, not wall. Void there."""
+    L = r.layers[layer]
+    if not L.get("bpp8"):
+        return cls
+    import extract_art
+    a = extract_art.room_art(r, layer)
+    if a is None:
+        return cls
+    cls = cls.copy()
+    h, w = cls.shape
+    a = np.asarray(a)[:h * 16, :w * 16]
+    # nothing drawn, or drawn all black (the picture's own backdrop)
+    seen = (a[..., 3] > 0) & (a[..., :3].max(axis=-1) > 0)
+    cls[~seen.reshape(h, 16, w, 16).any(axis=(1, 3))] = RE.CLASS_VOID
+    return cls
 
 
 def sprite_floor(r, cls, H):
@@ -348,7 +369,7 @@ def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     plus the upper landings of flights of steps when path is given
     (stair_levels), and walls raised to their doorways (find_doors).
     Returns (cls, H, blocks, flights, doors)."""
-    cls = RE.classify_room(r, layer)
+    cls = undrawn_void(r, RE.classify_room(r, layer), layer)
     H = despeckle_walls(cls, RE.heightfield(r, cls, layer))
     if layer == 0:
         H = interior_walls(r, cls, H)
@@ -1793,6 +1814,14 @@ def build_area(job):
             r = RE.load_room(Path(p))
         except Exception:
             continue
+        if PL.location(r.area, r.room)["view"] == "rotating":
+            continue            # an affine background: nothing still to build
+        if r.cells_w and r.cells_h and r.layers[a.layer]["present"]:
+            art0 = RE.room_art_rgb(r, a.layer)
+            if art0 is not None and len(np.unique(
+                    art0[:r.cells_h * 16, :r.cells_w * 16, :3].reshape(-1, 3), axis=0)) <= 1:
+                continue        # one flat colour: a placeholder room the game
+                                # never draws (136_27, 72_22, 88_05, 88_06)
         if r.cells_w and r.cells_h and r.layers[a.layer]["present"]:
             rooms.append(r)
             dump_path[(r.area, r.room)] = p
@@ -1872,7 +1901,12 @@ def build_area(job):
             role = room_roles(r, cls, H, bl, art)
             for (cy, cx) in shapes:
                 role[cy, cx] = fam[cy, cx]
-            if not RE.overlay_overhead(r):
+            # built floors lie flat: every room indoors, in a dungeon or a
+            # cave -- whatever its layer priorities say (246 dungeon rooms
+            # draw layer 1 overhead) -- and any room whose layer 1 is not
+            # overhead. Only open ground under the sky keeps its relief.
+            loc = PL.location(r.area, r.room)
+            if not RE.overlay_overhead(r) or not loc["open_air"]:
                 role[role == "floor"] = "indoor"
             for (cy, cx), (sy, sx) in under.items():
                 role[cy, cx] = role[sy, sx] if role[sy, sx] in ("floor", "grass", "indoor") else "floor"
