@@ -2232,8 +2232,10 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
         for yy in range(dd["top"], dd["cy"] + 1):
             stand[yy, dd["cx"]] = False
     things = np.kron(solidall & ~R, one) & O     # what stands on the floor
+    A_ = np.asarray(RE.room_art_rgb(r, 0))[:h * 16, :w * 16, :3].astype(np.int64)
+    darkpx = (A_ @ np.array([299, 587, 114]) // 1000) < STAIR_DARK
     sh["box"] = box_walls(O, inW, np.kron(walk, one), gap, things,
-                          np.kron(stand, one) & O)
+                          np.kron(stand, one) & O, dark=darkpx)
     # one box is one room: where its floor misses much of the walkable
     # floor (a cave of several parts, an L), the cells stay
     b_ = sh["box"]
@@ -2246,6 +2248,9 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
 
 
 BOX_COVER = 0.85        # a box's floor holds this share of the walkable floor
+BOX_LINTEL_MIN = 6      # px: the least lintel over a box room's doorway
+HUMANOID_PX = 32        # px: the tallest ordinary person the game draws (townsfolk)
+BOX_DOOR = HUMANOID_PX + 2   # px: a doorway's opening, with a little head room
 
 
 BOX_RAYS = 720          # rays from the floor's middle round the room
@@ -2253,7 +2258,7 @@ BOX_SMOOTH = 15         # rays: a band's thickness is the median over this many
 BOX_H = (24, 64)        # px: a wall's height, from the back wall's face
 
 
-def box_walls(O, inW, floor, gap, objs, stand=None):
+def box_walls(O, inW, floor, gap, objs, stand=None, dark=None):
     """The walls of an enclosed room as the game draws them: a box seen
     from above its middle, every inner face folded out round the floor
     (Link's house draws its corners as diagonal seams from the floor's
@@ -2268,7 +2273,7 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
         return None
     cz, cx = ys.mean(), xs.mean()
     Hp, Wpx = O.shape
-    outer, run, gapr, runc, lasts, okc, dobj = [], [], [], [], [], [], []
+    outer, run, gapr, runc, lasts, okc, dobj, wallr, darkr = [], [], [], [], [], [], [], [], []
     for i in range(BOX_RAYS):
         th = 2 * np.pi * i / BOX_RAYS
         dx, dz = np.cos(th), np.sin(th)
@@ -2286,6 +2291,8 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
             t += 0.5
         if last is None:
             outer.append((cx, cz)); run.append(0); gapr.append(True); runc.append(0); lasts.append(0)
+            wallr.append(False)
+            darkr.append(False)
             okc.append(False)
             dobj.append(None)
             continue
@@ -2314,6 +2321,15 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
             q += 0.5
         dobj.append(dob)
         runc.append(max(0.0, k))                # by the wall's colours
+        # the band on this ray drawn as wall (not a doorway's dark)
+        us = np.arange(max(0.0, last - BOX_GAP_REACH), last, 1.0)
+        hits = [inW[int(round(cz + dz * u)), int(round(cx + dx * u))] for u in us
+                if 0 <= int(round(cz + dz * u)) < Hp and 0 <= int(round(cx + dx * u)) < Wpx]
+        wallr.append(bool(hits) and float(np.mean(hits)) >= 0.5)
+        dk = [dark[int(round(cz + dz * u)), int(round(cx + dx * u))] for u in us
+              if dark is not None and 0 <= int(round(cz + dz * u)) < Hp
+              and 0 <= int(round(cx + dx * u)) < Wpx]
+        darkr.append(bool(dk) and float(np.mean(dk)) >= 0.5)
         # clean: just inside that run is walkable floor, not a thing
         px_, pz_ = int(round(ox_ - dx * (k + 3))), int(round(oz_ - dz * (k + 3)))
         okc.append(0 <= px_ < Wpx and 0 <= pz_ < Hp and bool(floor[pz_, px_]))
@@ -2336,16 +2352,30 @@ def box_walls(O, inW, floor, gap, objs, stand=None):
     run = np.array(run)
     runc = np.array(runc)
     n = len(run)
+    # the dark drawn in a doorway is its opening, not the wall's face: an
+    # opening takes in the dark rays beside it
+    grow = True
+    while grow:
+        grow = False
+        for i in range(n):
+            if darkr[i] and not gapr[i] and (gapr[(i - 1) % n] or gapr[(i + 1) % n]):
+                gapr[i] = True
+                grow = True
     inner = fit_wall_foot(outer, run, runc, gapr, lasts, (cx, cz), okc, dobj)
     sm = np.array([np.hypot(outer[i][0] - inner[i][0], outer[i][1] - inner[i][1]) for i in range(n)])
     north = [sm[i] for i in range(n) if np.sin(2 * np.pi * i / n) < -0.94]
     H = int(np.clip(np.median(north) if north else 32, *BOX_H))
+    if any(gapr):
+        # a doorway lets any ordinary person through, under a lintel
+        H = max(H, BOX_DOOR + BOX_LINTEL_MIN)
     outer = dewarp_outer(inner, sm, gapr, fit_wall_foot.exponent, Wpx, Hp)
     from PIL import Image, ImageDraw
     im = Image.new("1", (Wpx, Hp), 0)
     ImageDraw.Draw(im).polygon([(float(x), float(z)) for x, z in inner], fill=1)
     fm = np.asarray(im, dtype=bool) & ~gap
-    return dict(inner=inner, outer=outer, gap=gapr, H=H, floor=fm)
+    return dict(inner=inner, outer=outer, gap=gapr, H=H, floor=fm, wall=wallr, dark=darkr,
+                dark_uv=(tuple(float(v) for v in np.argwhere(dark)[0][::-1] + 0.5)
+                         if dark is not None and dark.any() else None))
 
 
 def dewarp_outer(inner, sm, gap, e, Wpx, Hp):
@@ -2481,6 +2511,56 @@ def fit_wall_foot(outer, run, runc, gap, lasts, origin, okc=None, dobj=None):
     return inner
 
 
+RECESS_DEPTH = 16       # px: how far a dark doorway's unlit space runs back
+
+
+def doorway_recesses(b, ox, oz, y0, ho):
+    """Behind each doorway drawn opening onto the dark: an unlit, empty
+    space -- its back, sides, ceiling and floor all the drawn dark -- as
+    tall as the doorway and RECESS_DEPTH deep. What is drawn in it (a
+    stairwell's steps) stands inside it; a lit doorway (the way out) has
+    none, it opens onto what lies beyond."""
+    gap, dark, inner, outer = b["gap"], b.get("dark"), b["inner"], b["outer"]
+    uv = b.get("dark_uv")
+    if not dark or uv is None:
+        return []
+    n = len(gap)
+    q = []
+    seen = set()
+    for i in range(n):
+        if not gap[i] or i in seen or gap[(i - 1) % n] and len(seen) < n and (i - 1) % n not in seen and not all(gap):
+            continue
+        run = []
+        k = i
+        while gap[k] and k not in seen:
+            seen.add(k)
+            run.append(k)
+            k = (k + 1) % n
+        if len(run) < 2 or sum(dark[j] for j in run) * 2 < len(run):
+            continue                                # lit: open beyond
+        a, c = run[0], run[-1]
+        P0, P1 = np.array(inner[a], float), np.array(inner[c], float)
+        nv = np.mean([np.array(outer[j], float) - np.array(inner[j], float) for j in run], axis=0)
+        L = np.hypot(*nv) or 1.0
+        nv = nv / L * RECESS_DEPTH
+        B0, B1 = P0 + nv, P1 + nv
+        yt = y0 + ho
+        faces = [
+            [(B0, y0), (B1, y0), (B1, yt), (B0, yt)],          # back
+            [(P0, y0), (B0, y0), (B0, yt), (P0, yt)],          # side
+            [(P1, y0), (B1, y0), (B1, yt), (P1, yt)],          # side
+        ]
+        for f in faces:
+            pts = [(ox + pp[0], yy, oz + pp[1]) for pp, yy in f]
+            q.append((pts, [uv] * 4))
+            q.append((pts[::-1], [uv] * 4))                  # seen from either side
+        for yy in (y0 + 0.02, yt):                            # floor, ceiling
+            pts = [(ox + pp[0], yy, oz + pp[1]) for pp in (P0, P1, B1, B0)]
+            q.append((pts, [uv] * 4))
+            q.append((pts[::-1], [uv] * 4))
+    return q
+
+
 def box_quads(b, ox, oz, base):
     """A box's walls standing on its floor's edge, each wall face wearing
     its band (inner edge at the floor, outline at the top), a thin cap in
@@ -2492,22 +2572,50 @@ def box_quads(b, ox, oz, base):
     czm = np.mean([p[1] for p in inner])
     y0, y1 = base, base + H
     CAP = 3
+    # over a doorway the wall comes back above the opening: a lintel from
+    # the door's top (clearing a head, as find_doors does) to the wall's,
+    # wearing the wall beside the opening mirrored across its edge -- the
+    # opening's own drawing is the dark beyond it
+    ho = int(min(H - BOX_LINTEL_MIN, BOX_DOOR))
+    wallr = b.get("wall") or [not g for g in gap]
+    ok = [not gap[i] and wallr[i] for i in range(n)]
+
+    def mirror(i):
+        if not gap[i] or not any(ok):
+            return i
+        best = None
+        for step in (1, -1):
+            for d in range(1, n):
+                k = (i + step * d) % n
+                if ok[k]:
+                    if best is None or d < best[0]:
+                        best = (d, k, step)
+                    break
+        d, k, step = best
+        m = (k + step * d) % n                  # as far beyond as it is in
+        return m if ok[m] else k
+
+    def at(i, t):                               # the band's texel t of the way up
+        (ix, iz), (qx, qz) = inner[i], outer[i]
+        return (ix + (qx - ix) * t, iz + (qz - iz) * t)
     for i in range(n):
         j = (i + 1) % n
-        if gap[i] or gap[j]:
+        lintel = gap[i] or gap[j]
+        if lintel and ho >= H:
             continue
         (x0, z0), (x1, z1) = inner[i], inner[j]
         if abs(x1 - x0) + abs(z1 - z0) < 1e-6:
             continue
+        si, sj = (mirror(i), mirror(j)) if lintel else (i, j)
+        ya, ta = (y0 + ho, ho / H) if lintel else (y0, 0.0)
         mx, mz = (x0 + x1) / 2, (z0 + z1) / 2
         nx, nz = cxm - mx, czm - mz                     # facing into the room
         ax, az = nz, nx                                 # room_explore's winding
         fwd = (x1 - x0) * ax + (z1 - z0) * az > 0
-        a, bb = ((x0, z0, outer[i]), (x1, z1, outer[j])) if fwd else \
-            ((x1, z1, outer[j]), (x0, z0, outer[i]))
+        a, bb = ((x0, z0, si), (x1, z1, sj)) if fwd else ((x1, z1, sj), (x0, z0, si))
         pts = [(ox + a[0], y1, oz + a[1]), (ox + bb[0], y1, oz + bb[1]),
-               (ox + bb[0], y0, oz + bb[1]), (ox + a[0], y0, oz + a[1])]
-        uv = [a[2], bb[2], (bb[0], bb[1]), (a[0], a[1])]
+               (ox + bb[0], ya, oz + bb[1]), (ox + a[0], ya, oz + a[1])]
+        uv = [at(a[2], 1.0), at(bb[2], 1.0), at(bb[2], ta), at(a[2], ta)]
         q.append((pts, uv))
         # the cap: a thin top, outward, in the outline's colour
         l = np.hypot(nx, nz) or 1.0
@@ -2515,12 +2623,11 @@ def box_quads(b, ox, oz, base):
         cap = [(ox + x0, y1, oz + z0), (ox + x1, y1, oz + z1),
                (ox + x1 + ux, y1, oz + z1 + uz), (ox + x0 + ux, y1, oz + z0 + uz)]
         area = sum(cap[k][0] * cap[(k + 1) % 4][2] - cap[(k + 1) % 4][0] * cap[k][2] for k in range(4))
+        uvc = [outer[si], outer[sj], outer[sj], outer[si]]
         if area < 0:
-            cap = cap[::-1]
-        uvc = [outer[i], outer[j], outer[j], outer[i]]
-        if area < 0:
-            uvc = uvc[::-1]
+            cap, uvc = cap[::-1], uvc[::-1]
         q.append((cap, uvc))
+    q += doorway_recesses(b, ox, oz, y0, ho)
     for x, z, wd, d in RE.greedy_quads(b["floor"]):
         p = [(ox + x, y0, oz + z), (ox + x + wd, y0, oz + z),
              (ox + x + wd, y0, oz + z + d), (ox + x, y0, oz + z + d)]
