@@ -10,9 +10,15 @@
 #   AA_RR type=0xNNN       every cell of that tile type in the room
 #   aN    type=0xNNN       ... in area N
 #   *     type=0xNNN       ... in the whole game
+#   *     special=0x4NNN   every cell of an object tile (Picori's SpecialTile)
 #
-# followed by family=NAME (bush sapling rock mushroom stump planter prop
-# signpost fence foliage flowers, or - for none) and/or height=PX.
+# followed by family=NAME (bush sapling rock mushroom stump planter pot prop
+# signpost fence foliage flowers, or - for none), height=PX, and/or
+# label=NAME (a name for people, no spaces; it shapes nothing).
+#
+# Picori's own names seed the families before any of this (tools/
+# picori_labels.py): CUT_BUSH, ROCK, PERMA_ROCK, SIGNPOST, Pots, Boulder.
+# tools/tile_labeler.py edits this file from a browser.
 
 # South Hyrule Field: the chopping stump by Link's house
 03_01 38,24            family=stump

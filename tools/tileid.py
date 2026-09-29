@@ -68,11 +68,13 @@ sys.path.insert(0, str(HERE))
 import room_explore as RE  # noqa: E402
 
 # --- the game's data -------------------------------------------------------
-BY_TYPE = {
-    0x55: "rock", 0x1d3: "rock", 0x1d4: "rock", 0x1d5: "rock", 0x1d6: "rock",
-    0x176: "signpost",
-    0x165: "mushroom", 0x166: "mushroom",
-}
+import picori_labels as PL  # noqa: E402
+
+# Picori's tile type names (CUT_BUSH, ROCK, PERMA_ROCK, SIGNPOST, ...) and
+# special tiles (Pots, Boulder), read from include/tiles.h, then ours
+BY_TYPE = dict(PL.seed_by_type())
+BY_TYPE.update({0x165: "mushroom", 0x166: "mushroom"})
+BY_SPECIAL = dict(PL.seed_by_special())
 LIFT_COLL = 0x1D                    # cut or lift
 BY_LIFT_ACT = {0x14: "bush", 0x15: "rock", 0x38: "sapling"}
 PROP_TYPE = 0x70                    # the generic prop tile type
@@ -99,6 +101,7 @@ FENCE_COLOUR = 0.1      # bright colour in it at most: a flower box is not
 SHAPES = {
     "bush": ("dome", 12), "sapling": ("dome", 16), "rock": ("dome", 10),
     "mushroom": ("dome", 12), "stump": ("drum", 8), "planter": ("box", 10),
+    "pot": ("dome", 12),
     "prop": ("box", 10),
 }
 PROP_FAMILIES = tuple(SHAPES)
@@ -295,9 +298,11 @@ def drawing_kind(px):
 #   21_00 type=0x3e0       family=fence          every cell of a tile type
 #   a3    type=0x70        family=-              a whole area; - = terrain
 #   *     type=0x176       family=signpost       the whole game
+#   *     special=0x4000   family=pot            an object tile (SpecialTile)
 #
 # family: any family name, or - for none (the terrain role stands).
 # height: the cell's terrain height in px, set after every other stage.
+# label:  a name for people (no spaces); it shapes nothing.
 OVERRIDES = HERE.parent / "vr" / "tiles" / "overrides.txt"
 _overrides_cache = {}
 
@@ -342,6 +347,8 @@ def _parse_rule(f):
         rule["area"], rule["room"] = int(a), int(rm)
     if where.startswith("type="):
         rule["type"] = int(where[5:], 0)
+    elif where.startswith("special="):
+        rule["special"] = int(where[8:], 0)
     else:
         if "room" not in rule:
             raise ValueError("cell coordinates need a room (AA_RR)")
@@ -357,6 +364,8 @@ def _parse_rule(f):
             rule["family"] = v
         elif k == "height":
             rule["height"] = int(v)
+        elif k == "label":
+            rule["label"] = v              # a name, for people; shapes nothing
         else:
             raise ValueError(f"unknown key {k!r}")
     return rule
@@ -368,11 +377,14 @@ def override_mask(r, rule, tt=None):
     m = np.zeros((h, w), bool)
     if rule.get("area", r.area) != r.area or rule.get("room", r.room) != r.room:
         return m
+    t = r.layers[0]["tile"][:h, :w]
+    if "special" in rule:
+        return np.asarray(t == rule["special"])
     if "type" in rule:
         if tt is None:
             L = r.layers[0]
             tt = L["tiletype"][np.clip(L["tile"], 0, len(L["tiletype"]) - 1)]
-        return np.asarray(tt[:h, :w] == rule["type"])
+        return np.asarray(tt[:h, :w] == rule["type"]) & (t < 0x4000)
     x0, y0, x1, y1 = rule["cells"]
     m[max(0, y0):y1 + 1, max(0, x0):x1 + 1] = True
     return m
@@ -412,6 +424,7 @@ def families(r, cls, H, art, layer=0):
     floor = np.zeros((h, w), np.int64)
     ground = ground_palette(art, cls)
     partial = (coll >= 1) & (coll <= 14)          # some quadrants blocked
+    special = t >= 0x4000                         # object tiles (SpecialTile)
     for cy in range(h):
         for cx in range(w):
             px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
@@ -419,7 +432,11 @@ def families(r, cls, H, art, layer=0):
                 continue
             f = None
             v = int(tt[cy, cx])
-            if blocked[cy, cx]:
+            if special[cy, cx]:
+                # an object tile: its index is not a tile type
+                if blocked[cy, cx] and int(t[cy, cx]) in BY_SPECIAL:
+                    f = BY_SPECIAL[int(t[cy, cx])]
+            elif blocked[cy, cx]:
                 if v in BY_TYPE:
                     f = BY_TYPE[v]
                 elif coll[cy, cx] == LIFT_COLL and int(act[cy, cx]) in BY_LIFT_ACT:
@@ -447,7 +464,7 @@ def families(r, cls, H, art, layer=0):
     grew = True
     while grew:
         grew = False
-        for cy, cx in zip(*np.nonzero(blocked & (tt == PROP_TYPE) & (fam == None))):  # noqa: E711
+        for cy, cx in zip(*np.nonzero(blocked & (tt == PROP_TYPE) & ~special & (fam == None))):  # noqa: E711
             if not any(0 <= x < w and fam[cy, x] == "fence" for x in (cx - 1, cx + 1)):
                 continue
             px = art[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16]
