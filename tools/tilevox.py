@@ -2722,6 +2722,87 @@ BOX_GAP_REACH = 40      # px in from the outline: a ray meets a doorway in the b
 DOORWAY_DARK = 0.5      # a column (row) this much dark beyond is the opening
 
 
+QUARTER = 8             # px: the game builds each 16px tile of four 8px pieces
+ARCH_REACH = 2          # cells either side of an archway its sprite covers
+QUARTER_SHARE = 0.5     # a quarter this much in one kind of pixel is that kind
+WALL_CORE = 0.03        # a colour this much of the wall band is the wall's own
+
+
+def quarter_kinds(art, cls, wall, floor=None):
+    """Each 8x8 quarter of the room's drawing, by what it is drawn in:
+    "wall" (the wall band's colours), "dark" (the dark beyond a doorway),
+    "floor" (the walkable floor's colours) or "other" (a thing, a plate,
+    a mark). The game composes every tile of four such pieces, so a tile
+    holding two things -- a wall and a jamb, a cliff and a post -- is
+    split along them. Returns a (rows*2, cols*2) array of kinds."""
+    h, w = cls.shape
+    A = np.asarray(art)[:h * 16, :w * 16, :3].astype(np.int64)
+    key = (A[..., 0] << 16) | (A[..., 1] << 8) | A[..., 2]
+    lum = A @ np.array([299, 587, 114]) // 1000
+    if floor is None:
+        fm = np.kron(cls == RE.CLASS_GROUND, np.ones((16, 16), bool))
+        floor = np.unique(key[fm]) if fm.any() else np.zeros(0, np.int64)
+    isw = np.isin(key, wall)
+    isf = np.isin(key, floor)
+    isd = lum < STAIR_DARK
+    Q = QUARTER
+    out = np.full((h * 2, w * 2), "other", dtype=object)
+    for qy in range(h * 2):
+        for qx in range(w * 2):
+            sl = (slice(qy * Q, qy * Q + Q), slice(qx * Q, qx * Q + Q))
+            for kind, m in (("wall", isw), ("dark", isd), ("floor", isf)):
+                if m[sl].mean() >= QUARTER_SHARE:
+                    out[qy, qx] = kind
+                    break
+    return out
+
+
+def hide_under_arches(r, cls, art, shell):
+    """The drawing with what an archway covers taken off the wall: the
+    game draws its archway objects (ARCHWAY sprites) over a doorway's
+    jambs, hiding the plates drawn there (the developers' "kabe" -- wall
+    -- marks). Within ARCH_REACH cells of an archway, a quarter of the
+    wall band that is neither wall, floor nor dark takes the nearest wall
+    quarter along the wall instead."""
+    arches = []
+    for e in r.entities[1:]:
+        if e["kind"] == 6 and "ARCHWAY" in PL.entity_name(e["kind"], e["id"], e["type"]):
+            arches.append((int(e["x"] - r.origin_x) // 16, int(e["y"] - r.origin_y) // 16))
+    if not arches:
+        return art
+    h, w = cls.shape
+    band = shell["R"] | shell["exits"]
+    # the wall's own colours: the ones it is mostly drawn in -- not a
+    # plate's, rare in the band however often its plates repeat
+    A_ = np.asarray(art)[:h * 16, :w * 16, :3].astype(np.int64)
+    key = (A_[..., 0] << 16) | (A_[..., 1] << 8) | A_[..., 2]
+    bm = np.kron(band, np.ones((16, 16), bool))
+    c_, n_ = np.unique(key[bm], return_counts=True)
+    core = c_[n_ >= WALL_CORE * bm.sum()]
+    kinds = quarter_kinds(art, cls, core)
+    A = np.array(art)
+    Q = QUARTER
+    wallq = np.argwhere(kinds == "wall")
+    if not len(wallq):
+        return art
+    for ax, ay in arches:
+        for cy in range(max(0, ay - ARCH_REACH), min(h, ay + ARCH_REACH + 1)):
+            for cx in range(max(0, ax - ARCH_REACH), min(w, ax + ARCH_REACH + 1)):
+                if not band[cy, cx]:
+                    continue
+                for qy in (cy * 2, cy * 2 + 1):
+                    for qx in (cx * 2, cx * 2 + 1):
+                        if kinds[qy, qx] != "other":
+                            continue
+                        # the nearest wall quarter, along the wall first
+                        d = np.abs(wallq[:, 0] - qy) * 4 + np.abs(wallq[:, 1] - qx)
+                        d2 = np.abs(wallq[:, 1] - qx) * 4 + np.abs(wallq[:, 0] - qy)
+                        sy, sx = wallq[int(np.argmin(np.minimum(d, d2)))]
+                        A[qy * Q:qy * Q + Q, qx * Q:qx * Q + Q] = \
+                            np.asarray(art)[sy * Q:sy * Q + Q, sx * Q:sx * Q + Q]
+    return A
+
+
 def stairwell_cells(r, cls, R, exits):
     """Cells of a box room's wall band the game marks as a way through
     (Picori's door surfaces) that are neither ring nor exit."""
@@ -3692,6 +3773,10 @@ def build_area(job):
                 ov = (decks, cf, occ, top)
             solid_ = cls != RE.CLASS_VOID
             solid_[:caserows + 1] = False           # the bookcase's own
+            if shell is not None and shell.get("W") is not None:
+                # what the game's archway sprites cover (the plates on the
+                # jambs) is not the wall's face: the wall runs on over it
+                art = hide_under_arches(r, cls, art, shell)
             placed.append((r, lift, art, H, solid_, cells, ov,
                            flights, doors, blds, ups, shell))
 
