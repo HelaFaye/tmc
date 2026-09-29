@@ -100,7 +100,7 @@ import picori_labels as PL  # noqa: E402
 # Relief in voxels above the one-voxel base, per role. Water and pits are
 # flat: their drawn ripples and shading are not shape.
 RELIEF = {"floor": 1, "wall": 1, "block": 1, "water": 0, "pit": 0, "deck": 1,
-          "grass": 5, "indoor": 0, "wallflat": 0}  # indoors: planks and tiles lie flat; their
+          "grass": 5, "indoor": 0, "wallflat": 0, "furniture": 0}  # indoors: planks and tiles lie flat; their
                                     # seams read as speckle in relief
 RELIEF_STEPS = {"grass": 1}     # per role; others use RELIEF_STEP
 RELIEF_STEP = 2         # px: relief is measured on blocks this size
@@ -1510,7 +1510,7 @@ def tile_key(pixels, role, hmap=None):
     return k.hexdigest()[:12] + ROLE_CODE.get(role, role[:2])
 
 
-ROLE_CODE = {"floor": "f", "indoor": "i", "wallflat": "wf", "wall": "w", "block": "k", "water": "a", "pit": "p",
+ROLE_CODE = {"floor": "f", "indoor": "i", "wallflat": "wf", "furniture": "fu", "wall": "w", "block": "k", "water": "a", "pit": "p",
              "deck": "d", "grass": "g", "bush": "bu", "sapling": "sa", "rock": "ro",
              "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr",
              "signpost": "si", "foliage": "fo", "flowers": "fl"}
@@ -1644,6 +1644,65 @@ SHELL_REACH = 4         # cells: wall this far from the floor is the ring
 SHELL_H = (16, 48)      # px: the ring's height, from the back wall's
 
 
+# Heights of furniture, from the people who use it. Link stands about 119cm
+# (a Wind Waker child) and his sprite about 24px: some 5cm a pixel. Minish
+# rooms are drawn at Minish scale (Link 5.5cm in the same 24px), so their
+# furniture takes the same pixel heights; a human thing seen at Minish
+# scale -- a 25cm book on the library shelf -- is ~108px, and the shelves
+# there stand ~100px apart. By Picori's furniture type, else a table's.
+LINK_PX = 24
+FURNITURE_PX = (        # (words in the object's name, px)
+    (("STOOL", "CHAIR", "SEAT", "BENCH", "SHOES", "MUG", "CHEESE", "APPLE", "COOKIES"), 8),
+    (("BED", "HAY", "SACK", "CUSHION"), 10),
+    (("POT", "JUG", "CAULDRON"), 12),
+    (("TABLE", "DESK", "COUNTER"), 14),
+    (("BARREL", "CRATE", "LOGS", "CART", "MACHINE"), 16),
+    (("FORGE", "STOVE", "OVEN"), 20),
+    (("DRAWERS", "DRESSER", "STATUE"), 24),
+    (("SHELF", "BOOKCASE", "CLOSET", "RACK", "LADDER", "STAIRCASE"), 32),
+)
+FURNITURE_DEFAULT = 14  # px: a table
+
+
+def furniture_px(name):
+    for words, px in FURNITURE_PX:
+        if any(w in name for w in words):
+            return px
+    return FURNITURE_DEFAULT
+
+
+def furniture_heights(r, cls, shell, fam, taken=()):
+    """{(cy, cx): px above the floor} for the furniture of an enclosed room:
+    blocked cells off the ring, not a prop family, block, door or upright.
+    A connected piece takes the height of the object standing on it (by
+    Picori's name) or a table's."""
+    h, w = cls.shape
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~shell["R"]
+    for y, x in zip(*np.nonzero(fam != None)):  # noqa: E711
+        blocked[y, x] = False
+    for y, x in taken:
+        if 0 <= y < h and 0 <= x < w:
+            blocked[y, x] = False
+    if not blocked.any():
+        return {}
+    names = {}
+    for e in r.entities[1:]:
+        if e["kind"] != 6:
+            continue
+        cx, cy = int(e["x"] - r.origin_x) // 16, int(e["y"] - r.origin_y) // 16
+        if 0 <= cx < w and 0 <= cy < h:
+            names.setdefault((cy, cx), PL.entity_name(e["kind"], e["id"], e["type"]))
+    lab, n = RE._label(blocked)
+    out = {}
+    for k in range(1, n + 1):
+        cells = list(zip(*np.nonzero(lab == k)))
+        px = [furniture_px(names[c]) for c in cells if c in names]
+        hh = max(px) if px else FURNITURE_DEFAULT
+        for c in cells:
+            out[(int(c[0]), int(c[1]))] = hh
+    return out
+
+
 def room_shell(r, cls, H, fam, doors, exclude=()):
     """The ring of an enclosed room: dict(R cells, Wp plan mask in px,
     Hw, base, fill runs), or None out of doors or where there is no ring."""
@@ -1722,29 +1781,199 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
         out.discard(0)
         Dw &= ~np.isin(bl, list(out))
     F = np.kron(~R & (cls != RE.CLASS_VOID), np.ones((16, 16), bool))
-    Hp, Wpx = h * 16, w * 16
-    Wp = np.zeros((Hp + Hw, Wpx), bool)
-    Wp[Hw:Hw + Hp] = Dw
+    Wp, fill = projective_plan(Dw, F, Hw)
+    sh = dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F)
+    # a rounded room (the Minish homes) has sloped walls: they rise from
+    # the floor's edge to their full height across the band, not a slab
+    region = Dw | F
+    ys, xs = np.nonzero(region)
+    if len(ys):
+        box = region[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+        c = SHELL_CORNER
+        corners = [box[:c, :c], box[:c, -c:], box[-c:, :c], box[-c:, -c:]]
+        if sum(k.mean() < 0.5 for k in corners) >= 3:
+            sh["slope"] = sloped_heights(Wp, fill, F, Hw)
+    return sh
+
+
+SHELL_CORNER = 12       # px: a room whose box corners are this empty is rounded
+
+
+def _grow_dist(seed, mask, limit):
+    """Steps (4-connected) from seed through mask, up to limit; limit+1 beyond."""
+    d = np.where(seed, 0, limit + 1).astype(np.int32)
+    front = seed.copy()
+    for i in range(1, limit + 1):
+        P = np.pad(front, 1)
+        nb = (P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:]) & mask & (d > limit)
+        if not nb.any():
+            break
+        d[nb] = i
+        front = nb
+    return d
+
+
+def sloped_heights(Wp, fill, F, Hw):
+    """Heights over a sloped ring's plan: the constant plan, plus the
+    floor it uncovered behind the front (which becomes the foot of the
+    slope). Zero at the floor's edge, Hw at the outer edge, linear across
+    the band: every point shows the drawing at (x, z - h), which runs from
+    the floor's edge to the outline as the drawing does."""
+    P = Wp.copy()
+    for x, z0, z1, _src in fill:
+        P[z0:z1, x] = True
+    rows, cols = P.shape
+    Fp = np.zeros_like(P)
+    Fp[:F.shape[0]] = F & ~P[:F.shape[0]]
+    lim = 4 * Hw + 64
+    near_floor = np.zeros_like(P)
+    Q = np.pad(Fp, 1)
+    near_floor = (Q[:-2, 1:-1] | Q[2:, 1:-1] | Q[1:-1, :-2] | Q[1:-1, 2:]) & P
+    Q = np.pad(~P & ~Fp, 1, constant_values=True)
+    near_out = (Q[:-2, 1:-1] | Q[2:, 1:-1] | Q[1:-1, :-2] | Q[1:-1, 2:]) & P
+    din = _grow_dist(near_floor, P, lim).astype(float)
+    dout = _grow_dist(near_out, P, lim).astype(float)
+    h = np.where(P, np.rint(Hw * din / np.maximum(din + dout, 1)), 0).astype(np.int32)
+    h[P & (din > lim)] = Hw          # no floor near: the wall's full height
+    return np.where(P, np.maximum(h, 1), 0)
+
+
+def drawn_piece(art, one, F, D):
+    """The piece's own drawing within its cells: pixels in none of the
+    colours of the floor round it, filled down each column to the cells'
+    foot (the front stands on the floor). The rug above a table's top is
+    not the table."""
+    h, w = one.shape
+    A = np.asarray(art)[:h * 16, :w * 16, :3].astype(np.int64)
+    key = (A[..., 0] << 16) | (A[..., 1] << 8) | A[..., 2]
+    ring = np.zeros_like(one)
+    P = np.pad(one, 1)
+    ring = (P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:]) & ~one
+    near = np.kron(ring, np.ones((16, 16), bool)) & F
+    if not near.any():
+        return D
+    floor_cols = np.unique(key[near])
+    mine = D & ~np.isin(key, floor_cols)
+    out = np.zeros_like(D)
+    for x in np.nonzero(mine.any(axis=0))[0]:
+        z0 = int(np.nonzero(mine[:, x])[0].min())
+        col = D[:, x]
+        z1 = int(np.nonzero(col)[0].max()) + 1
+        out[z0:z1, x] = col[z0:z1]
+    return out if out.sum() >= 16 else D
+
+
+def projective_plan(D, F, hh):
+    """Plan of a solid drawn at D (pixels), hh tall, with F what is drawn
+    at floor level: its top is drawn hh rows above where it stands, so the
+    plan is D moved down hh, less wherever floor is drawn. Also the floor
+    runs the plan uncovers under floor drawn above them -- (x, z0, z1,
+    source row) -- which take that floor's colour."""
+    Hp, Wpx = D.shape
+    Wp = np.zeros((Hp + hh, Wpx), bool)
+    Wp[hh:hh + Hp] = D
     Wp[:Hp] &= ~F
-    # the floor hidden behind the front wall: ring pixels the plan leaves,
-    # below floor drawn in the same column; they take that floor's colour
     fill = []
     for x in range(Wpx):
         z = 0
         while z < Hp:
-            if Dw[z, x] and not Wp[z, x]:
+            if D[z, x] and not Wp[z, x]:
                 z0 = z
-                while z < Hp and Dw[z, x] and not Wp[z, x]:
+                while z < Hp and D[z, x] and not Wp[z, x]:
                     z += 1
                 if z0 > 0 and F[z0 - 1, x]:
                     fill.append((x, z0, z, z0 - 1))
             else:
                 z += 1
-    return dict(R=R, Wp=Wp, Hw=Hw, base=base, fill=fill, F=F)
+    return Wp, fill
+
+
+def furniture_prisms(cls, shell, heights, art=None):
+    """Each piece of furniture as a projected prism, like the ring: its
+    collision covers its drawing, top and front; so its top shows the
+    drawn tabletop and its front the drawn legs. [(cells, prism dict)]."""
+    h, w = cls.shape
+    pieces = {}
+    for (y, x), hh in heights.items():
+        pieces.setdefault(hh, set()).add((y, x))
+    out = []
+    for hh, cells in pieces.items():
+        m = np.zeros((h, w), bool)
+        for y, x in cells:
+            m[y, x] = True
+        lab, n = RE._label(m)
+        for k in range(1, n + 1):
+            one = lab == k
+            D = np.kron(one, np.ones((16, 16), bool))
+            F = np.kron(~one & ~shell["R"] & (cls != RE.CLASS_VOID), np.ones((16, 16), bool))
+            if art is not None:
+                D = drawn_piece(art, one, F, D)
+            Wp, fill = projective_plan(D, F, hh)
+            out.append((one, dict(Wp=Wp, Hw=hh, base=shell["base"], fill=fill, F=F)))
+    return out
+
+
+def heightmap_quads(hm, ox, oz, y0):
+    """Pixel columns hm high (0 = none) from y0, textured by projection."""
+    rows, cols = hm.shape
+
+    def uv(pts):
+        return [(x - ox, (z - oz) - (y - y0)) for x, y, z in pts]
+    q = []
+    for v in np.unique(hm):
+        if v <= 0:
+            continue
+        for x, z, wd, d in RE.greedy_quads(hm == v):
+            y = y0 + int(v)
+            p = [(ox + x, y, oz + z), (ox + x + wd, y, oz + z),
+                 (ox + x + wd, y, oz + z + d), (ox + x, y, oz + z + d)]
+            q.append((p, uv(p)))
+
+    def ht(z, x):
+        return int(hm[z, x]) if 0 <= z < rows and 0 <= x < cols else 0
+    for dz in (1, -1):
+        for z in range(rows):
+            x = 0
+            while x < cols:
+                hi, lo = ht(z, x), ht(z + dz, x)
+                if hi > lo:
+                    x0 = x
+                    while x < cols and ht(z, x) == hi and ht(z + dz, x) == lo:
+                        x += 1
+                    zz = oz + (z + 1 if dz == 1 else z)
+                    a, b = y0 + hi, y0 + lo
+                    if dz == 1:
+                        p = [(ox + x0, a, zz), (ox + x, a, zz), (ox + x, b, zz), (ox + x0, b, zz)]
+                    else:
+                        p = [(ox + x, a, zz), (ox + x0, a, zz), (ox + x0, b, zz), (ox + x, b, zz)]
+                    q.append((p, uv(p)))
+                else:
+                    x += 1
+    for dx in (1, -1):
+        for x in range(cols):
+            z = 0
+            while z < rows:
+                hi, lo = ht(z, x), ht(z, x + dx)
+                if hi > lo:
+                    z0 = z
+                    while z < rows and ht(z, x) == hi and ht(z, x + dx) == lo:
+                        z += 1
+                    xx = ox + (x + 1 if dx == 1 else x)
+                    a, b = y0 + hi, y0 + lo
+                    if dx == 1:
+                        p = [(xx, a, oz + z0), (xx, a, oz + z), (xx, b, oz + z), (xx, b, oz + z0)]
+                    else:
+                        p = [(xx, a, oz + z), (xx, a, oz + z0), (xx, b, oz + z0), (xx, b, oz + z)]
+                    q.append((p, uv(p)))
+                else:
+                    z += 1
+    return q
 
 
 def shell_quads(sh, ox, oz, lift):
     """The ring's prism and the floor behind its front, projected."""
+    if "slope" in sh:
+        return heightmap_quads(sh["slope"], ox, oz, sh["base"] + lift)
     Wp, Hw = sh["Wp"], sh["Hw"]
     y0 = sh["base"] + lift
     y1 = y0 + Hw
@@ -1853,9 +2082,43 @@ def inside_room(y, x, rows, cols):
     return 0 <= y < rows and 0 <= x < cols
 
 
-def drop_faces(H, solid, ox, oz, lift, outside, skip=()):
+def grain_face(pts, grain, dx, dz):
+    """A face tiled with a 16x16 patch of wood grain (grain = its top-left
+    in room-art pixels), one quad per 16px of height: the sides of a
+    bookcase, which the game never draws."""
+    gx, gy = grain
+    ys = sorted({p[1] for p in pts})
+    lo, hi = ys[0], ys[-1]
+    out = []
+    y = hi
+    while y > lo:
+        y2 = max(lo, y - 16)
+        seg = [(px, (y if py == hi else y2), pz) for px, py, pz in pts]
+        d = y - y2
+        uv = [(gx + (16 if i in (0, 3) else 0), gy + (0 if py == hi else d))
+              for i, (_px, py, _pz) in enumerate(pts)]
+        out.append((seg, uv))
+        y = y2
+    return out
+
+
+def wood_patch(art):
+    """The top-left of the 16x16 window of the drawing most made of wood
+    (light brown, the grain of a shelf board), or None."""
+    hue, sat, v = _hsv(np.asarray(art)[:, :, :3].astype(np.uint8))
+    wood = ((hue >= 15) & (hue < 50) & (sat >= 0.25) & (sat < 0.75) & (v >= 0.55)).astype(np.int32)
+    I = np.pad(wood.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    win = I[16:, 16:] - I[:-16, 16:] - I[16:, :-16] + I[:-16, :-16]
+    if win.size == 0 or win.max() < 200:
+        return None
+    y, x = np.unravel_index(int(win.argmax()), win.shape)
+    return int(x), int(y)
+
+
+def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None):
     """Vertical faces wherever a cell drops to a lower neighbour; not the
-    south face of the cells in skip (doorways, built by door_quads)."""
+    south face of the cells in skip (doorways, built by door_quads). With
+    grain, faces other than south fronts wear that wood patch."""
     quads = []
     rows, cols = H.shape
     for cy in range(rows):
@@ -1872,8 +2135,11 @@ def drop_faces(H, solid, ox, oz, lift, outside, skip=()):
                     # own drawing (pit_face)
                     split = min(hh, max(nh, 0)) if nh < 0 and inside_room(ny, nx, rows, cols) else nh
                     if split < hh:
-                        quads.append(side_face(cx, cy, dx, dz, hh + lift, split + lift,
-                                               ox, oz))
+                        f = side_face(cx, cy, dx, dz, hh + lift, split + lift, ox, oz)
+                        if grain is not None and dz != 1:
+                            quads.extend(grain_face(f[0], grain, dx, dz))
+                        else:
+                            quads.append(f)
                     if split > nh:
                         quads.append(pit_face(cx, cy, dx, dz, split + lift, nh + lift,
                                               ox, oz))
@@ -2164,6 +2430,16 @@ def build_area(job):
             if shell is not None:
                 H = np.array(H)
                 H[shell["R"]] = shell["base"]
+                # furniture: flat-topped, as tall as it is for the people
+                # who use it (furniture_heights)
+                taken_ = {(y_, x_) for (y_, x_) in bl} | \
+                    {(y_, d["cx"]) for d in doors for y_ in range(d["top"], d["cy"] + 1)} | \
+                    {(c[1], c[0]) for u in ups for c in u["cells"]}
+                fh = furniture_heights(r, cls, shell, fam, taken_)
+                shell["pieces"] = [pz for _one, pz in furniture_prisms(cls, shell, fh, art)]
+                for (y_, x_) in fh:
+                    H[y_, x_] = shell["base"]
+                    shell["R"][y_, x_] = True       # built by its prism, not a tile
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
@@ -2264,9 +2540,13 @@ def build_area(job):
             for k, cx, cy, y, ro in cells:
                 m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16))
             skip = {(d["cx"], d["cy"]) for d in doors}
-            m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip))
+            grain = (wood_patch(art) if PL.location(r.area, r.room)["view"] == "terrace"
+                     else None)
+            m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip, grain))
             if shell is not None:
                 m.quads(shell_quads(shell, ox, oz, lift))
+                for pz in shell.get("pieces", []):
+                    m.quads(shell_quads(pz, ox, oz, lift))
             for d in doors:
                 m.quads(door_quads(d, ox, oz, lift))
             for b in blds:

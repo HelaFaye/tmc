@@ -173,13 +173,32 @@ def petal_blobs(px, ground=None):
     return RE._label(petal_mask(px, ground))[1]
 
 
+def outline_mask(px, ratio=0.72):
+    """Outline pixels: not only black -- the art often outlines a thing in
+    a darker shade of its own colours. A pixel is outline when it is
+    clearly darker than the brightest of its 4 neighbours (value under
+    ratio of theirs) and of the same hue family as that neighbour (within
+    40 degrees) or near grey; or simply very dark."""
+    hue, sat, v = _hsv(px)
+    P = lambda a: np.pad(a, 1, mode="edge")
+    vs = [P(v)[:-2, 1:-1], P(v)[2:, 1:-1], P(v)[1:-1, :-2], P(v)[1:-1, 2:]]
+    hs = [P(hue)[:-2, 1:-1], P(hue)[2:, 1:-1], P(hue)[1:-1, :-2], P(hue)[1:-1, 2:]]
+    vmax = np.max(vs, axis=0)
+    idx = np.argmax(vs, axis=0)
+    hmax = np.choose(idx, hs)
+    dh = np.abs(hue - hmax) % 360
+    same = (np.minimum(dh, 360 - dh) < 40) | (sat < 0.2)
+    return (v < 0.25) | ((v < ratio * vmax) & same)
+
+
 def wood_mask(px):
     """Wood and its outline: brown (hue under 50 or red-purple, saturated,
     not bright), the pale end grain of a cut post, and the dark outline."""
     hue, sat, v = _hsv(px)
     brown = ((hue < 50) | (hue >= 300)) & (sat >= 0.2) & (v >= 0.2) & (v < 0.9)
     grain = (hue >= 30) & (hue < 65) & (sat >= 0.2) & (sat < 0.7) & (v >= 0.8)
-    dark = v < 0.3
+    # the outline: black, or a darker shade of the wood's own colours
+    dark = (v < 0.3) | (outline_mask(px) & ((hue < 60) | (hue >= 300) | (sat < 0.2)))
     return brown | grain | dark
 
 
