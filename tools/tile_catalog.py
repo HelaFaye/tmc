@@ -18,7 +18,8 @@ it is:
              object a family's tile or an object's special tile: a thing
                     standing on the ground, whatever is round it
 
-A tile is one drawing, so it should be one thing everywhere. Where the
+A tile is its number and its drawing (a room may use another tileset
+than the rest of its area), so it should be one thing everywhere. Where the
 rooms that use it disagree -- different labels, or different views -- it
 is flagged, for a person to settle with tile_verify / tile_labeler.
 
@@ -127,11 +128,13 @@ def picori_name(key):
 
 def catalogue(rows):
     """{(area, tile): entry} from every cell's row."""
+    # a room of an area may use another tileset: a tile is its number AND
+    # its drawing
     by = {}
     for row in rows:
-        by.setdefault((row[0], row[1]), []).append(row)
+        by.setdefault((row[0], row[1], row[9]), []).append(row)
     cat = {}
-    for (area, ti), rs in by.items():
+    for (area, ti, dh), rs in by.items():
         labels = Counter(r_[4] for r_ in rs)
         vws = Counter(r_[5] for r_ in rs)
         keys = Counter(r_[2] for r_ in rs)
@@ -144,7 +147,7 @@ def catalogue(rows):
             flags.append("labels:" + ",".join(f"{k}={n}" for k, n in labels.most_common(3)))
         if nv < AGREE * len(rs) and vw != "void":
             flags.append("views:" + ",".join(f"{k}={n}" for k, n in vws.most_common(3)))
-        cat[(area, ti)] = dict(
+        cat[(area, ti, dh)] = dict(
             area=area, tile=ti, key=key, name=picori_name(key),
             surface=PL.act_short(surf.most_common(1)[0][0]) if hasattr(PL, "act_short") else "",
             label=lab, view=vw, cells=len(rs),
@@ -157,7 +160,7 @@ def write(cat, rows, errors, out):
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "catalogue.tsv", "w") as f:
         f.write("area\ttile\tkey\tname\tsurface\tlabel\tview\tcells\trooms\tflags\n")
-        for (a, ti), e in sorted(cat.items(), key=lambda kv: (kv[0][0], str(kv[0][1]).zfill(8))):
+        for (a, ti, _dh), e in sorted(cat.items(), key=lambda kv: (kv[0][0], str(kv[0][1]).zfill(8))):
             rooms = ",".join(e["rooms"][:8]) + ("..." if len(e["rooms"]) > 8 else "")
             f.write(f"{a:02d}\t{tid(ti)}\t{e['key']}\t{e['name']}\t{e['surface']}\t"
                     f"{e['label']}\t{e['view']}\t{e['cells']}\t{rooms}\t{';'.join(e['flags'])}\n")
@@ -172,7 +175,7 @@ def write(cat, rows, errors, out):
         named = sum(1 for e in cat.values() if not e["label"].startswith("("))
         pic = sum(1 for e in cat.values() if e["name"])
         f.write(f"{len(rows)} cells in {len({r_[6] for r_ in rows})} rooms; "
-                f"{len(cat)} tiles (area x metatile; an 8bpp room's cells each one); "
+                f"{len(cat)} tiles (area x metatile x drawing; an 8bpp room's cells each one); "
                 f"{drawings} distinct drawings\n"
                 f"{named} tiles have a family (tileid); {pic} have a Picori name; "
                 f"the rest are known by their terrain role only\n\n")
