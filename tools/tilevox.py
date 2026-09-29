@@ -191,6 +191,42 @@ FLOOR_MATCH = 8         # mean |difference| per channel: drawn as the floor
 FLOOR_LONE = 2          # cells: only a blocked cluster this small
 
 
+def sprite_floor(r, cls, H):
+    """Where an object stands -- a pot, a boulder, furniture, all sprites --
+    the game marks the cells with a special tile (index 0x4000 on) and
+    blocks them; the room's art under them is the floor. Such a cell drawn
+    as a floor cell of the room is floor, at its neighbours' height: the
+    object is the entity stage's to build. Indoors or out."""
+    L = r.layers[0]
+    rows, cols = H.shape
+    t = L["tile"][:rows, :cols]
+    walk = cls == RE.CLASS_GROUND
+    cand = (t >= 0x4000) & ~walk
+    art = RE.room_art_rgb(r, 0)
+    if art is None or not cand.any() or not walk.any():
+        return H
+    art = art[:rows * 16, :cols * 16, :3].astype(np.int16)
+
+    def cell(y, x):
+        return art[y * 16:y * 16 + 16, x * 16:x * 16 + 16]
+    fl = np.unique(np.stack([cell(y, x) for y, x in zip(*np.nonzero(walk))
+                             if cell(y, x).shape[:2] == (16, 16)]), axis=0)
+    H = np.array(H, dtype=np.int64)
+    like = [(y, x) for y, x in zip(*np.nonzero(cand))
+            if cell(y, x).shape[:2] == (16, 16)
+            and np.abs(fl - cell(y, x)[None]).mean(axis=(1, 2, 3)).min() <= FLOOR_MATCH]
+    left = set(like)
+    for _ in range(4):              # a run of them takes its floor from its ends
+        for y, x in sorted(left):
+            nb = [int(H[yy, xx]) for yy, xx in ((y + 1, x), (y - 1, x), (y, x - 1), (y, x + 1))
+                  if 0 <= yy < rows and 0 <= xx < cols and (walk[yy, xx] or ((yy, xx) in like
+                                                                            and (yy, xx) not in left))]
+            if nb:
+                H[y, x] = min(nb)
+                left.discard((y, x))
+    return H
+
+
 def interior_walls(r, cls, H):
     """Indoors, a back wall stands as tall as it is drawn.
 
@@ -316,6 +352,7 @@ def room_heights(r, layer=0, blocks=True, relief=False, path=None):
     H = despeckle_walls(cls, RE.heightfield(r, cls, layer))
     if layer == 0:
         H = interior_walls(r, cls, H)
+        H = sprite_floor(r, cls, H)
     if relief:
         Hr, _solid = RE.relief_field(r, cls, 16, layer)
         H = np.array(Hr, dtype=np.int64)

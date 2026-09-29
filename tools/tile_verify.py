@@ -55,7 +55,7 @@ def load_verified(path=VERIFIED):
         for line in p.read_text().splitlines():
             f = line.split("#", 1)[0].split()
             if len(f) >= 3:
-                out.add((f[0], f[1], f[2]))
+                out.add((f[0], f[1], f[2].replace("+", " ")))
     return out
 
 
@@ -73,10 +73,22 @@ def room_cells(dumps, rid):
     tt = L["tiletype"][np.clip(t, 0, len(L["tiletype"]) - 1)].astype(int)
     key = np.where(t >= 0x4000, np.vectorize(lambda v: f"special=0x{v:x}")(t),
                    np.vectorize(lambda v: f"type=0x{v:x}")(tt))
+    # the objects standing on cells (sprites: pots, furniture, doors);
+    # the group says which, so a person knows what the bare floor holds
+    on = {}
+    for e in r.entities[1:]:
+        if e["kind"] != 6:
+            continue
+        cx, cy = int(e["x"] - r.origin_x) // 16, int(e["y"] - r.origin_y) // 16
+        if 0 <= cx < w and 0 <= cy < h:
+            nm = PL.entity_name(e["kind"], e["id"], e["type"]).replace("OBJECT ", "")
+            on.setdefault((cy, cx), nm)
     label = np.empty((h, w), dtype=object)
     for y in range(h):
         for x in range(w):
             label[y, x] = fam[y, x] or f"({role[y, x] or 'none'})"
+            if (y, x) in on:
+                label[y, x] += " " + on[(y, x)]
     return r, art, key, label, np.asarray(H)[:h, :w]
 
 
@@ -96,11 +108,12 @@ def groups(dumps, rooms):
     for rid in rooms:
         r, art, key, label, H = room_cells(dumps, rid)
         data[rid] = (r, art, key, label, H)
+        area = rid.split("_")[0]        # a tile type means one thing per tileset
         for y in range(r.cells_h):
             for x in range(r.cells_w):
-                by.setdefault((key[y, x], label[y, x]), []).append((rid, x, y))
+                by.setdefault((area, key[y, x], label[y, x]), []).append((rid, x, y))
     out = []
-    for (k, lb), cells in by.items():
+    for (_a, k, lb), cells in by.items():
         out.append(dict(key=k, label=lb, cells=cells,
                         rooms=sorted({c[0] for c in cells})))
     # families first, then terrain; most cells first
@@ -249,7 +262,7 @@ def cmd_answer(a):
         else:
             lb = it["label"]
         for rid in it["rooms"]:
-            ver_lines.append(f"{rid} {it['key']} {lb}")
+            ver_lines.append(f"{rid} {it['key']} {lb.replace(' ', '+')}")
     if rule_lines:
         p = TI.OVERRIDES
         text = p.read_text() if p.is_file() else ""

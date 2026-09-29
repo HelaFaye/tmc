@@ -38,10 +38,11 @@ SEED_BY_NAME = {
     "SIGNPOST": "signpost", "ROCK": "rock", "PERMA_ROCK": "rock",
     "PERMA_ROCK2": "rock", "PERMA_ROCK3": "rock", "PERMA_ROCK4": "rock",
 }
-SEED_BY_SPECIAL_WORD = (          # first match in the SpecialTile comment
-    ("Move Pot", None), ("Pots", "pot"),
-    ("Move Bolder", None), ("Boulder in Hole", None), ("Boulder", "rock"),
-)
+# Special tiles are where an object -- a sprite -- stands (pots, boulders,
+# furniture); the room's art under them is bare floor, so the tile stage
+# seeds no family from them: they are named by the object (entity_name)
+# and built by the entity stage.
+SEED_BY_SPECIAL_WORD = ()
 
 
 def _read(rel):
@@ -83,6 +84,85 @@ def act_tiles():
                          _enum_body(_read("include/tiles.h"), "ActTile")):
         out[int(m.group(1), 16)] = m.group(2).strip()
     return out
+
+
+def _enum_names(text):
+    """{value: NAME} of an enum body, counting on from explicit values;
+    /*0x00*/ index comments and // comments are ignored."""
+    out, n = {}, 0
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    for line in text.splitlines():
+        line = line.split("//", 1)[0].strip()
+        for part in line.split(","):
+            m = re.match(r"\s*([A-Za-z_]\w*)\s*(?:=\s*(0x[0-9a-fA-F]+|\d+))?\s*$", part)
+            if not m:
+                continue
+            if m.group(2):
+                n = int(m.group(2), 0)
+            out[n] = m.group(1)
+            n += 1
+    return out
+
+
+def _named_enum(text, name):
+    """The body of `typedef enum {..} name;` or `enum name {..}`; @WORD is
+    the unnamed enum that holds WORD."""
+    if name.startswith("@"):
+        for m in re.finditer(r"enum\s*\{(.*?)\}", text, re.S):
+            if re.search(r"\b" + name[1:] + r"\b", m.group(1)):
+                return m.group(1)
+        return ""
+    body = _enum_body(text, name)
+    if not body:
+        m = re.search(r"enum\s+" + re.escape(name) + r"\s*\{(.*?)\}", text, re.S)
+        body = m.group(1) if m else ""
+    return body
+
+
+ENTITY_ID_ENUMS = {             # entity kind: (header, enum)
+    3: ("include/enemy.h", "@OCTOROK"), 4: ("include/projectile.h", "Projectile"),
+    6: ("include/object.h", "Object"), 7: ("include/npc.h", "NPC"),
+    9: ("include/manager.h", "Managers"),
+}
+
+
+@lru_cache(maxsize=None)
+def entity_kinds():
+    return {v: k for v, k in _enum_names(_named_enum(_read("include/entity.h"), "EntityKind")).items()} \
+        or {1: "PLAYER", 3: "ENEMY", 4: "PROJECTILE", 6: "OBJECT", 7: "NPC",
+            8: "PLAYER_ITEM", 9: "MANAGER"}
+
+
+@lru_cache(maxsize=None)
+def entity_ids(kind):
+    """{id: NAME} for an entity kind (objects, enemies, NPCs, ...)."""
+    if kind not in ENTITY_ID_ENUMS:
+        return {}
+    header, enum = ENTITY_ID_ENUMS[kind]
+    return _enum_names(_named_enum(_read(header), enum))
+
+
+@lru_cache(maxsize=None)
+def entity_types(kind, eid):
+    """{type: NAME} where the entity's own source names its types
+    (FurnitureType: BOOKSHELF, CRATE, WOODEN_TABLE, STAIRCASE, ...)."""
+    name = entity_ids(kind).get(eid)
+    if not name or kind not in (3, 6, 7):
+        return {}
+    camel = name.lower().split("_")
+    camel = camel[0] + "".join(w.capitalize() for w in camel[1:])
+    folder = {3: "enemy", 6: "object", 7: "npc"}[kind]
+    text = _read(f"src/{folder}/{camel}.c")
+    m = re.search(r"typedef enum\s*\{([^}]*)\}\s*\w*Type\s*;", text, re.S)
+    return _enum_names(m.group(1)) if m else {}
+
+
+def entity_name(kind, eid, etype=None):
+    """OBJECT FURNITURE WOODEN_TABLE, ENEMY OCTOROK, NPC SMITH ..."""
+    k = entity_kinds().get(kind, f"KIND_{kind}")
+    n = entity_ids(kind).get(eid, f"0x{eid:x}")
+    t = entity_types(kind, eid).get(etype) if etype is not None else None
+    return " ".join(x for x in (k, n, t) if x)
 
 
 def act_short(act):

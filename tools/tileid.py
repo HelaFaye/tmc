@@ -471,6 +471,13 @@ def families(r, cls, H, art, layer=0):
             if _open_ns(walk, cy, cx) and all_wood(px, ground):
                 fam[cy, cx] = "fence"
                 grew = True
+    # a fence is a run: a lone post-like cell is a table leg, a stand
+    lone = [(cy, cx) for cy, cx in zip(*np.nonzero(fam == "fence"))
+            if not any(fam[y, x] == "fence"
+                       for y in range(max(0, cy - 1), min(h, cy + 2))
+                       for x in range(max(0, cx - 1), min(w, cx + 2)) if (y, x) != (cy, cx))]
+    for cy, cx in lone:
+        fam[cy, cx] = None
     # what a person has said a cell is wins (vr/tiles/overrides.txt)
     for rule in load_overrides():
         if "family" in rule:
