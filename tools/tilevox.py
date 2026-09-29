@@ -3276,11 +3276,15 @@ def build_area(job):
                                 fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
                                 break
                         if fl_px is None:   # in water: what it stands in
-                            for yy, xx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
-                                if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w \
-                                        and fam[yy, xx] is None:
-                                    fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
-                                    break
+                            wet = [(yy, xx) for yy, xx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1))
+                                   if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w
+                                   and cls[yy, xx] == RE.CLASS_WATER]
+                            if wet:         # standing up out of the water's surface
+                                H[cy, cx] = min(int(H[yy, xx]) for yy, xx in wet)
+                            for yy, xx in wet + [(yy, xx) for yy, xx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1))
+                                                 if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w and fam[yy, xx] is None]:
+                                fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
+                                break
                         shapes[(cy, cx)] = (TI.shape_heights(px, f, fl_px), 0)
                     elif f == "flowers":
                         shapes[(cy, cx)] = (TI.flower_hmap(px, ground), 0)

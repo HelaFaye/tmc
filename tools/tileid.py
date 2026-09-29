@@ -567,6 +567,10 @@ def shape_heights(px, family, floor_px=None):
     """16x16 column heights (0 = nothing) for a prop family's model."""
     kind, hmax = SHAPES[family]
     m = outline(px, floor_px)
+    if family == "stone":
+        # the water's ripple round a stone is water, not stone
+        hue, sat, _v = _hsv(px)
+        m = m & ~((hue >= 160) & (hue < 260) & (sat >= 0.25))
     if kind in ("box", "board"):
         return np.where(m, hmax, 0).astype(np.int64)
     # distance from the outline's edge, for domes and drums

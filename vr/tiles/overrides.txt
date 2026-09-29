@@ -54,3 +54,8 @@ a38   tile=0xe3,0xe4             family=boulder label=small_boulder
 
 # South Hyrule Field's shore: large stones in the water
 a3    tile=0x1da,0x1db,0x1ea,0x1eb  family=stone label=large_stone_in_water
+
+# South Hyrule Field's shore: the rope hanging between the stone posts
+# (drawn over grass, so read as foliage) stands up with them
+a3    tile=0x3b5,0x3ce           family=fence label=rope_between_posts
+a3    tile=0x3b7,0x3c4,0x3c8,0x3c9,0x3ca,0x3cb,0x3cc,0x3cf  family=fence label=stone_post
