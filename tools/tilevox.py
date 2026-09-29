@@ -1833,7 +1833,7 @@ def furniture_px(name):
     return FURNITURE_DEFAULT
 
 
-def furniture_heights(r, cls, shell, fam, taken=(), art=None):
+def furniture_heights(r, cls, shell, fam, taken=(), art=None, sprites_seen=False):
     """{(cy, cx): px above the floor} for the furniture of an enclosed room:
     blocked cells off the ring, not a prop family, block, door or upright.
     A connected piece takes the height of the object standing on it (by
@@ -1887,7 +1887,7 @@ def furniture_heights(r, cls, shell, fam, taken=(), art=None):
         one16_ = np.ones((16, 16), bool)
         for j in range(1, rn + 1):
             piece = rest == j
-            Fp = np.kron(~piece & ~shell["R"] & (cls != RE.CLASS_VOID), one16_)
+            Fp = np.kron(~piece & ~shell["R"] & (cls == RE.CLASS_GROUND), one16_)
             D = drawn_piece(art, piece, Fp, np.kron(piece, one16_))
             bl_, bn_ = RE._label(D)
             if bn_ < 2:
@@ -1909,13 +1909,17 @@ def furniture_heights(r, cls, shell, fam, taken=(), art=None):
     for k in range(1, n + 1):
         piece = lab == k
         cells = list(zip(*np.nonzero(piece)))
-        Fp = np.kron(~piece & ~shell["R"] & (cls != RE.CLASS_VOID), one16)
-        if all(c in sprites for c in cells):
+        Fp = np.kron(~piece & ~shell["R"] & (cls == RE.CLASS_GROUND), one16)
+        if all(c in sprites for c in cells) and not sprites_seen:
             continue            # an object (furniture.c draws a sprite and
-                                # marks its cells): the entity stage's
+                                # marks its cells): the entity stage's --
+                                # unless the room was captured, its sprites
+                                # drawn in the picture
         if art is not None:
             D = drawn_piece(art, piece, Fp, np.kron(piece, one16))
             if D.sum() < 0.25 * 256 * len(cells) or all(drawn_as_floor(art, cls, c) for c in cells):
+                if os.environ.get("TV_DBG"):
+                    print("SKIP", r.area, r.room, cells, int(D.sum()), file=sys.stderr)
                 continue        # not in the room's art: a sprite on bare floor,
                                 # the entity stage's to build
         px = [furniture_px(names[c]) for c in cells if c in names]
@@ -2094,7 +2098,7 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     # wall -- is a thing of its own, built as furniture. Rays through the
     # collision could not tell a cabinet from the wall it stands against.
     Hp, Wpx = h * 16, w * 16
-    A = RE.room_art_rgb(r, 0)
+    A = shown_art(r)
     if A is None:
         return None
     A = np.asarray(A)[:Hp, :Wpx, :3].astype(np.int64)
@@ -2232,10 +2236,11 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
         for yy in range(dd["top"], dd["cy"] + 1):
             stand[yy, dd["cx"]] = False
     things = np.kron(solidall & ~R, one) & O     # what stands on the floor
-    A_ = np.asarray(RE.room_art_rgb(r, 0))[:h * 16, :w * 16, :3].astype(np.int64)
-    darkpx = (A_ @ np.array([299, 587, 114]) // 1000) < STAIR_DARK
+    lumof = lambda a: np.asarray(a)[:h * 16, :w * 16, :3].astype(np.int64) @ np.array([299, 587, 114]) // 1000
+    darkpx = lumof(shown_art(r)) < STAIR_DARK             # the dark the game shows
+    drawnpx = lumof(RE.room_art_rgb(r, 0)) < STAIR_DARK   # the dark the room draws
     sh["box"] = box_walls(O, inW, np.kron(walk, one), gap, things,
-                          np.kron(stand, one) & O, dark=darkpx)
+                          np.kron(stand, one) & O, dark=darkpx, dark_drawn=drawnpx)
     # one box is one room: where its floor misses much of the walkable
     # floor (a cave of several parts, an L), the cells stay
     b_ = sh["box"]
@@ -2258,7 +2263,7 @@ BOX_SMOOTH = 15         # rays: a band's thickness is the median over this many
 BOX_H = (24, 64)        # px: a wall's height, from the back wall's face
 
 
-def box_walls(O, inW, floor, gap, objs, stand=None, dark=None):
+def box_walls(O, inW, floor, gap, objs, stand=None, dark=None, dark_drawn=None):
     """The walls of an enclosed room as the game draws them: a box seen
     from above its middle, every inner face folded out round the floor
     (Link's house draws its corners as diagonal seams from the floor's
@@ -2273,7 +2278,7 @@ def box_walls(O, inW, floor, gap, objs, stand=None, dark=None):
         return None
     cz, cx = ys.mean(), xs.mean()
     Hp, Wpx = O.shape
-    outer, run, gapr, runc, lasts, okc, dobj, wallr, darkr = [], [], [], [], [], [], [], [], []
+    outer, run, gapr, runc, lasts, okc, dobj, wallr, darkr, darkd = [], [], [], [], [], [], [], [], [], []
     for i in range(BOX_RAYS):
         th = 2 * np.pi * i / BOX_RAYS
         dx, dz = np.cos(th), np.sin(th)
@@ -2293,6 +2298,7 @@ def box_walls(O, inW, floor, gap, objs, stand=None, dark=None):
             outer.append((cx, cz)); run.append(0); gapr.append(True); runc.append(0); lasts.append(0)
             wallr.append(False)
             darkr.append(False)
+            darkd.append(False)
             okc.append(False)
             dobj.append(None)
             continue
@@ -2330,6 +2336,11 @@ def box_walls(O, inW, floor, gap, objs, stand=None, dark=None):
               if dark is not None and 0 <= int(round(cz + dz * u)) < Hp
               and 0 <= int(round(cx + dx * u)) < Wpx]
         darkr.append(bool(dk) and float(np.mean(dk)) >= 0.5)
+        dd_ = dark_drawn if dark_drawn is not None else dark
+        dk2 = [dd_[int(round(cz + dz * u)), int(round(cx + dx * u))] for u in us
+               if dd_ is not None and 0 <= int(round(cz + dz * u)) < Hp
+               and 0 <= int(round(cx + dx * u)) < Wpx]
+        darkd.append(bool(dk2) and float(np.mean(dk2)) >= 0.5)
         # clean: just inside that run is walkable floor, not a thing
         px_, pz_ = int(round(ox_ - dx * (k + 3))), int(round(oz_ - dz * (k + 3)))
         okc.append(0 <= px_ < Wpx and 0 <= pz_ < Hp and bool(floor[pz_, px_]))
@@ -2373,7 +2384,7 @@ def box_walls(O, inW, floor, gap, objs, stand=None, dark=None):
     im = Image.new("1", (Wpx, Hp), 0)
     ImageDraw.Draw(im).polygon([(float(x), float(z)) for x, z in inner], fill=1)
     fm = np.asarray(im, dtype=bool) & ~gap
-    return dict(inner=inner, outer=outer, gap=gapr, H=H, floor=fm, wall=wallr, dark=darkr,
+    return dict(inner=inner, outer=outer, gap=gapr, H=H, floor=fm, wall=wallr, dark=darkd,
                 dark_uv=(tuple(float(v) for v in np.argwhere(dark)[0][::-1] + 0.5)
                          if dark is not None and dark.any() else None))
 
@@ -2910,6 +2921,35 @@ def hide_under_arches(r, cls, art, shell):
     return A
 
 
+CAPTURES = Path(os.environ.get("TMC_CAPTURES", str(Path(__file__).resolve().parent.parent
+                                                    / "vr" / "captures")))
+_SHOWN = {}
+
+
+def shown(r):
+    """(RGB, sprite mask) of the room as the running game shows it --
+    tile layers and object sprites, no HUD, no Link -- from a capture
+    (tools/room_capture.py), or None where the room has none."""
+    k = (r.area, r.room)
+    if k not in _SHOWN:
+        import room_capture as RCap
+        got = RCap.load_shown(f"{r.area:02d}_{r.room:02d}", CAPTURES)
+        _SHOWN[k] = None
+        if got is not None:
+            h, w = r.cells_h * 16, r.cells_w * 16
+            rgb, spr = got
+            if rgb.shape[0] >= h and rgb.shape[1] >= w:
+                _SHOWN[k] = (np.ascontiguousarray(rgb[:h, :w, :3]), spr[:h, :w])
+    return _SHOWN[k]
+
+
+def shown_art(r):
+    """The room's picture as the game shows it where it was captured
+    (arches over doorways, shelves on the floor), else its ground layer."""
+    got = shown(r)
+    return got[0] if got is not None else RE.room_art_rgb(r, 0)
+
+
 def stairwell_cells(r, cls, R, exits):
     """Cells of a box room's wall band the game marks as a way through
     (Picori's door surfaces) that are neither ring nor exit."""
@@ -2926,12 +2966,13 @@ def open_doorways(r, cls, ways, one):
     wall's; where it is lit (the way out, onto the path), all of it."""
     h, w = cls.shape
     gap = np.kron(ways, one)
-    A = np.asarray(RE.room_art_rgb(r, 0))[:h * 16, :w * 16, :3].astype(np.int64)
-    dark = (A @ np.array([299, 587, 114]) // 1000) < STAIR_DARK
+    lum_ = lambda a: np.asarray(a)[:h * 16, :w * 16, :3].astype(np.int64) @ np.array([299, 587, 114]) // 1000
+    drawn_dark = lum_(RE.room_art_rgb(r, 0)) < STAIR_DARK      # lit or dark: the room's own
+    dark = lum_(shown_art(r)) < STAIR_DARK                      # how wide: what the game shows
     lab, n = RE._label(ways)
     for k in range(1, n + 1):
         m = np.kron(lab == k, one)
-        if not (dark & m).any():
+        if not (drawn_dark & m).any():
             continue                                # lit: all of it
         ys, xs = np.nonzero(m)
         wide = (xs.max() - xs.min()) >= (ys.max() - ys.min())
@@ -3784,10 +3825,13 @@ def build_area(job):
                 taken_ = {(y_, x_) for (y_, x_) in bl} | \
                     {(y_, d["cx"]) for d in doors for y_ in range(d["top"], d["cy"] + 1)} | \
                     {(c[1], c[0]) for u in ups for c in u["cells"]}
-                fh = furniture_heights(r, cls, shell, fam, taken_, art)
-                shell["pieces"] = [pz for _one, pz in furniture_prisms(cls, shell, fh, art)]
+                sh_ = shown(r)
+                fart = sh_[0] if sh_ is not None else art   # sprites drawn in it
+                fh = furniture_heights(r, cls, shell, fam, taken_, fart,
+                                       sprites_seen=sh_ is not None)
+                shell["pieces"] = [pz for _one, pz in furniture_prisms(cls, shell, fh, fart)]
                 if shell.get("box") is not None:
-                    shell["pieces"] += stairwell_pieces(r, cls, shell, art)
+                    shell["pieces"] += stairwell_pieces(r, cls, shell, fart)
                 for (y_, x_) in fh:
                     H[y_, x_] = shell["base"]
                     shell["R"][y_, x_] = True       # built by its prism, not a tile
@@ -3880,7 +3924,11 @@ def build_area(job):
                 ov = (decks, cf, occ, top)
             solid_ = cls != RE.CLASS_VOID
             solid_[:caserows + 1] = False           # the bookcase's own
-            if shell is not None and shell.get("W") is not None:
+            if shown(r) is not None:
+                # captured: the room's faces wear what the game shows -- the
+                # arches over its doorways, its sprites
+                art = shown(r)[0]
+            elif shell is not None and shell.get("W") is not None:
                 # what the game's archway sprites cover (the plates on the
                 # jambs) is not the wall's face: the wall runs on over it
                 art = hide_under_arches(r, cls, art, shell)

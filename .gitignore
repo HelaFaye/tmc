@@ -178,6 +178,7 @@ entsheets/
 /verify/
 /objects/
 vr/tiles/catalogue/
+vr/captures/
 refcheck/
 /*.png
 *.tmcr
