@@ -56,7 +56,7 @@ what the decompilation calls them, so a pit is a pit because the game says
 
 | Area | Files | What it does |
 |---|---|---|
-| Design and guides | `docs/vr/01-blueprint.md` … `04-asset-pipeline.md`, `05-rom-and-harvest.md`, `ERRATA-brainstorm.md` | Where to hook the engine, the phased plan, the stabilised camera and scale presets, the asset rule, and the defects found in the earlier design drafts. |
+| Design and guides | `docs/vr/01-blueprint.md` … `04-asset-pipeline.md`, `05-rom-and-harvest.md`, `06-camera-and-depth.md`, `ERRATA-brainstorm.md` | Where to hook the engine, the phased plan, the stabilised camera and scale presets, the asset rule, how depth and height are read out of the drawings, and the defects found in the earlier design drafts. |
 | Room capture | `port/port_repro_roomcap.c` (`TMC_VR` blocks), `tools/apply_roomcap_hook.py`, `tools/check_hook.py` | Picori's headless room-capture harness, extended to write `.tmcr` room dumps, step Link's sprite frames, and boot at a chosen story state. |
 | Runtime modules | `port/vr/` | `vr_world` snapshots `gMapTop`/`gMapBottom`, entities, palettes and BG VRAM, and writes `.tmcr` v4. `vr_anchor` is the camera anchor with tabletop, diorama and life scales. `vr_interp` interpolates entities (Link included) between game ticks. `vr_greedy_mesh` builds meshes from voxel grids. `vr_spritedump` rasterises sprite frames. `vr_debug_panel` is an ImGui panel that drives them all. |
 | Harvest | `tools/harvest_rooms.py`, `harvest_states.sh`, `harvest_night.sh` | Warp to each of the game's 842 rooms in turn and dump it, optionally at each story state (0–6 dungeons cleared). |
