@@ -59,7 +59,8 @@ PROGRESS = 1                    # dungeons cleared: past the prologue, whose scr
                                 # take over a warp into Hyrule Field or the town
 MATCH_MIN = 0.7                 # a capture this much like the room's tile art is it
 ALIGN = 8                       # px: the logged camera can be this far off the picture
-NO_ART = (248, 0, 248)          # the dump's colour where a tile's art never loaded
+NO_ART = (248, 0, 248)          # the dump's colour where a tile's art never loaded,
+                                # and ours for the backdrop no tile layer draws
 SECONDS_PER_VIEW = 12           # the tour's time budget, per view
 SHADE_SLOPES = np.arange(0.5, 0.97, 1 / 32)   # a blend keeps this share of the art
 SHADE_FIT = 12                  # px value: how close a pixel must follow the blend
@@ -67,15 +68,19 @@ SHADE_SHARE = 0.25              # of the differing pixels the blend must explain
 
 
 def layers(r):
-    """The room's tile layers as shown: (ground layer, top layer over it)."""
-    a0 = np.asarray(extract_art.room_art(r, 0))[..., :3].astype(np.int16)
+    """The room's tile layers as shown: (ground layer, top layer over it).
+    Where neither draws (the backdrop: a sky, a void the game fills with
+    another layer or a colour), NO_ART."""
+    A0 = np.asarray(extract_art.room_art(r, 0))
+    a0 = A0[..., :3].astype(np.int16)
+    a0[A0[..., 3] == 0] = NO_ART
+    comp = a0
     if len(r.layers) > 1 and r.layers[1]["present"]:
         a1 = np.asarray(extract_art.room_art(r, 1))
         top = a1[..., 3] > 0
         comp = a0.copy()
         comp[top] = a1[..., :3][top]
-        return a0, comp
-    return a0, a0
+    return a0, comp
 
 
 def standing_spots(r, cls):

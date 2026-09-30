@@ -96,7 +96,8 @@ For each room, `room_capture.py`:
    picture — and drops it if it is another room (an exit was stepped on)
    or matches the room's tile art less than `MATCH_MIN` (70%): a story
    scene took over, or an overlay (the Minish Woods fog) covers it. Where
-   the dump has no art (magenta, `NO_ART`), the capture is taken as is;
+   the dump has no art (magenta, `NO_ART`) or no tile layer draws (the
+   backdrop: Cloud Tops' sky), the capture is taken as is;
 2. fills what no view saw with the tile art;
 3. takes out what **moves**: overlapping views are taken at different
    moments, so where two disagree, something animates (water, foam,
@@ -131,6 +132,9 @@ Where a room has one:
 - A room whose dump drew some tiles from the wrong tileset (garbage where
   the capture shows the room) fails the match there; it needs harvesting
   again, not capturing.
+- A dark room shows only the light around Link; an overlay layer (the
+  Minish Woods fog, a canopy's shade) covers its views. Both fail the
+  match and keep the tile art.
 - The progress flags are the same for every room: a room that only exists
   in another story state (or only before the prologue ends) shows that
   state's version, and is dropped if it does not match its dump.
