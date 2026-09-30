@@ -290,6 +290,7 @@ def assemble(r, rid, caps, out, cls=None):
         shown[sl][new] = c[new]
         have[sl] |= new
     shown[~have] = comp[~have]                  # what no view saw: the tile art
+    shown[~have & (comp == NO_ART).all(axis=2)] = 0     # ... or none, as the dump
     # where the dump has no art, the capture is the room: compare it with itself
     noart = have & (comp == NO_ART).all(axis=2)
     comp = comp.copy()
