@@ -20,8 +20,9 @@ the shape the tile stage gives them --
   block   foliage (hedges, field trees); the terrain's walls
   floor   floor, grass, flowers
 
--- where that differs from the view's own guess, in AGREE of the type's
-cells. Water, stairs and whatever the tile stage has no word for stay the
+-- where that differs from the view's own guess (solid by collision; a
+solid tile with no solid tile beside it stands as a prop card by itself),
+in AGREE of the type's cells, so nothing the view already does is repeated. Water, stairs and whatever the tile stage has no word for stay the
 view's own. `wall` is not written: the tile stage's heights give a wall
 cell its class height (16 px), not the drawn height of its front, so an
 area keeps the view's default (or a hand edit) until they do.
@@ -91,16 +92,23 @@ def room_cells(path):
     tt = L["tiletype"][np.clip(t, 0, len(L["tiletype"]) - 1)].astype(int)
     coll = L["collision"][:h, :w].astype(int)
     act = L["act"][:h, :w].astype(int)
+    # the view's own guess: solid by collision; a solid tile with no solid
+    # tile beside it stands as a prop card by itself (port_voxel.cpp isProp;
+    # its outline test is not modelled -- a lone tile it rejects is a block)
+    wet_ = np.isin(act, list(NOT_WALL_ACT))
+    solid_ = (coll == SOLID_COLLISION) & ~wet_
+    P = np.pad(solid_, 1)
+    lone = solid_ & ~(P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:])
     cells = []
     for y in range(h):
         for x in range(w):
             if t[y, x] >= 0x4000:   # special tiles: keyed otherwise in the view
                 continue
             label = fam[y, x] or f"({role[y, x] or 'none'})"
-            wet = act[y, x] in NOT_WALL_ACT   # water, holes: the view's own
+            wet = wet_[y, x]                  # water, holes: the view's own
             ours = None if wet else shape_of(label)
-            solid = coll[y, x] == SOLID_COLLISION and not wet
-            cells.append((int(tt[y, x]), ours, "block" if solid else "floor"))
+            theirs = "prop" if lone[y, x] else "block" if solid_[y, x] else "floor"
+            cells.append((int(tt[y, x]), ours, theirs))
     return r.area, cells
 
 
@@ -124,8 +132,7 @@ def shapes(files, jobs=0):
             if n < AGREE * len(cs):
                 continue            # the type's cells disagree: leave it
             differ = sum(1 for o, th in cs if o == best and th != best)
-            # a prop is never the view's own guess for a run of solid tiles
-            if best == "prop" or differ >= len(cs) / 2:
+            if differ >= len(cs) / 2:
                 tiles[str(ty)] = best
         if tiles:
             out[str(area)] = {"tiles": tiles}
