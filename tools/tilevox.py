@@ -1833,6 +1833,10 @@ def furniture_px(name):
     return FURNITURE_DEFAULT
 
 
+PIECE_MAX = 12          # cells: an unnamed piece bigger than a bed and a
+                        # dresser together is not furniture
+
+
 def furniture_heights(r, cls, shell, fam, taken=(), art=None, sprites_seen=False):
     """{(cy, cx): px above the floor} for the furniture of an enclosed room:
     blocked cells off the ring, not a prop family, block, door or upright.
@@ -1910,6 +1914,12 @@ def furniture_heights(r, cls, shell, fam, taken=(), art=None, sprites_seen=False
         piece = lab == k
         cells = list(zip(*np.nonzero(piece)))
         Fp = np.kron(~piece & ~shell["R"] & (cls == RE.CLASS_GROUND), one16)
+        if len(cells) > PIECE_MAX and not any(c in names for c in cells):
+            if os.environ.get("TV_DBG"):
+                print("SKIP", r.area, r.room, "too big for furniture", len(cells), file=sys.stderr)
+            continue            # the room's own wall band the box left over
+                                # (34_02's right column and bottom row),
+                                # not a piece of furniture
         if all(c in sprites for c in cells) and not sprites_seen:
             continue            # an object (furniture.c draws a sprite and
                                 # marks its cells): the entity stage's --
@@ -2062,11 +2072,17 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
         return None
     # the room's floor: walkable ground walls enclose -- not the grass round
     # a shrine, open to the edge; all of it if nothing is enclosed
-    wl, wn = RE._label(walk)
+    # (the exits left out: a door on the room's edge row opens the room to
+    # its neighbour, not to the outside -- 34_02's front door -- and back in
+    # where they meet that floor)
+    wl, wn = RE._label(walk & ~exits)
     open_ = set(wl[0].tolist()) | set(wl[-1].tolist()) | set(wl[:, 0].tolist()) | set(wl[:, -1].tolist())
     open_.discard(0)
-    inner = walk & ~np.isin(wl, list(open_))
-    if not inner.any():
+    inner = walk & ~exits & ~np.isin(wl, list(open_))
+    if inner.any():
+        P = np.pad(inner, 1)
+        inner |= exits & (P[:-2, 1:-1] | P[2:, 1:-1] | P[1:-1, :-2] | P[1:-1, 2:])
+    else:
         inner = walk
     # near that floor
     near = inner.copy()
@@ -2247,6 +2263,8 @@ def room_shell(r, cls, H, fam, doors, exclude=()):
     if b_ is not None:
         wpx = np.kron(walk & ~exits, one)
         cover = (b_["floor"][:wpx.shape[0], :wpx.shape[1]] & wpx[:b_["floor"].shape[0], :b_["floor"].shape[1]]).sum()
+        if os.environ.get("TV_DBG"):
+            print("BOXCOVER", r.area, r.room, int(cover), int(wpx.sum()), file=sys.stderr)
         if cover < BOX_COVER * max(1, wpx.sum()):
             sh["box"] = None
     return sh
