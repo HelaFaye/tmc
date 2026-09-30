@@ -28,9 +28,11 @@
 #include "port_repro.h"
 #include "port_gba_mem.h" /* gIoMem, gVram, gBgPltt, gObjPltt, gOamMem */
 #include "port_debug_actions.h"
+#include "port_entity_ctx.h"
 #include "ui.h"         /* gHUD, HUD_HIDE_ALL (TMC_ROOMCAP_CLEAN) */
 #include "game.h"       /* GAMEMAIN_UPDATE (TMC_ROOMCAP_TOUR) */
 #include "player.h"     /* gPlayerEntity (TMC_ROOMCAP_CLEAN) */
+#include "item_ids.h"   /* ITEM_KINSTONE_BAG (TMC_ROOMCAP_TOUR) */
 
 extern int Port_CaptureBaseFramebufferPNG(const char* path);
 extern void SetActiveSave(u32 idx); /* fileselect.c (no header decl) */
@@ -223,6 +225,17 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
                                             LV4_CLEAR, LV5_CLEAR, LV6_CLEAR };
                 for (int i = 0; i < n; i++)
                     SetGlobalFlag(kLv[i]);
+                /* with their elements: an area change takes a cleared
+                 * dungeon's flag back without it (gameUtils.c, LVn_CLEAR vs
+                 * ITEM_*_ELEMENT); and the kinstone bag, or the town plays
+                 * Ezlo's kinstone scene */
+                static const u8 kElem[6] = { ITEM_EARTH_ELEMENT, ITEM_FIRE_ELEMENT, 0,
+                                             ITEM_WATER_ELEMENT, ITEM_WIND_ELEMENT, 0 };
+                for (int i = 0; i < n; i++)
+                    if (kElem[i])
+                        SetInventoryValue(kElem[i], 1);
+                if (n > 0)
+                    SetInventoryValue(ITEM_KINSTONE_BAG, 1);
                 UpdateGlobalProgress();
                 fprintf(stderr, "[roomcap] progress: %d dungeons, global_progress=%u\n",
                         n, (unsigned)gSave.global_progress);
@@ -303,6 +316,20 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
                         SetGlobalFlag(TABIDACHI);
                         for (int i = 0; i < np; i++)
                             SetGlobalFlag(kLv[i]);
+                        /* and what the game hands out by then: a cleared
+                         * dungeon's flag is taken back on the next area
+                         * change without its element (gameUtils.c, LVn_CLEAR
+                         * vs ITEM_*_ELEMENT) -- back to the prologue's town,
+                         * whose intro scene holds the camera; without the
+                         * kinstone bag, the town plays Ezlo's kinstone scene
+                         * (gUnk_080EE88C, roomInit.c) */
+                        static const u8 kElem[6] = { ITEM_EARTH_ELEMENT, ITEM_FIRE_ELEMENT, 0,
+                                                     ITEM_WATER_ELEMENT, ITEM_WIND_ELEMENT, 0 };
+                        for (int i = 0; i < np; i++)
+                            if (kElem[i])
+                                SetInventoryValue(kElem[i], 1);
+                        if (np > 0)
+                            SetInventoryValue(ITEM_KINSTONE_BAG, 1);
                         UpdateGlobalProgress();
                         fprintf(stderr, "[roomcap] tour progress: %d dungeons, global_progress=%u\n", np,
                                 (unsigned)gSave.global_progress);
@@ -323,13 +350,34 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
             }
             if (since == 0)
                 since = frame;
+            /* a scene holding the camera on something else is not the view */
             const int here = arrived && gRoomControls.area == ta[ti] && gRoomControls.room == tr[ti] &&
-                             (gMain.substate == GAMEMAIN_UPDATE || gMain.substate == GAMEMAIN_BARRELUPDATE);
+                             (gMain.substate == GAMEMAIN_UPDATE || gMain.substate == GAMEMAIN_BARRELUPDATE) &&
+                             gRoomControls.camera_target == &gPlayerEntity.base;
+            /* TMC_ROOMCAP_TOUR_DEBUG: each second, the wait -- and the
+             * scripts the NPCs run (ROM addresses; port_script_addrs.c
+             * names them), to find a scene that holds the camera */
+            if (getenv("TMC_ROOMCAP_TOUR_DEBUG") && frame % 60 == 0) {
+                fprintf(stderr, "[roomcap] tour %d wait frame %u room=0x%02x/0x%02x sub=%u ctl=%u cam=%d gp=%u\n", ti,
+                        frame, (unsigned)gRoomControls.area, (unsigned)gRoomControls.room,
+                        (unsigned)gMain.substate, (unsigned)gPlayerState.controlMode,
+                        gRoomControls.camera_target ? (int)gRoomControls.camera_target->id : -1,
+                        (unsigned)gSave.global_progress);
+                for (Entity* e = gEntityLists[7].first; e && e != (Entity*)&gEntityLists[7]; e = e->next) {
+                    ScriptExecutionContext* c = (e->flags & ENT_SCRIPTED) ? Port_GetEntityScriptCtx(e) : NULL;
+                    if (c && c->scriptInstructionPointer)
+                        fprintf(stderr, "[roomcap]   npc %d script at 0x%08x\n", (int)e->id,
+                                (unsigned)(0x08000000u + (u32)((u8*)c->scriptInstructionPointer - gRomData)));
+                }
+            }
             if (!arrived) {
                 /* warp (again, if a fade swallowed it: after 3s) */
                 if ((fired == 0 || frame - fired > 180) &&
-                    Port_DebugAction_Warp(ta[ti], tr[ti], tx[ti], ty[ti], tl[ti]) == 1)
+                    Port_DebugAction_Warp(ta[ti], tr[ti], tx[ti], ty[ti], tl[ti]) == 1) {
                     fired = frame;
+                    if (getenv("TMC_ROOMCAP_TOUR_DEBUG"))
+                        fprintf(stderr, "[roomcap] tour %d warp fired frame %u\n", ti, frame);
+                }
                 if (fired && frame - fired > 20 && gRoomControls.area == ta[ti] && gRoomControls.room == tr[ti] &&
                     (gMain.substate == GAMEMAIN_UPDATE || gMain.substate == GAMEMAIN_BARRELUPDATE))
                     arrived = frame;
@@ -338,14 +386,17 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
                 char path[512];
                 snprintf(path, sizeof path, "%s/%05d.png", dir && *dir ? dir : ".", ti);
                 int ok = Port_CaptureBaseFramebufferPNG(path);
-                fprintf(stderr, "[roomcap] tour %d view room=0x%02x/0x%02x scroll=%d,%d size=%d,%d ok=%d\n", ti,
+                fprintf(stderr, "[roomcap] tour %d view room=0x%02x/0x%02x scroll=%d,%d size=%d,%d ok=%d link=%d,%d\n", ti,
                         (unsigned)gRoomControls.area, (unsigned)gRoomControls.room,
                         (int)(gRoomControls.scroll_x - gRoomControls.origin_x),
                         (int)(gRoomControls.scroll_y - gRoomControls.origin_y), (int)gRoomControls.width,
-                        (int)gRoomControls.height, ok);
+                        (int)gRoomControls.height, ok,
+                        (int)(gPlayerEntity.base.x.HALF.HI - gRoomControls.origin_x),
+                        (int)(gPlayerEntity.base.y.HALF.HI - gRoomControls.origin_y));
                 ++ti, fired = 0, arrived = 0, since = 0;
-            } else if (!here) {
-                arrived = 0;            /* left the room (an exit, a script): warp again */
+            } else if (!here && gRoomControls.camera_target == &gPlayerEntity.base) {
+                arrived = 0;            /* left the room (an exit, a script): warp again;
+                                         * a scene holding the camera runs to the skip */
             }
             if (since && frame - since > 900 && ti < tn) {
                 fprintf(stderr, "[roomcap] tour %d skip room=0x%02x/0x%02x (never arrived)\n", ti, ta[ti], tr[ti]);

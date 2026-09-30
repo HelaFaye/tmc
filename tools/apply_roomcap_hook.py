@@ -62,6 +62,17 @@ PROGRESS_HOOK = f'''{PBEGIN}
                                             LV4_CLEAR, LV5_CLEAR, LV6_CLEAR }};
                 for (int i = 0; i < n; i++)
                     SetGlobalFlag(kLv[i]);
+                /* with their elements: an area change takes a cleared
+                 * dungeon's flag back without it (gameUtils.c, LVn_CLEAR vs
+                 * ITEM_*_ELEMENT); and the kinstone bag, or the town plays
+                 * Ezlo's kinstone scene */
+                static const u8 kElem[6] = {{ ITEM_EARTH_ELEMENT, ITEM_FIRE_ELEMENT, 0,
+                                             ITEM_WATER_ELEMENT, ITEM_WIND_ELEMENT, 0 }};
+                for (int i = 0; i < n; i++)
+                    if (kElem[i])
+                        SetInventoryValue(kElem[i], 1);
+                if (n > 0)
+                    SetInventoryValue(ITEM_KINSTONE_BAG, 1);
                 UpdateGlobalProgress();
                 fprintf(stderr, "[roomcap] progress: %d dungeons, global_progress=%u\\n",
                         n, (unsigned)gSave.global_progress);
