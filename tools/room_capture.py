@@ -58,6 +58,8 @@ SETTLE = 160                    # frames in the room before its capture: the
 PROGRESS = 1                    # dungeons cleared: past the prologue, whose scripts
                                 # take over a warp into Hyrule Field or the town
 MATCH_MIN = 0.7                 # a capture this much like the room's tile art is it
+ALIGN = 8                       # px: the logged camera can be this far off the picture
+NO_ART = (248, 0, 248)          # the dump's colour where a tile's art never loaded
 SECONDS_PER_VIEW = 12           # the tour's time budget, per view
 SHADE_SLOPES = np.arange(0.5, 0.97, 1 / 32)   # a blend keeps this share of the art
 SHADE_FIT = 12                  # px value: how close a pixel must follow the blend
@@ -150,9 +152,31 @@ def tour(game, views, outdir, settle=SETTLE):
 
 
 def match(cap, comp, at):
+    """Share of the capture like the tile art under it, where there is art."""
     x, y = at
     ref = comp[y:y + cap.shape[0], x:x + cap.shape[1]]
-    return 1.0 - float((np.abs(cap - ref).sum(axis=2) > 24).mean())
+    art = ~(ref == NO_ART).all(axis=2)
+    if not art.any():
+        return 0.0
+    return float((np.abs(cap - ref).sum(axis=2) <= 24)[art].mean())
+
+
+def align(cap, comp, at):
+    """Where the capture sits: the logged camera, or the best match within
+    ALIGN px of it (the camera can lag or shake the picture a few px)."""
+    H, W = comp.shape[:2]
+    h, w = cap.shape[:2]
+    best = (match(cap, comp, at), at)
+    if best[0] >= 0.98:
+        return best[1]
+    for dy in range(-ALIGN, ALIGN + 1):
+        for dx in range(-ALIGN, ALIGN + 1):
+            x, y = at[0] + dx, at[1] + dy
+            if (dx or dy) and 0 <= x <= W - w and 0 <= y <= H - h:
+                m = match(cap[::2, ::2], comp[y:y + h:2, x:x + w:2], (0, 0))
+                if m > best[0]:
+                    best = (m, (x, y))
+    return best[1]
 
 
 def learn_curve(c, ref):
@@ -220,13 +244,21 @@ def assemble(r, rid, caps, out, cls=None):
         c = np.asarray(Image.open(path).convert("RGB")).astype(np.int16)
         c = c[:min(c.shape[0], H), :min(c.shape[1], W)]
         at = (min(max(cam[0], 0), W - c.shape[1]), min(max(cam[1], 0), H - c.shape[0]))
+        at = align(c, comp, at)
+        if list(at) != list(cam):
+            entry["placed"] = list(at)
         ref = comp[at[1]:at[1] + c.shape[0], at[0]:at[0] + c.shape[1]]
-        if lut is None:
-            # "color_correction": false -- the screen is the art's colours
-            lut = (np.arange(256) if (c == ref).all(axis=2).mean() >= 0.5
+        # "color_correction": false -- the screen is the art's colours; else
+        # learn the correction back, from the first view that is this room
+        # (a view under fog or a scene would teach the wrong curve)
+        use = lut
+        if use is None:
+            use = (np.arange(256) if (c == ref).all(axis=2).mean() >= 0.5
                    else learn_curve(c, ref))
-        c = lut[np.clip(c, 0, 255)].astype(np.int16)
+        c = use[np.clip(c, 0, 255)].astype(np.int16)
         entry["match"] = round(match(c, comp, at), 3)
+        if lut is None and entry["match"] >= MATCH_MIN:
+            lut = use
         if entry["match"] < MATCH_MIN:
             entry["dropped"] = "not this room as its tiles draw it"
             print(f"[capture] {rid}: view at {spot} matches {entry['match']:.0%}, dropped",
@@ -240,6 +272,12 @@ def assemble(r, rid, caps, out, cls=None):
         shown[sl][new] = c[new]
         have[sl] |= new
     shown[~have] = comp[~have]                  # what no view saw: the tile art
+    # where the dump has no art, the capture is the room: compare it with itself
+    noart = have & (comp == NO_ART).all(axis=2)
+    comp = comp.copy()
+    comp[noart] = shown[noart]
+    a0 = a0.copy()
+    a0[noart] = shown[noart]
     # what moves (and a pixel or two round it): the tile art
     if moving.any():
         mv = moving.copy()

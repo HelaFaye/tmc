@@ -91,9 +91,12 @@ The debug warp takes the room's **own** coordinates; above 0x3ff they mean
 
 For each room, `room_capture.py`:
 
-1. places each capture where the game's camera was, and drops it if it
-   is another room (an exit was stepped on) or matches the room's tile
-   art less than `MATCH_MIN` (70%) — a story scene took over;
+1. places each capture where the game's camera was — or where it best
+   matches within `ALIGN` (8 px) of that, as the camera can trail the
+   picture — and drops it if it is another room (an exit was stepped on)
+   or matches the room's tile art less than `MATCH_MIN` (70%): a story
+   scene took over, or an overlay (the Minish Woods fog) covers it. Where
+   the dump has no art (magenta, `NO_ART`), the capture is taken as is;
 2. fills what no view saw with the tile art;
 3. takes out what **moves**: overlapping views are taken at different
    moments, so where two disagree, something animates (water, foam,
@@ -125,6 +128,9 @@ Where a room has one:
   not checked for movement; its animation can read as a sprite.
 - Views are planned on walkable ground; a room with none (a pure backdrop)
   is not captured.
+- A room whose dump drew some tiles from the wrong tileset (garbage where
+  the capture shows the room) fails the match there; it needs harvesting
+  again, not capturing.
 - The progress flags are the same for every room: a room that only exists
   in another story state (or only before the prologue ends) shows that
   state's version, and is dropped if it does not match its dump.
