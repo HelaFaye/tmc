@@ -58,6 +58,7 @@ SETTLE = 160                    # frames in the room before its capture: the
 PROGRESS = 1                    # dungeons cleared: past the prologue, whose scripts
                                 # take over a warp into Hyrule Field or the town
 MATCH_MIN = 0.7                 # a capture this much like the room's tile art is it
+ART_MIN = 0.05                  # of a view with art, for its match to be judged
 ALIGN = 8                       # px: the logged camera can be this far off the picture
 NO_ART = (248, 0, 248)          # the dump's colour where a tile's art never loaded,
                                 # and ours for the backdrop no tile layer draws
@@ -161,8 +162,8 @@ def match(cap, comp, at):
     x, y = at
     ref = comp[y:y + cap.shape[0], x:x + cap.shape[1]]
     art = ~(ref == NO_ART).all(axis=2)
-    if not art.any():
-        return 0.0
+    if art.mean() < ART_MIN:
+        return 1.0      # all sky: nothing to judge by; the room is right
     return float((np.abs(cap - ref).sum(axis=2) <= 24)[art].mean())
 
 
