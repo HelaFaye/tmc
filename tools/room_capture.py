@@ -59,6 +59,8 @@ PROGRESS = 1                    # dungeons cleared: past the prologue, whose scr
                                 # take over a warp into Hyrule Field or the town
 MATCH_MIN = 0.7                 # a capture this much like the room's tile art is it
 ART_MIN = 0.05                  # of a view with art, for its match to be judged
+GBA_W = 240                     # px: the GBA's screen, left of a widescreen capture
+STRIP_MIN = 32                  # px: a widescreen strip this wide is worth keeping
 ALIGN = 8                       # px: the logged camera can be this far off the picture
 NO_ART = (248, 0, 248)          # the dump's colour where a tile's art never loaded,
                                 # and ours for the backdrop no tile layer draws
@@ -259,13 +261,23 @@ def assemble(r, rid, caps, out, cls=None):
         # (a view under fog or a scene would teach the wrong curve)
         use = lut
         if use is None:
-            use = (np.arange(256) if (c == ref).all(axis=2).mean() >= 0.5
-                   else learn_curve(c, ref))
+            same = (c == ref).all(axis=2)
+            same = max(same.mean(), same[:, GBA_W:].mean() if same.shape[1] > GBA_W else 0)
+            use = np.arange(256) if same >= 0.5 else learn_curve(c, ref)
         c = use[np.clip(c, 0, 255)].astype(np.int16)
         entry["match"] = round(match(c, comp, at), 3)
         if lut is None and entry["match"] >= MATCH_MIN:
             lut = use
-        if entry["match"] < MATCH_MIN:
+        if entry["match"] < MATCH_MIN and c.shape[1] >= GBA_W + STRIP_MIN:
+            # the screen's own effects (a dark room's light, the Cave of
+            # Flames' haze) cover only the GBA's 240 px; the widescreen
+            # strip right of it shows the room as it is
+            strip = round(match(c[:, GBA_W:], comp, (at[0] + GBA_W, at[1])), 3)
+            if strip >= MATCH_MIN:
+                entry["strip"] = strip
+                c = c[:, GBA_W:]
+                at = (at[0] + GBA_W, at[1])
+        if entry["match"] < MATCH_MIN and "strip" not in entry:
             entry["dropped"] = "not this room as its tiles draw it"
             print(f"[capture] {rid}: view at {spot} matches {entry['match']:.0%}, dropped",
                   file=sys.stderr)
