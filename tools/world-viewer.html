@@ -70,6 +70,16 @@
       contains a light that points nowhere, so lighting it would stack two.</div>
   </fieldset>
 
+  <fieldset><legend>Indoor walls</legend>
+    <label><input type="checkbox" id="fade" checked> Fade a wall seen from behind that hides an actor</label>
+    <button id="enemy">Add an enemy at the marker</button>
+    <button id="noenemy">Clear enemies</button>
+    <div class="stat"><span>actors</span><b id="s-act">1</b></div>
+    <div class="note">An enclosed room's walls face inward; seen from
+      outside, one standing between the camera and the marker or an enemy
+      fades to 20%, around the line of sight only.</div>
+  </fieldset>
+
   <fieldset><legend>View</legend>
     <div class="stat"><span>yaw / pitch</span><b id="s-ang">—</b></div>
     <div class="stat"><span>distance</span><b id="s-dist">—</b></div>
@@ -100,8 +110,12 @@
 function parseOBJ(text) {
   // worldgen writes "v x y z r g b" and quad faces "f a b c d" (1-indexed,
   // no slashes). Anything else in the file is ignored rather than guessed at.
-  const pos = [], col = [], uv = [], idx = [];
-  const vx = [], vc = [], vt = [];
+  const pos = [], col = [], uv = [], idx = [], wall = [];
+  const vx = [], vc = [], vt = [], vn = [];
+  // tilevox writes an enclosed room's standing faces as the object
+  // "<room>_indoor_walls", each face with the normal of its textured side
+  // (vn): wallN, per vertex, is that normal there and 0 elsewhere.
+  let inWalls = false, nWall = 0;
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const L = lines[i];
@@ -112,6 +126,10 @@ function parseOBJ(text) {
       vc.push(p.length >= 7 ? [+p[4], +p[5], +p[6]] : [0.6, 0.6, 0.6]);
     } else if (p[0] === "vt") {
       vt.push([+p[1], +p[2]]);
+    } else if (p[0] === "vn") {
+      vn.push([+p[1], +p[2], +p[3]]);
+    } else if (p[0] === "o") {
+      inWalls = /_indoor_walls$/.test(p[1] || "");
     } else if (p[0] === "f") {
       // Faces are "a b c d" or "a/ta b/tb ...". A vertex that appears with two
       // different texture coords cannot share one buffer slot, so emit a fresh
@@ -121,12 +139,16 @@ function parseOBJ(text) {
       for (let k = 1; k < p.length; k++) {
         const q = p[k].split("/");
         f.push([parseInt(q[0], 10) - 1,
-                q.length > 1 && q[1] !== "" ? parseInt(q[1], 10) - 1 : -1]);
+                q.length > 1 && q[1] !== "" ? parseInt(q[1], 10) - 1 : -1,
+                q.length > 2 && q[2] !== "" ? parseInt(q[2], 10) - 1 : -1]);
       }
+      const wn = inWalls && f[0][2] >= 0 && vn[f[0][2]] ? vn[f[0][2]] : null;
+      if (wn) nWall += f.length - 2;
       for (let k = 1; k + 1 < f.length; k++) {
         for (const [vi, ti] of [f[0], f[k], f[k + 1]]) {
           const base = pos.length / 3;
           pos.push(vx[vi][0], vx[vi][1], vx[vi][2]);
+          if (wn) wall.push(wn[0], wn[1], wn[2]); else wall.push(0, 0, 0);
           col.push(vc[vi][0], vc[vi][1], vc[vi][2]);
           uv.push(ti >= 0 && vt[ti] ? vt[ti][0] : 0,
                   ti >= 0 && vt[ti] ? vt[ti][1] : 0);
@@ -135,8 +157,38 @@ function parseOBJ(text) {
       }
     }
   }
-  return { pos, col, uv, idx, nVerts: pos.length / 3,
+  return { pos, col, uv, idx, wall, nWall, nVerts: pos.length / 3,
            nTris: idx.length / 3, hasUV: vt.length > 0 };
+}
+
+// Indoor walls fade where they hide an actor. A wall seen from behind -- the
+// camera on the side away from its texture -- is the back of the room's
+// shell, which the game never shows; where it stands between the camera and
+// the player (or an enemy) it fades, so the actor stays in sight. Opacity
+// for a point p on a wall of normal n: 1, or down to FADE.min within
+// FADE.radius of the sight line camera -> actor, feathered over
+// FADE.feather, and only in front of the actor. The wall shader in
+// fadeWallMaterial() is this, per pixel, shown as the share of the wall's
+// pixels drawn (a 4x4 dither) -- keep the two alike.
+var FADE = { min: 0.2, radius: 20, feather: 14, lift: 12 };
+function wallFade(p, n, cam, actors, opts) {
+  const o = Object.assign({}, FADE, opts || {});
+  const vx = cam.x - p.x, vy = cam.y - p.y, vz = cam.z - p.z;
+  if (n.x * vx + n.y * vy + n.z * vz >= 0) return 1;      // seen from the front
+  let w = 0;
+  for (const a of actors) {
+    const ax = a.x - cam.x, ay = a.y + o.lift - cam.y, az = a.z - cam.z;
+    const L2 = ax * ax + ay * ay + az * az;
+    if (L2 === 0) continue;
+    const t = ((p.x - cam.x) * ax + (p.y - cam.y) * ay + (p.z - cam.z) * az) / L2;
+    if (t <= 0 || t >= 1) continue;                         // not between them
+    const dx = p.x - (cam.x + ax * t), dy = p.y - (cam.y + ay * t),
+          dz = p.z - (cam.z + az * t);
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const k = Math.min(1, Math.max(0, (d - o.radius) / o.feather));
+    w = Math.max(w, 1 - k * k * (3 - 2 * k));                 // smoothstep
+  }
+  return 1 + (o.min - 1) * w;
 }
 
 // Stabilized camera. The point of Static and Blink is that the camera does NOT
@@ -184,6 +236,62 @@ function stepCamera(mode, cam, player, opts) {
 /* TESTABLE END */
 
 let scene, camera, renderer, world, marker, hemi, sun;
+const enemies = [];
+const MAX_ACTORS = 8;
+// Shared by every indoor-wall material: the actors, and the FADE constants.
+const fadeU = {
+  uActors: { value: Array.from({ length: MAX_ACTORS }, () => new THREE.Vector3()) },
+  uNActors: { value: 0 },
+  uFade: { value: new THREE.Vector4(FADE.min, FADE.radius, FADE.feather, FADE.lift) },
+  uFadeOn: { value: 1 },
+  // three r128 uploads cameraPosition only for Phong/Standard/Shader
+  // materials, not Lambert: the camera comes in its own uniform
+  uCam: { value: new THREE.Vector3() },
+};
+
+// wallFade() per pixel: the indoor-wall shader.
+function fadeWallMaterial() {
+  // Screen-door, not blending: a faded pixel is kept or dropped on a 4x4
+  // Bayer pattern, so what is drawn stays opaque and writes depth right --
+  // a blended wall drawn before the wall behind it would hide that wall
+  // (one mesh, no sort), and the dither suits the pixel art.
+  const m = new THREE.MeshLambertMaterial({
+    vertexColors: true, side: THREE.DoubleSide });
+  m.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, fadeU);
+    sh.vertexShader = "attribute vec3 wallN;\nvarying vec3 vWallN;\nvarying vec3 vWPos;\n" +
+      sh.vertexShader.replace("#include <begin_vertex>",
+        "#include <begin_vertex>\n  vWallN = wallN;\n" +
+        "  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    sh.fragmentShader =
+      `uniform vec3 uActors[${MAX_ACTORS}];\nuniform int uNActors;\n` +
+      "uniform vec4 uFade;\nuniform float uFadeOn;\nuniform vec3 uCam;\n" +
+      "varying vec3 vWallN;\nvarying vec3 vWPos;\n" +
+      "float wallFade() {\n" +
+      "  if (uFadeOn < 0.5 || dot(vWallN, uCam - vWPos) >= 0.0) return 1.0;\n" +
+      "  float w = 0.0;\n" +
+      `  for (int i = 0; i < ${MAX_ACTORS}; i++) {\n` +
+      "    if (i >= uNActors) break;\n" +
+      "    vec3 a = uActors[i] + vec3(0.0, uFade.w, 0.0) - uCam;\n" +
+      "    float L2 = dot(a, a);\n" +
+      "    if (L2 == 0.0) continue;\n" +
+      "    float t = dot(vWPos - uCam, a) / L2;\n" +
+      "    if (t <= 0.0 || t >= 1.0) continue;\n" +
+      "    float d = length(vWPos - (uCam + a * t));\n" +
+      "    w = max(w, 1.0 - smoothstep(0.0, 1.0, (d - uFade.y) / uFade.z));\n" +
+      "  }\n" +
+      "  return mix(1.0, uFade.x, w);\n" +
+      "}\n" +
+      "float bayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }\n" +
+      "float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }\n" +
+      sh.fragmentShader.replace("#include <dithering_fragment>",
+        "#include <dithering_fragment>\n" +
+        "  float fadeK = wallFade();\n" +
+        "  if (fadeK < 1.0 && bayer4(gl_FragCoord.xy) >= fadeK) discard;");
+  };
+  m.customProgramCacheKey = () => "tmc-indoor-wall";
+  return m;
+}
 let meshes = 0, tris = 0, jumps = 0;
 let scale = 0.010, follow = "attached";
 const anchor = { x: 0, y: 0, z: 0 };
@@ -233,8 +341,38 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 
+// The triangles of m that are (walls=true) or are not indoor walls.
+function subsetOBJ(m, walls) {
+  const out = { pos: [], col: [], uv: [], wall: [], idx: [], hasUV: m.hasUV };
+  for (let t = 0; t < m.nTris; t++) {
+    const isW = m.wall[t * 9] !== 0 || m.wall[t * 9 + 1] !== 0 || m.wall[t * 9 + 2] !== 0;
+    if (isW !== walls) continue;
+    for (let c = 0; c < 3; c++) {
+      const v = t * 3 + c;
+      out.idx.push(out.pos.length / 3);
+      out.pos.push(m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2]);
+      out.col.push(m.col[v * 3], m.col[v * 3 + 1], m.col[v * 3 + 2]);
+      out.wall.push(m.wall[v * 3], m.wall[v * 3 + 1], m.wall[v * 3 + 2]);
+      out.uv.push(m.uv[v * 2], m.uv[v * 2 + 1]);
+    }
+  }
+  out.nVerts = out.pos.length / 3;
+  out.nTris = out.idx.length / 3;
+  return out;
+}
+
 function addOBJ(text, name) {
-  const m = parseOBJ(text);
+  const all = parseOBJ(text);
+  if (!all.nVerts) return;
+  if (all.nWall) {
+    addMesh(subsetOBJ(all, false), name, false);
+    addMesh(subsetOBJ(all, true), name, true);
+  } else {
+    addMesh(all, name, false);
+  }
+}
+
+function addMesh(m, name, walls) {
   if (!m.nVerts) return;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(m.pos, 3));
@@ -247,12 +385,13 @@ function addOBJ(text, name) {
   const hs = new Float32Array(m.nVerts);
   for (let i = 0; i < m.nVerts; i++) hs[i] = m.pos[i * 3 + 1];
   geo.setAttribute("height", new THREE.Float32BufferAttribute(hs, 1));
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-    vertexColors: true, side: THREE.DoubleSide }));
+  if (walls) geo.setAttribute("wallN", new THREE.Float32BufferAttribute(m.wall, 3));
+  const mesh = new THREE.Mesh(geo, walls ? fadeWallMaterial()
+    : new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   mesh.userData.artColors = Float32Array.from(m.col);
   mesh.userData.baseName = name.replace(/\.obj$/i, "");
   applyPendingTexture(mesh);
-  mesh.name = name;
+  mesh.name = walls ? name + " (indoor walls)" : name;
   world.add(mesh);
   meshes++; tris += m.nTris;
   geo.computeBoundingBox();
@@ -351,6 +490,22 @@ function bindUI() {
     sun.intensity = engineLit ? 0.95 : 0.28;
     applyDisplay();
   });
+  const fade = document.getElementById("fade");
+  fade.addEventListener("change", () => { fadeU.uFadeOn.value = fade.checked ? 1 : 0; });
+  document.getElementById("enemy").addEventListener("click", () => {
+    if (enemies.length >= MAX_ACTORS - 1) return;
+    const e = new THREE.Mesh(new THREE.SphereGeometry(6, 12, 10),
+                             new THREE.MeshBasicMaterial({ color: 0x6ddc5a }));
+    e.userData.at = { x: player.x, y: player.y, z: player.z };
+    e.position.set(player.x, player.y + 12, player.z);
+    scene.add(e);
+    enemies.push(e);
+  });
+  document.getElementById("noenemy").addEventListener("click", () => {
+    for (const e of enemies) scene.remove(e);
+    enemies.length = 0;
+  });
+
   document.getElementById("reset").addEventListener("click", () => {
     orbit.az = home.az; orbit.el = home.el;
     pan.x = pan.y = pan.z = 0;
@@ -476,6 +631,11 @@ function animate() {
   document.getElementById("s-ang").textContent =
     `${Math.round(orbit.az * 57.3) % 360}° / ${Math.round(orbit.el * 57.3)}°`;
   document.getElementById("s-dist").textContent = Math.round(orbit.r) + " px";
+  const actors = [player].concat(enemies.map(e => e.userData.at));
+  actors.slice(0, MAX_ACTORS).forEach((a, i) => fadeU.uActors.value[i].set(a.x, a.y, a.z));
+  fadeU.uNActors.value = Math.min(actors.length, MAX_ACTORS);
+  fadeU.uCam.value.copy(camera.position);
+  document.getElementById("s-act").textContent = fadeU.uNActors.value;
   renderer.render(scene, camera);
 }
 

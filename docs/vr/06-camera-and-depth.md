@@ -117,6 +117,38 @@ shelf's own grain (`wood_patch`, `grain_face`), and the inside of the back
 wears the dark wood of the board edges, as the game draws it where a book is
 missing.
 
+## Interior walls seen from behind: fading what hides an actor
+
+The game's camera never sees an interior wall's back: its drawings are the
+wall's inside, and the room's shell stands between any other camera and
+the room. A free 3D camera does see them -- from outside the south wall,
+or low over a side wall -- and the wall then hides the player or an enemy.
+
+So an enclosed room's standing faces (walls, lintels, doorway recesses;
+not the furniture) are written as their own object, `<room>_indoor_walls`
+(`tilevox.py --merge`), each face with a normal `vn` pointing to its
+textured side, the room's inside. A renderer fades a pixel of such a face
+when both hold:
+
+1. **seen from behind:** the camera is on the side away from the normal,
+   `n . (camera - p) < 0`;
+2. **in the way:** the pixel is within `radius` (20 px, a character's
+   width) of the sight line from the camera to an actor (the player or an
+   enemy, aimed `lift` = 12 px above its feet), in front of the actor
+   (`0 < t < 1` along the line), feathered over another 14 px.
+
+It fades to 20%, as a screen-door dither (a 4x4 Bayer pattern): each pixel
+is drawn or dropped, so what is drawn stays opaque and writes depth. A
+blended wall would need the room's walls sorted every frame, or it hides
+the wall behind it. A wall seen from its front never fades; a wall behind
+the actor never fades.
+
+`tools/world-viewer.html` does this (`wallFade`, and the same rule per
+pixel in its wall shader; `tools/test_viewer.js` tests it): drive the
+marker with WASD, add enemies with *Add an enemy at the marker*. The
+in-game renderer takes the same rule, with its actors from the entity
+list.
+
 ## Summary of the rules
 
 | Drawn as | Means | Built by |
@@ -126,6 +158,7 @@ missing.
 | boards with one-row edges stacked up the screen | one upright case, edges in one plane | `bookcase_edges`, `bookcase_quads` |
 | a cell drawn as the floor under a blocked tile | a sprite (furniture object) stands there | `drawn_as_floor`; left to the entity stage |
 | any surface of known height | plan depth = row + height | everywhere |
+| an interior wall seen from behind, between the camera and an actor | dithered to 20% around the sight line | `<room>_indoor_walls`; the renderer |
 
 Never read a view's depth from the PPU's scroll or affine registers (see the
 README). Depth comes only from the room's own cells and the projection above.
