@@ -70,45 +70,38 @@ if (objPath && fs.existsSync(objPath)) {
   check("a triangle stays 1 triangle", g.nTris === 1);
 }
 
-// ---- indoor walls: parsed with their normals, faded from behind ----------
+// ---- walls out of the way: whatever hides an actor thins ----------------
 {
-  const txt = "v 0 0 0\nv 1 0 0\nv 1 0 1\nv 0 0 1\nf 1 2 3 4\n" +
-              "o room_34_16_indoor_walls\nvn 0 0 1\nf 1//1 2//1 3//1 4//1\n";
-  const r = parseOBJ(txt);
-  check("wall triangles counted", r.nWall === 2, `${r.nWall}`);
-  check("wall normal per vertex, 0 off the walls",
-        r.wall.length === r.nVerts * 3 && r.wall.slice(0, 18).every(v => v === 0) &&
-        r.wall[20] === 1, JSON.stringify(r.wall.slice(18, 21)));
-
-  // a north wall (texture facing south, +z) at z = 0; the actor stands north
-  // of it, outside the room; the camera looks at them over the wall's back
-  const n = { x: 0, y: 0, z: 1 };
-  const actor = { x: 0, y: 0, z: -40 };
-  const camBehind = { x: 0, y: 40, z: -200 };   // north of the wall: its back
-  const camFront = { x: 0, y: 40, z: 200 };     // south: the room's inside
-  const onLine = (cam) => {                      // the wall point on the sight line
-    const t = (0 - cam.z) / (actor.z - cam.z);
-    return { x: 0, y: cam.y + (actor.y + FADE.lift - cam.y) * t, z: 0 };
+  // the actor stands on the floor (y 0) at z = 0; the camera south and up
+  const actor = { x: 0, y: 0, z: 0 };
+  const cam = { x: 0, y: 120, z: 200 };
+  const on = (z) => {                            // the sight-line point at depth z
+    const t = (z - cam.z) / (actor.z - cam.z);
+    return { x: 0, y: cam.y + (actor.y + FADE.lift - cam.y) * t, z };
   };
-  check("a wall seen from the front never fades",
-        wallFade(onLine(camFront), n, camFront, [actor]) === 1);
-  // from behind but the actor is between camera and wall: nothing to hide
-  check("a wall behind the actor does not fade",
-        wallFade(onLine(camBehind), n, camBehind, [{ x: 0, y: 0, z: -300 }]) === 1);
-  const cam2 = { x: 0, y: 40, z: 200 };
-  const act2 = { x: 0, y: 0, z: 40 };          // inside... camera further south
-  const nS = { x: 0, y: 0, z: -1 };            // a south wall, texture facing north
-  const pS = { x: 0, y: cam2.y + (act2.y + FADE.lift - cam2.y) * ((100 - 200) / (40 - 200)), z: 100 };
-  check("a south wall between the camera and the actor fades to the minimum",
-        Math.abs(wallFade(pS, nS, cam2, [act2]) - FADE.min) < 1e-9,
-        `${wallFade(pS, nS, cam2, [act2])}`);
-  const far = { x: pS.x + FADE.radius + FADE.feather + 1, y: pS.y, z: pS.z };
-  check("away from the sight line it stays opaque", wallFade(far, nS, cam2, [act2]) === 1);
-  const mid = { x: pS.x + FADE.radius + FADE.feather / 2, y: pS.y, z: pS.z };
-  const fm = wallFade(mid, nS, cam2, [act2]);
+  const wallS = on(60);                          // a wall south of the actor
+  check("a wall between the camera and the actor thins to the minimum",
+        Math.abs(wallFade(wallS, cam, [actor]) - FADE.min) < 1e-9, `${wallFade(wallS, cam, [actor])}`);
+  // the same wall seen from the north: the camera beyond it, the actor south
+  const camN = { x: 0, y: 120, z: -200 };
+  const t = (60 - camN.z) / (100 - camN.z);
+  const p2 = { x: 0, y: camN.y + (FADE.lift - camN.y) * t, z: 60 };
+  check("from either side", Math.abs(wallFade(p2, camN, [{ x: 0, y: 0, z: 100 }]) - FADE.min) < 1e-9);
+  check("a wall behind the actor does not thin",
+        wallFade({ x: 0, y: 30, z: -60 }, cam, [actor]) === 1);
+  check("the ground the actor stands on never thins",
+        wallFade({ x: 0, y: 0.5, z: 5 }, cam, [actor]) === 1);
+  const far = { x: wallS.x + FADE.radius + FADE.feather + 1, y: wallS.y, z: wallS.z };
+  check("away from the sight line it stays opaque", wallFade(far, cam, [actor]) === 1);
+  const mid = { x: wallS.x + FADE.radius + FADE.feather / 2, y: wallS.y, z: wallS.z };
+  const fm = wallFade(mid, cam, [actor]);
   check("the edge is feathered", fm > FADE.min && fm < 1, `${fm.toFixed(3)}`);
   check("an enemy counts as an actor too",
-        Math.abs(wallFade(pS, nS, cam2, [{ x: 500, y: 0, z: 40 }, act2]) - FADE.min) < 1e-9);
+        Math.abs(wallFade(wallS, cam, [{ x: 500, y: 0, z: 0 }, actor]) - FADE.min) < 1e-9);
+  // an actor up on a ledge: the ledge's own top under it does not thin
+  const up = { x: 0, y: 32, z: 0 };
+  check("an actor's own ledge does not thin under it",
+        wallFade({ x: 0, y: 32, z: 4 }, cam, [up]) === 1);
 }
 
 // ---- the camera invariant that actually matters --------------------------

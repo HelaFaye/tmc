@@ -70,7 +70,7 @@ what the decompilation calls them, so a pit is a pit because the game says
 | Manifests | `vr/objects/*.scene`, `vr/world/*.txt` | Coordinates, material indices and authored heights only. No art. |
 | Drivers | `tools/rebuild_all.sh`, `tools/voxelate_all.sh` | Run objects, rooms and whole areas end to end. |
 | Checks | `tools/verify_repro.py`, `tools/verify_fits.py`, `tools/src/vr_meshtest/main.c`, `tools/test_viewer.js` | Output is byte-for-byte reproducible from a ROM; fitted objects are the right size; the greedy mesher's winding; the viewer's parser and camera. |
-| Viewers | `tools/flat-viewer.html`, `tools/world-viewer.html` | Open in a browser and drop in `.tmcr` dumps or generated `.obj` meshes to inspect them in 3D. The world viewer fades an interior wall seen from behind where it hides the marker or an enemy ([06](06-camera-and-depth.md)). |
+| Viewers | `tools/flat-viewer.html`, `tools/world-viewer.html` | Open in a browser and drop in `.tmcr` dumps or generated `.obj` meshes to inspect them in 3D. Both it and the game's 3D view thin whatever hides the marker, Link or an enemy, from any angle ([06](06-camera-and-depth.md)). |
 | Build | `xmake-vr.lua`, `requirements.txt` | The `vr` option and the Python dependencies. |
 
 ## Setup

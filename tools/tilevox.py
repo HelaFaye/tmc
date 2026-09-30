@@ -3633,7 +3633,6 @@ class Obj:
         self.f.write(header + f"mtllib {mtl.name}\nusemtl tmc\n")
         self.tw, self.th = float(tw), float(th)
         self.n = 0
-        self.nn = 0
         self.faces = 0
 
     def obj(self, name):
@@ -3642,14 +3641,12 @@ class Obj:
     def use(self, material):
         self.f.write(f"usemtl {material}\n")
 
-    def quads(self, quads, off=(0, 0, 0), toff=(0, 0), normals=None):
-        """normals: one per quad, written as its vn -- the side its
-        texture is on (indoor walls, for a renderer to fade from behind)."""
+    def quads(self, quads, off=(0, 0, 0), toff=(0, 0)):
         ox, oy, oz = off
         su, sv = toff
         seen = {}
         lines, fl = [], []
-        for qi, (pts, uvs) in enumerate(quads):
+        for pts, uvs in quads:
             idx = []
             for (x, y, z), (u, v) in zip(pts, uvs):
                 k = (x + ox, y + oy, z + oz, u + su, v + sv)
@@ -3660,13 +3657,6 @@ class Obj:
                     lines.append(f"v {k[0]} {k[1]} {k[2]}\n"
                                  f"vt {k[3] / self.tw:.6f} {1.0 - k[4] / self.th:.6f}\n")
                 idx.append(i)
-            if normals is not None:
-                self.nn += 1
-                nx, ny, nz = normals[qi]
-                lines.append(f"vn {nx:.4f} {ny:.4f} {nz:.4f}\n")
-                fl.append("f %d/%d/%d %d/%d/%d %d/%d/%d %d/%d/%d\n"
-                          % tuple(v for i in idx[:4] for v in (i, i, self.nn)))
-                continue
             fl.append("f %d/%d %d/%d %d/%d %d/%d\n"
                       % (idx[0], idx[0], idx[1], idx[1], idx[2], idx[2], idx[3], idx[3]))
         self.f.write("".join(lines))
@@ -3675,31 +3665,6 @@ class Obj:
 
     def close(self):
         self.f.close()
-
-
-def indoor_walls(quads, centre):
-    """An enclosed room's shell split into its standing faces (walls,
-    lintels, recesses), each with the normal of its textured side -- turned
-    toward the room's inside, where the camera normally stands -- and the
-    rest (floor, caps). A renderer fades a wall seen from behind when it
-    stands between the camera and an actor (docs/vr/06-camera-and-depth.md)."""
-    walls, normals, rest = [], [], []
-    cx, cz = centre
-    for pts, uv in quads:
-        P = np.asarray(pts, float)
-        n = np.cross(P[1] - P[0], P[2] - P[0])
-        ln = np.linalg.norm(n)
-        if ln == 0 or abs(n[1]) / ln > 0.5:
-            rest.append((pts, uv))
-            continue
-        h = np.array([n[0], 0.0, n[2]])
-        h /= np.linalg.norm(h)
-        m = P.mean(axis=0)
-        if h[0] * (cx - m[0]) + h[2] * (cz - m[2]) < 0:
-            h = -h
-        walls.append((pts, uv))
-        normals.append((float(h[0]), 0.0, float(h[2])))
-    return walls, normals, rest
 
 
 HEADER = ("# Derived from the user's own ROM; regenerate, do not redistribute.\n"
@@ -4024,11 +3989,8 @@ def build_area(job):
                 bc = bookcase_quads(*cases[(r.area, r.room)], ox, oz, lift)
                 if bc is not None:
                     m.quads(bc[0])
-            wq = wn = None
             if shell is not None:
-                wq, wn, rest = indoor_walls(shell_quads(shell, ox, oz, lift),
-                                            (ox + r.cells_w * 8, oz + r.cells_h * 8))
-                m.quads(rest)
+                m.quads(shell_quads(shell, ox, oz, lift))
                 for pz in shell.get("pieces", []):
                     m.quads(shell_quads(pz, ox, oz, lift))
             box_ = shell is not None and shell.get("box") is not None
@@ -4051,9 +4013,6 @@ def build_area(job):
                 m.quads(deck_skirts(decks, occ, H, ox, oz, lift, top_))
                 if cf is not None:
                     m.quads(crown_quads(cf, ox, oz, lift))
-            if wq:
-                m.obj(f"{name}_indoor_walls")
-                m.quads(wq, normals=wn)
             nfaces += m.faces
             m.close()
     with open(out / "stairs.txt", "w") as st:
