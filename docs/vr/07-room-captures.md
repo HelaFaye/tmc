@@ -76,7 +76,7 @@ In the tour the harness keeps the room alone on screen:
 |---|---|
 | the HUD | the game's own `gHUD.hideFlags = HUD_HIDE_ALL` (`include/ui.h`) |
 | Link | not drawn (`gPlayerEntity.base.spriteSettings.draw = 0`) |
-| dialogue, cutscenes | A pressed while the player has no control, as the voxel tour does |
+| dialogue, cutscenes | A pressed while the player has no control or a message shows, as the voxel tour does; the settle starts again once it is over (a warp onto an item: "You got a Piece of Heart!") |
 | the prologue | the new game starts past it (`TMC_ROOMCAP_PROGRESS`, one dungeon cleared): the flags, and what the game hands out by then — each dungeon's element (without it, an area change takes the clear back, `gameUtils.c`) and the kinstone bag (without it, the town plays Ezlo's kinstone scene) |
 | a scene | a view is taken only with the camera on Link; one a scene holds elsewhere is skipped (`TMC_ROOMCAP_TOUR_DEBUG=1` logs the scripts running, to find it) |
 | the area-name box | the settle time (160 frames) outlasts it: `enterRoomTextboxManager.c` shows it for 120 |

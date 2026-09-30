@@ -344,7 +344,8 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
             gHUD.hideFlags = HUD_HIDE_ALL;
             gPlayerEntity.base.spriteSettings.draw = 0;
             gSave.stats.health = gSave.stats.maxHealth;
-            if (gPlayerState.controlMode != CONTROL_ENABLED && frame % 40 < 2) {
+            const int calm = gPlayerState.controlMode == CONTROL_ENABLED && !(gMessage.state & MESSAGE_ACTIVE);
+            if (!calm && frame % 40 < 2) {
                 extern void Port_Config_TestForceEdge(int input);
                 Port_Config_TestForceEdge(0 /* PORT_INPUT_A */);
             }
@@ -370,6 +371,10 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
                                 (unsigned)(0x08000000u + (u32)((u8*)c->scriptInstructionPointer - gRomData)));
                 }
             }
+            /* a scene on arrival (an item Link lands on: "You got a Piece
+             * of Heart!") -- the settle starts again once it is over */
+            if (arrived && !calm)
+                arrived = frame;
             if (!arrived) {
                 /* warp (again, if a fade swallowed it: after 3s) */
                 if ((fired == 0 || frame - fired > 180) &&
