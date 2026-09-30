@@ -100,7 +100,7 @@ def camera(yaw_deg, pitch_deg):
     return right, up, -fwd
 
 
-def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
+def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None, lit=True):
     """Z-buffered flat-shaded raster of quads, cropped to a world-space box.
 
     tex = (atlas, T, FT): colour each pixel from the mesh's own UVs, T the
@@ -111,6 +111,9 @@ def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
     the pixel drawn at (x, z - y). A top lifted h takes the drawing h rows
     north, where its top is drawn; a south-facing wall takes the band drawn
     above its base, which is its front face. Without tex, mesh colours.
+
+    lit=False leaves the light out: each pixel is its texture's own colour,
+    to compare with the game's picture.
 
     box = (x0, x1, z0, z1) in world pixels: the case rectangle. Everything is
     projected, then the image is cropped to where that rectangle's floor
@@ -142,7 +145,7 @@ def render(V, C, F, view, box, scale=(1.0, 1.0), tall=96, tex=None):
         if ln == 0:
             continue
         n /= ln
-        shade = 0.55 + 0.45 * max(0.0, float(n @ LIGHT))
+        shade = 0.55 + 0.45 * max(0.0, float(n @ LIGHT)) if lit else 1.0
         col = C[f].mean(0) * shade
         for tri in ((f[0], f[1], f[2]), (f[0], f[2], f[3])) if len(f) == 4 \
                 else ((f[0], f[1], f[2]),):
