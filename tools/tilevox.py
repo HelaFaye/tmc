@@ -1785,15 +1785,98 @@ def tile_quads(px, R, mask=None, step=None, hmap=None):
 # Every face shows the pixel the camera would see there, (x, z - y), or
 # the nearest pixel of the thing in that row: no colour is stretched down
 # a side. The ground round it takes the drawing's own ground pixels.
-STAND_FAMILIES = ("bush", "sapling", "rock", "mushroom", "stump", "pot",
-                  "stone", "boulder", "spiky_rock")
+STAND_FAMILIES = ("sapling", "mushroom")     # drawn standing up: slices
+MOUND_FAMILIES = ("bush", "rock", "stone", "boulder", "pot", "stump",
+                  "spiky_rock")              # drawn mostly from above: mounds
+SHAPED_FAMILIES = STAND_FAMILIES + MOUND_FAMILIES
+MOUND_MIN_DEPTH = 2.0   # px: half-depth a mound column keeps at least
+
+
+def _nearest(sel):
+    """For each pixel of a 16x16 tile, the nearest pixel where sel is true
+    (rows count double: a row is a height step, a column is not)."""
+    yy, xx = np.mgrid[0:16, 0:16]
+    pts = np.argwhere(sel)
+    if not len(pts):
+        return np.stack([yy, xx], -1)
+    d = (yy[..., None] - pts[:, 0]) ** 2 * 4 + (xx[..., None] - pts[:, 1]) ** 2
+    return pts[d.argmin(-1)]
+
+
+def _shaped_quads(vox, m):
+    """Faces of a voxel solid vox[y, z, x] (y = 0 is a one-voxel ground
+    plate) for a thing drawn with mask m. Each face shows the pixel the
+    game's camera draws its centre at, (x, z - y), or the thing's nearest
+    pixel in that row -- so no colour runs down a side; the plate shows
+    the drawing's own ground."""
+    thing, ground = _nearest(m), _nearest(~m)
+    n = vox.shape[0]
+    quads = []
+
+    def filled(y, z, x):
+        return 0 <= y < n and 0 <= z < 16 and 0 <= x < 16 and vox[y, z, x]
+
+    def texel(fx, fy, fz, plate):
+        x = min(15, max(0, int(fx)))
+        if plate:
+            r_, c_ = ground[min(15, max(0, int(fz))), x]
+        else:
+            row = min(15, max(0, int(np.floor(fz - fy))))
+            r_, c_ = (row, x) if m[row, x] else thing[row, x]
+        return [(c_ + 0.5, r_ + 0.5)] * 4
+    for y in range(n):
+        plate = y == 0
+        for z in range(16):
+            for x in range(16):
+                if not vox[y, z, x]:
+                    continue
+                y0, y1 = y, y + 1
+                if not filled(y + 1, z, x):
+                    quads.append(([(x, y1, z), (x + 1, y1, z), (x + 1, y1, z + 1), (x, y1, z + 1)],
+                                  texel(x + .5, y1, z + .5, plate)))
+                if not filled(y, z + 1, x):
+                    quads.append(([(x, y1, z + 1), (x + 1, y1, z + 1), (x + 1, y0, z + 1), (x, y0, z + 1)],
+                                  texel(x + .5, y + .5, z + 1, plate)))
+                if not filled(y, z - 1, x):
+                    quads.append(([(x + 1, y1, z), (x, y1, z), (x, y0, z), (x + 1, y0, z)],
+                                  texel(x + .5, y + .5, z, plate)))
+                if not filled(y, z, x + 1):
+                    quads.append(([(x + 1, y1, z + 1), (x + 1, y1, z), (x + 1, y0, z), (x + 1, y0, z + 1)],
+                                  texel(x + 1, y + .5, z + .5, plate)))
+                if not filled(y, z, x - 1):
+                    quads.append(([(x, y1, z), (x, y1, z + 1), (x, y0, z + 1), (x, y0, z)],
+                                  texel(x, y + .5, z + .5, plate)))
+    return quads
+
+
+SHAPE_GROUND_D = 90     # sum |RGB|: a pixel this close to a ground colour is ground
+
+
+def off_ground(px, gcols):
+    """The drawn thing's pixels: the largest blob of pixels farther than
+    SHAPE_GROUND_D from every one of the room's ground colours -- the
+    grass round a sapling's roots, in shades the outline test keeps, is
+    ground, not sapling. Everything when the room has no ground colours
+    or nothing is left."""
+    if not len(gcols):
+        return np.ones(px.shape[:2], bool)
+    d = np.abs(px[..., :3].astype(np.int64)[:, :, None, :] - gcols[None, None]).sum(-1).min(-1)
+    m = d > SHAPE_GROUND_D
+    lab, n = RE._label(m)
+    if not n:
+        return np.ones(px.shape[:2], bool)
+    sizes = np.bincount(lab.ravel())
+    sizes[0] = 0
+    keep = lab == sizes.argmax()
+    return keep if keep.sum() >= 12 else np.ones(px.shape[:2], bool)
 
 
 def stand_quads(px, m):
-    """The voxel model of a thing standing in its drawing (mask m, 16x16
-    bool): its slices, and a one-voxel ground plate under it."""
+    """A thing drawn standing up (a sapling, a mushroom): the drawing's
+    foot row is where it stands and each row above is a slice that much
+    higher, a disc as wide as the drawing at that row -- a trunk under a
+    crown. Stands on the cell's ground, never below it."""
     m = np.asarray(m, bool)
-    quads = []
     rows = np.nonzero(m.any(axis=1))[0]
     if not len(rows):
         return tile_quads(px, 1)
@@ -1809,56 +1892,49 @@ def stand_quads(px, m):
         elif hh:
             R[hh], XC[hh] = R[hh - 1], XC[hh - 1]
     zc = foot + 1 - max(R[0], 1.0)          # the base's front is the foot row
-    # nearest pixel of the thing, and of the ground, for each pixel
     yy, xx = np.mgrid[0:16, 0:16]
-
-    def nearest(sel):
-        pts = np.argwhere(sel)
-        if not len(pts):
-            return np.stack([yy, xx], -1)
-        d = (yy[..., None] - pts[:, 0]) ** 2 * 4 + (xx[..., None] - pts[:, 1]) ** 2
-        return pts[d.argmin(-1)]
-    thing = nearest(m)
-    ground = nearest(~m)
-    # the solid: voxel (x, y, z) inside slice y's disc
-    vox = np.zeros((Hh + 1, 16, 16), bool)  # [y, z, x], y = 1.. above the plate
+    vox = np.zeros((Hh + 1, 16, 16), bool)
+    vox[0] = True
     for hh in range(Hh):
-        if R[hh] <= 0:
-            continue
-        d2 = (xx + 0.5 - XC[hh]) ** 2 + (yy + 0.5 - zc) ** 2
-        vox[hh + 1] = d2 <= R[hh] ** 2
-    vox[0] = True                           # the ground plate, y in [0, 1)
+        if R[hh] > 0:
+            vox[hh + 1] = (xx + 0.5 - XC[hh]) ** 2 + (yy + 0.5 - zc) ** 2 <= R[hh] ** 2
+    return _shaped_quads(vox, m)
 
-    def texel(x, y, z, plate):
-        if plate:
-            r_, c_ = ground[z, x]
-        else:
-            row = min(15, max(0, z - (y - 1)))
-            r_, c_ = (row, x) if m[row, x] else thing[row, x]
-        return (c_ + 0.5, r_ + 0.5)
-    n = vox.shape[0]
 
-    def filled(y, z, x):
-        return 0 <= y < n and 0 <= z < 16 and 0 <= x < 16 and vox[y, z, x]
-    for y in range(n):
+def mound_quads(px, m, height):
+    """A low thing drawn mostly from above (a bush, a rock, a pot): a
+    mound, fitted column by column so the game's camera draws it exactly
+    as wide and as tall as the drawing. In each column a half-ellipse of
+    height h and half-depth d is drawn from its front at the foot row up
+    d + sqrt(d^2 + h^2) rows (a point at height y over z shows at row
+    z - y); the column's drawn span fixes d for its h. The mound's h is the
+    family's height, rounding off across the thing's width and capped so
+    every column keeps some depth. Stands on the cell's ground."""
+    m = np.asarray(m, bool)
+    cols = np.nonzero(m.any(axis=0))[0]
+    if not len(cols):
+        return tile_quads(px, 1)
+    x0_, x1_ = int(cols.min()), int(cols.max()) + 1
+    xc, rx = (x0_ + x1_) / 2.0, (x1_ - x0_) / 2.0
+    hmax = int(np.ceil(height)) + 1
+    vox = np.zeros((hmax + 1, 16, 16), bool)
+    vox[0] = True
+    zz = np.arange(16) + 0.5
+    for x in cols:
+        ys = np.nonzero(m[:, x])[0]
+        t, b = int(ys.min()), int(ys.max())
+        span = b - t + 1
+        h = height * np.sqrt(max(0.0, 1 - ((x + 0.5 - xc) / rx) ** 2))
+        h = min(h, span - 2 * MOUND_MIN_DEPTH) if span > 2 * MOUND_MIN_DEPTH else 1.0
+        h = max(h, 1.0)
+        d = max(MOUND_MIN_DEPTH, (span * span - h * h) / (2.0 * span))
+        zc = b + 1 - d
+        prof = h * np.sqrt(np.clip(1 - ((zz - zc) / d) ** 2, 0, 1))
         for z in range(16):
-            for x in range(16):
-                if not vox[y, z, x]:
-                    continue
-                t = texel(x, y, z, y == 0)
-                uv = [t] * 4
-                y0, y1 = y, y + 1
-                if not filled(y + 1, z, x):
-                    quads.append(([(x, y1, z), (x + 1, y1, z), (x + 1, y1, z + 1), (x, y1, z + 1)], uv))
-                if not filled(y, z + 1, x):
-                    quads.append(([(x, y1, z + 1), (x + 1, y1, z + 1), (x + 1, y0, z + 1), (x, y0, z + 1)], uv))
-                if not filled(y, z - 1, x):
-                    quads.append(([(x + 1, y1, z), (x, y1, z), (x, y0, z), (x + 1, y0, z)], uv))
-                if not filled(y, z, x + 1):
-                    quads.append(([(x + 1, y1, z + 1), (x + 1, y1, z), (x + 1, y0, z), (x + 1, y0, z + 1)], uv))
-                if not filled(y, z, x - 1):
-                    quads.append(([(x, y1, z), (x, y1, z + 1), (x, y0, z + 1), (x, y0, z)], uv))
-    return quads
+            top = int(np.rint(prof[z]))
+            if top > 0:
+                vox[1:top + 1, z, x] = True
+    return _shaped_quads(vox, m)
 
 
 # ----------------------------------------------------------------- shell --
@@ -3843,6 +3919,7 @@ def build_area(job):
             if not a.no_families:
                 fam, ffloor = TI.families(r, cls, H, art)
                 ground = TI.ground_palette(art, cls)
+                gcols = np.stack([(ground >> 16) & 255, (ground >> 8) & 255, ground & 255], -1)
                 taken = set(covered) | {c for u in ups for c in u["cells"]} \
                     | {(d["cx"], y) for d in doors for y in range(d["top"], d["cy"] + 1)}
                 for (bcy, bcx) in bl:
@@ -3871,8 +3948,8 @@ def build_area(job):
                                                  if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w and fam[yy, xx] is None]:
                                 fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
                                 break
-                        if f in STAND_FAMILIES:
-                            m_ = TI.outline(px, fl_px)
+                        if f in SHAPED_FAMILIES:
+                            m_ = TI.outline(px, fl_px) & off_ground(px, gcols)
                             if f == "stone":     # the water's ripple is water
                                 hue_, sat_, _v = TI._hsv(px)
                                 m_ = m_ & ~((hue_ >= 160) & (hue_ < 260) & (sat_ >= 0.25))
@@ -4062,6 +4139,8 @@ def build_area(job):
         atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix[:, :, :3]
         if ro in STAND_FAMILIES and hm is not None:
             models[k] = stand_quads(pix, np.asarray(hm) == 2)
+        elif ro in MOUND_FAMILIES and hm is not None:
+            models[k] = mound_quads(pix, np.asarray(hm) == 2, TI.SHAPES.get(ro, ("dome", 12))[1])
         else:
             models[k] = tile_quads(pix, RELIEF.get(ro, 1),
                                    pix[:, :, 3] > 0 if pix.shape[2] == 4 else None,
