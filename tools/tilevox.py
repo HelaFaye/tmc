@@ -1656,7 +1656,8 @@ def tile_key(pixels, role, hmap=None):
 
 ROLE_CODE = {"floor": "f", "indoor": "i", "wallflat": "wf", "furniture": "fu", "wall": "w", "block": "k", "water": "a", "pit": "p",
              "deck": "d", "grass": "g", "bush": "bu", "sapling": "sa", "rock": "ro",
-             "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr",
+             "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr", "pot": "po",
+             "stone": "sn", "boulder": "bo", "spiky_rock": "sk",
              "signpost": "si", "foliage": "fo", "flowers": "fl"}
 
 
@@ -1769,6 +1770,94 @@ def tile_quads(px, R, mask=None, step=None, hmap=None):
                         uv = [(sx, z), (sx, z0), (sx, z0), (sx, z)]
                     quads.append((p, uv))
                 run = (z, seg) if seg else None
+    return quads
+
+
+# ---------------------------------------------------------- standing --
+# A thing standing on the ground -- a sapling, a bush, a rock, a pot -- is
+# drawn the way the game's camera sees it: a point (x, y, z) shows at
+# (x, z - y), so the drawing's foot row is where it stands and each row
+# above it is a slice that much higher. Read that way, a sapling is a thin
+# trunk under its crown, a bush a mound as wide as its outline at each
+# height -- not a dome over the whole drawing as if it were seen from
+# above. Each slice is a disc (as deep as it is wide) round the slice's own
+# middle; the stack stands on the cell's ground at y = 0 and never below.
+# Every face shows the pixel the camera would see there, (x, z - y), or
+# the nearest pixel of the thing in that row: no colour is stretched down
+# a side. The ground round it takes the drawing's own ground pixels.
+STAND_FAMILIES = ("bush", "sapling", "rock", "mushroom", "stump", "pot",
+                  "stone", "boulder", "spiky_rock")
+
+
+def stand_quads(px, m):
+    """The voxel model of a thing standing in its drawing (mask m, 16x16
+    bool): its slices, and a one-voxel ground plate under it."""
+    m = np.asarray(m, bool)
+    quads = []
+    rows = np.nonzero(m.any(axis=1))[0]
+    if not len(rows):
+        return tile_quads(px, 1)
+    foot, top = int(rows.max()), int(rows.min())
+    Hh = foot - top + 1
+    R = np.zeros(Hh)
+    XC = np.zeros(Hh)
+    for hh in range(Hh):
+        xs = np.nonzero(m[foot - hh])[0]
+        if len(xs):
+            R[hh] = (xs.max() - xs.min() + 1) / 2.0
+            XC[hh] = (xs.min() + xs.max() + 1) / 2.0
+        elif hh:
+            R[hh], XC[hh] = R[hh - 1], XC[hh - 1]
+    zc = foot + 1 - max(R[0], 1.0)          # the base's front is the foot row
+    # nearest pixel of the thing, and of the ground, for each pixel
+    yy, xx = np.mgrid[0:16, 0:16]
+
+    def nearest(sel):
+        pts = np.argwhere(sel)
+        if not len(pts):
+            return np.stack([yy, xx], -1)
+        d = (yy[..., None] - pts[:, 0]) ** 2 * 4 + (xx[..., None] - pts[:, 1]) ** 2
+        return pts[d.argmin(-1)]
+    thing = nearest(m)
+    ground = nearest(~m)
+    # the solid: voxel (x, y, z) inside slice y's disc
+    vox = np.zeros((Hh + 1, 16, 16), bool)  # [y, z, x], y = 1.. above the plate
+    for hh in range(Hh):
+        if R[hh] <= 0:
+            continue
+        d2 = (xx + 0.5 - XC[hh]) ** 2 + (yy + 0.5 - zc) ** 2
+        vox[hh + 1] = d2 <= R[hh] ** 2
+    vox[0] = True                           # the ground plate, y in [0, 1)
+
+    def texel(x, y, z, plate):
+        if plate:
+            r_, c_ = ground[z, x]
+        else:
+            row = min(15, max(0, z - (y - 1)))
+            r_, c_ = (row, x) if m[row, x] else thing[row, x]
+        return (c_ + 0.5, r_ + 0.5)
+    n = vox.shape[0]
+
+    def filled(y, z, x):
+        return 0 <= y < n and 0 <= z < 16 and 0 <= x < 16 and vox[y, z, x]
+    for y in range(n):
+        for z in range(16):
+            for x in range(16):
+                if not vox[y, z, x]:
+                    continue
+                t = texel(x, y, z, y == 0)
+                uv = [t] * 4
+                y0, y1 = y, y + 1
+                if not filled(y + 1, z, x):
+                    quads.append(([(x, y1, z), (x + 1, y1, z), (x + 1, y1, z + 1), (x, y1, z + 1)], uv))
+                if not filled(y, z + 1, x):
+                    quads.append(([(x, y1, z + 1), (x + 1, y1, z + 1), (x + 1, y0, z + 1), (x, y0, z + 1)], uv))
+                if not filled(y, z - 1, x):
+                    quads.append(([(x + 1, y1, z), (x, y1, z), (x, y0, z), (x + 1, y0, z)], uv))
+                if not filled(y, z, x + 1):
+                    quads.append(([(x + 1, y1, z + 1), (x + 1, y1, z), (x + 1, y0, z), (x + 1, y0, z + 1)], uv))
+                if not filled(y, z, x - 1):
+                    quads.append(([(x, y1, z), (x, y1, z + 1), (x, y0, z + 1), (x, y0, z)], uv))
     return quads
 
 
@@ -3782,7 +3871,14 @@ def build_area(job):
                                                  if 0 <= yy < r.cells_h and 0 <= xx < r.cells_w and fam[yy, xx] is None]:
                                 fl_px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16]
                                 break
-                        shapes[(cy, cx)] = (TI.shape_heights(px, f, fl_px), 0)
+                        if f in STAND_FAMILIES:
+                            m_ = TI.outline(px, fl_px)
+                            if f == "stone":     # the water's ripple is water
+                                hue_, sat_, _v = TI._hsv(px)
+                                m_ = m_ & ~((hue_ >= 160) & (hue_ < 260) & (sat_ >= 0.25))
+                            shapes[(cy, cx)] = (np.where(m_, 2, 1).astype(np.int64), 0)
+                        else:
+                            shapes[(cy, cx)] = (TI.shape_heights(px, f, fl_px), 0)
                     elif f == "flowers":
                         shapes[(cy, cx)] = (TI.flower_hmap(px, ground), 0)
                     elif f in TI.UPRIGHT_FAMILIES:
@@ -3964,9 +4060,12 @@ def build_area(job):
     for k, (i, pix, ro, hm) in lib.items():
         ty, tx = divmod(i, ATLAS_COLS)
         atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix[:, :, :3]
-        models[k] = tile_quads(pix, RELIEF.get(ro, 1),
-                               pix[:, :, 3] > 0 if pix.shape[2] == 4 else None,
-                               RELIEF_STEPS.get(ro), hm)
+        if ro in STAND_FAMILIES and hm is not None:
+            models[k] = stand_quads(pix, np.asarray(hm) == 2)
+        else:
+            models[k] = tile_quads(pix, RELIEF.get(ro, 1),
+                                   pix[:, :, 3] > 0 if pix.shape[2] == 4 else None,
+                                   RELIEF_STEPS.get(ro), hm)
         lib_obj.obj(f"t_{k}")
         lib_obj.quads(models[k], toff=(tx * 16, ty * 16))
     lib_obj.close()
