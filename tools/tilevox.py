@@ -1657,7 +1657,7 @@ def tile_key(pixels, role, hmap=None):
 ROLE_CODE = {"floor": "f", "indoor": "i", "wallflat": "wf", "furniture": "fu", "wall": "w", "block": "k", "water": "a", "pit": "p",
              "deck": "d", "grass": "g", "bush": "bu", "sapling": "sa", "rock": "ro",
              "mushroom": "mu", "stump": "st", "planter": "pl", "prop": "pr", "pot": "po",
-             "stone": "sn", "boulder": "bo", "spiky_rock": "sk",
+             "stone": "sn", "boulder": "bo", "spiky_rock": "sk", "hedge": "hg",
              "signpost": "si", "foliage": "fo", "flowers": "fl"}
 
 
@@ -1952,6 +1952,174 @@ def mound_quads(px, m, height):
             row = int(np.floor(2 * ZC[x] - fz - fy))
         return row
     return _shaped_quads(vox, m, row_of)
+
+
+# ---------------------------------------------------------------- hedges --
+# A clipped hedge is a box: the game draws its lit top, and below that its
+# dark front band, all inside a dark outline. Its collision is one row of
+# wall cells -- the front band's -- and its top is drawn in the cell above
+# (a point at height y over z shows at row z - y). Built as wall cells it
+# stood 16 px tall with the front band laid flat on top, and the lit top
+# lay flat on the ground behind it. Read from the drawing instead, each
+# column's run of leaf is top rows over front rows: the front band is the
+# box's height, the rest its depth, and the box ends where the drawing's
+# outline does. Its top wears the drawing h rows up, its front the band.
+HEDGE_LEAF_SHARE = 0.6  # of a wall cell's pixels in leaf green, for a hedge
+HEDGE_DARK_V = 0.72     # brightness: below, a leaf pixel is the front band
+HEDGE_OUTLINE_V = 0.3   # brightness: below (and not leaf), the outline
+HEDGE_MIN_H = 4         # px: shortest front a hedge is built from
+HEDGE_LONG = 3          # cells: a hedge runs at least this far
+HEDGE_TWO_TONE = 0.75   # share of its columns drawn lit top then dark front
+                        # (a tree's leaf shading turns over and over)
+
+
+def hedge_cells(cls, fam, art):
+    """{(cy, cx): quads} for a room's clipped hedges, cell-local, with
+    texture coordinates in the room's art relative to the cell (so they
+    may reach into the cell above); and the wall cells they replace."""
+    h_, w_ = cls.shape
+    A = art[:h_ * 16, :w_ * 16]
+    hue, sat, v = TI._hsv(A)
+    leaf = (hue >= 60) & (hue < 170) & (sat >= 0.3)
+    outline = ~leaf & (v < HEDGE_OUTLINE_V)
+    cand = np.zeros((h_, w_), bool)
+    for cy, cx in zip(*np.nonzero((cls == RE.CLASS_WALL) | (fam == "foliage"))):
+        if fam[cy, cx] not in (None, "foliage"):
+            continue
+        sl = (slice(cy * 16, cy * 16 + 16), slice(cx * 16, cx * 16 + 16))
+        lf = leaf[sl]
+        if lf.mean() + outline[sl].mean() >= HEDGE_LEAF_SHARE + 0.2 and lf.mean() >= 0.4 \
+                and sat[sl][lf].mean() >= TI.HEDGE_SAT and (v[sl][lf] < HEDGE_DARK_V).any():
+            cand[cy, cx] = True
+    if not cand.any():
+        return {}, set()
+    candpx = np.kron(cand, np.ones((16, 16), bool))
+    region = cand | np.vstack([cand[1:], np.zeros((1, w_), bool)])   # and the cell above
+    regpx = np.kron(region, np.ones((16, 16), bool))
+    Hp, Wp = A.shape[:2]
+    # each column's runs of leaf through a hedge cell: [t, b], outlines
+    runs = []
+    for x in range(Wp):
+        col = leaf[:, x] & regpx[:, x]
+        y = 0
+        while y < Hp:
+            if not col[y]:
+                y += 1
+                continue
+            t = y
+            while y < Hp and col[y]:
+                y += 1
+            b = y - 1
+            if not candpx[t:b + 1, x].any():
+                continue
+            f = 0
+            while b - f >= t and v[b - f, x] < HEDGE_DARK_V:
+                f += 1
+            ob = 0
+            while b + 1 + ob < Hp and ob < 4 and outline[b + 1 + ob, x]:
+                ob += 1
+            ot = 0
+            while t - 1 - ot >= 0 and ot < 4 and outline[t - 1 - ot, x]:
+                ot += 1
+            dk = v[t:b + 1, x] < HEDGE_DARK_V
+            flips = int((dk[:-1] & ~dk[1:]).sum())      # dark back to lit
+            if (~dk).sum() < 3:
+                flips = 99                              # no lit top: no hedge
+            runs.append((x, t - ot, b + ob + 1, f + ob, f, flips))
+    # a hedge is drawn two-tone, lit top over dark front; a tree's leaf
+    # clumps are shaded light and dark over and over.
+    # Judged per connected stretch of candidate cells, by the runs whose
+    # foot is in it
+    lab, nlab = RE._label(cand)
+    def comp(x, zs):
+        cy_, cx_ = min(h_ - 1, (zs - 1) // 16), x // 16
+        return lab[cy_, cx_]
+    per = {}
+    for x, zn, zs, hf, f, fl in runs:
+        per.setdefault(comp(x, zs), []).append((hf, f, fl))
+    hh_of = {}
+    for c_, rs in per.items():
+        if not c_:
+            continue
+        ys_, xs_ = np.nonzero(lab == c_)
+        if max(ys_.max() - ys_.min(), xs_.max() - xs_.min()) + 1 < HEDGE_LONG:
+            continue            # a round shrub, not a hedge
+        fr = [(hf, fl) for hf, f, fl in rs if f >= HEDGE_MIN_H]
+        if len(fr) < 8:
+            continue
+        med = float(np.median([hf for hf, _ in fr]))
+        two = np.mean([fl <= 1 for _, fl in fr])
+        if os.environ.get("TV_DBG"):
+            print("HEDGEC", c_, len(fr), med, round(two, 2), file=sys.stderr)
+        if two >= HEDGE_TWO_TONE:
+            hh_of[c_] = int(round(med))
+    if not hh_of:
+        return {}, set()
+    keep = np.isin(lab, list(hh_of))
+    cand &= keep
+    region = cand | np.vstack([cand[1:], np.zeros((1, w_), bool)])
+    runs = [(x, zn, zs, hf, f, hh_of[comp(x, zs)]) for x, zn, zs, hf, f, _fl in runs
+            if comp(x, zs) in hh_of]
+    box = np.zeros((Hp, Wp), int)            # height over each pixel
+    south = np.zeros((Hp, Wp), int)          # the column's south edge
+    for x, zn, zs, _hf, _f, hh in runs:
+        z0 = max(zn, zs - max(2, zs - zn - hh))
+        box[z0:zs, x] = hh
+        south[z0:zs, x] = zs
+    hedge = np.zeros((Hp, Wp), bool)         # drawn as hedge (top, front, outline)
+    for x, zn, zs, _hf, _f, _h in runs:
+        hedge[zn:zs, x] = True
+    # the ground the box was drawn over: the nearest pixel up its column
+    # that is not hedge (the grass behind it)
+    gsrc = np.tile(np.arange(Hp)[:, None], (1, Wp))
+    for x in range(Wp):
+        last = None
+        for y in range(Hp):
+            if not hedge[y, x]:
+                last = y
+            elif last is not None:
+                gsrc[y, x] = last
+        nxt = None
+        for y in range(Hp - 1, -1, -1):
+            if not hedge[y, x]:
+                nxt = y
+            elif gsrc[y, x] == y and nxt is not None:
+                gsrc[y, x] = nxt
+
+    def uv(row, x, cy, cx):
+        row = min(Hp - 1, max(0, int(row)))
+        return [(x - cx * 16 + 0.5, row - cy * 16 + 0.5)] * 4
+
+    out = {}
+    for cy, cx in zip(*np.nonzero(region)):
+        q = []
+        for zl in range(16):
+            for xl in range(16):
+                z, x = cy * 16 + zl, cx * 16 + xl
+                hgt = box[z, x]
+                if not hgt:
+                    q.append(([(xl, 0, zl), (xl + 1, 0, zl), (xl + 1, 0, zl + 1), (xl, 0, zl + 1)],
+                              uv(gsrc[z, x], x, cy, cx)))
+                    continue
+                zs = south[z, x]
+                q.append(([(xl, hgt, zl), (xl + 1, hgt, zl), (xl + 1, hgt, zl + 1), (xl, hgt, zl + 1)],
+                          uv(z - hgt, x, cy, cx)))
+                for y in range(hgt):
+                    y0, y1 = y, y + 1
+                    if z + 1 >= Hp or box[z + 1, x] < y1:      # front: the band
+                        q.append(([(xl, y1, zl + 1), (xl + 1, y1, zl + 1), (xl + 1, y0, zl + 1), (xl, y0, zl + 1)],
+                                  uv(z - y, x, cy, cx)))
+                    if z == 0 or box[z - 1, x] < y1:           # back: the band again
+                        q.append(([(xl + 1, y1, zl), (xl, y1, zl), (xl, y0, zl), (xl + 1, y0, zl)],
+                                  uv(zs - 1 - y, x, cy, cx)))
+                    if x + 1 >= Wp or box[z, x + 1] < y1:      # ends: the band
+                        q.append(([(xl + 1, y1, zl + 1), (xl + 1, y1, zl), (xl + 1, y0, zl), (xl + 1, y0, zl + 1)],
+                                  uv(zs - 1 - y, x, cy, cx)))
+                    if x == 0 or box[z, x - 1] < y1:
+                        q.append(([(xl, y1, zl), (xl, y1, zl + 1), (xl, y0, zl + 1), (xl, y0, zl)],
+                                  uv(zs - 1 - y, x, cy, cx)))
+        out[(int(cy), int(cx))] = q
+    return out, {(int(cy), int(cx)) for cy, cx in zip(*np.nonzero(cand))}
 
 
 # ----------------------------------------------------------------- shell --
@@ -3991,9 +4159,24 @@ def build_area(job):
                 for key_, hm in fol.items():
                     H[key_] = int(H[key_]) - TI.FOLIAGE_ROUND
                     shapes[key_] = (hm, 0)
+                # clipped hedges: boxes as tall as their drawn front
+                hedges, hedge_walls = hedge_cells(cls, fam, art)
+                if os.environ.get("TV_DBG") and hedges:
+                    print("HEDGE", f"{r.area:02d}_{r.room:02d}", len(hedge_walls),
+                          sorted((x_, y_) for y_, x_ in hedge_walls)[:40], file=sys.stderr)
+                for key_ in hedges:
+                    if key_ in hedge_walls:
+                        H[key_] = ffloor[key_]
+                    shapes.pop(key_, None)
+                    if fam[key_] == "foliage":
+                        fam[key_] = None
+            else:
+                hedges = {}
             role = room_roles(r, cls, H, bl, art)
             for (cy, cx) in shapes:
                 role[cy, cx] = fam[cy, cx]
+            for key_ in hedges:
+                role[key_] = "hedge"
             # built floors lie flat: every room indoors, in a dungeon or a
             # cave -- whatever its layer priorities say (246 dungeon rooms
             # draw layer 1 overhead) -- and any room whose layer 1 is not
@@ -4094,7 +4277,11 @@ def build_area(job):
                     if pix.shape[:2] != (16, 16):
                         continue
                     hm, dy_ = shapes.get((cy, cx), (None, 0))
-                    k = tile_key(pix, ro, hm)
+                    if ro == "hedge" and (cy, cx) in hedges:
+                        hm = hedges[(cy, cx)]
+                        k = hashlib.sha1(repr(hm).encode()).hexdigest()[:12] + "hg"
+                    else:
+                        k = tile_key(pix, ro, hm)
                     if k not in lib:
                         lib[k] = (len(lib), pix, ro, hm)
                     cells.append((k, cx, cy, int(H[cy, cx]) + dy_ + lift, ro))
@@ -4154,7 +4341,9 @@ def build_area(job):
     for k, (i, pix, ro, hm) in lib.items():
         ty, tx = divmod(i, ATLAS_COLS)
         atlas[ty * 16:ty * 16 + 16, tx * 16:tx * 16 + 16] = pix[:, :, :3]
-        if ro in STAND_FAMILIES and hm is not None:
+        if ro == "hedge":
+            models[k] = hm
+        elif ro in STAND_FAMILIES and hm is not None:
             models[k] = stand_quads(pix, np.asarray(hm) == 2)
         elif ro in MOUND_FAMILIES and hm is not None:
             models[k] = mound_quads(pix, np.asarray(hm) == 2, TI.SHAPES.get(ro, ("dome", 12))[1])
@@ -4163,7 +4352,11 @@ def build_area(job):
                                    pix[:, :, 3] > 0 if pix.shape[2] == 4 else None,
                                    RELIEF_STEPS.get(ro), hm)
         lib_obj.obj(f"t_{k}")
-        lib_obj.quads(models[k], toff=(tx * 16, ty * 16))
+        lq = models[k]
+        if ro == "hedge":       # its texture reaches the cell above: not in the atlas
+            lq = [(p_, [(min(16, max(0, u_)), min(16, max(0, v_))) for u_, v_ in uv_])
+                  for p_, uv_ in lq]
+        lib_obj.quads(lq, toff=(tx * 16, ty * 16))
     lib_obj.close()
     Image.fromarray(atlas).save(out / "tiles.png")
 
