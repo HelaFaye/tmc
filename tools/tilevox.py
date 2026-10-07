@@ -1803,12 +1803,13 @@ def _nearest(sel):
     return pts[d.argmin(-1)]
 
 
-def _shaped_quads(vox, m):
+def _shaped_quads(vox, m, row_of):
     """Faces of a voxel solid vox[y, z, x] (y = 0 is a one-voxel ground
-    plate) for a thing drawn with mask m. Each face shows the pixel the
-    game's camera draws its centre at, (x, z - y), or the thing's nearest
-    pixel in that row -- so no colour runs down a side; the plate shows
-    the drawing's own ground."""
+    plate) for a thing drawn with mask m. row_of(fx, fy, fz, n) gives the
+    drawn row a face centre (fx, fy, fz) with outward normal n shows; the
+    face takes that row's pixel in its column, or the thing's nearest pixel
+    in the row -- so no colour runs down a side. The plate shows the
+    drawing's own ground."""
     thing, ground = _nearest(m), _nearest(~m)
     n = vox.shape[0]
     quads = []
@@ -1816,12 +1817,12 @@ def _shaped_quads(vox, m):
     def filled(y, z, x):
         return 0 <= y < n and 0 <= z < 16 and 0 <= x < 16 and vox[y, z, x]
 
-    def texel(fx, fy, fz, plate):
+    def texel(fx, fy, fz, nrm, plate):
         x = min(15, max(0, int(fx)))
         if plate:
             r_, c_ = ground[min(15, max(0, int(fz))), x]
         else:
-            row = min(15, max(0, int(np.floor(fz - fy))))
+            row = min(15, max(0, int(row_of(fx, fy, fz, nrm))))
             r_, c_ = (row, x) if m[row, x] else thing[row, x]
         return [(c_ + 0.5, r_ + 0.5)] * 4
     for y in range(n):
@@ -1833,19 +1834,19 @@ def _shaped_quads(vox, m):
                 y0, y1 = y, y + 1
                 if not filled(y + 1, z, x):
                     quads.append(([(x, y1, z), (x + 1, y1, z), (x + 1, y1, z + 1), (x, y1, z + 1)],
-                                  texel(x + .5, y1, z + .5, plate)))
+                                  texel(x + .5, y1, z + .5, (0, 1, 0), plate)))
                 if not filled(y, z + 1, x):
                     quads.append(([(x, y1, z + 1), (x + 1, y1, z + 1), (x + 1, y0, z + 1), (x, y0, z + 1)],
-                                  texel(x + .5, y + .5, z + 1, plate)))
+                                  texel(x + .5, y + .5, z + 1, (0, 0, 1), plate)))
                 if not filled(y, z - 1, x):
                     quads.append(([(x + 1, y1, z), (x, y1, z), (x, y0, z), (x + 1, y0, z)],
-                                  texel(x + .5, y + .5, z, plate)))
+                                  texel(x + .5, y + .5, z, (0, 0, -1), plate)))
                 if not filled(y, z, x + 1):
                     quads.append(([(x + 1, y1, z + 1), (x + 1, y1, z), (x + 1, y0, z), (x + 1, y0, z + 1)],
-                                  texel(x + 1, y + .5, z + .5, plate)))
+                                  texel(x + 1, y + .5, z + .5, (1, 0, 0), plate)))
                 if not filled(y, z, x - 1):
                     quads.append(([(x, y1, z), (x, y1, z + 1), (x, y0, z + 1), (x, y0, z)],
-                                  texel(x, y + .5, z + .5, plate)))
+                                  texel(x, y + .5, z + .5, (-1, 0, 0), plate)))
     return quads
 
 
@@ -1898,7 +1899,9 @@ def stand_quads(px, m):
     for hh in range(Hh):
         if R[hh] > 0:
             vox[hh + 1] = (xx + 0.5 - XC[hh]) ** 2 + (yy + 0.5 - zc) ** 2 <= R[hh] ** 2
-    return _shaped_quads(vox, m)
+    # each slice wears its own drawn row all the way round, as a label
+    # round a can: the front is the drawing, the unseen back its mirror
+    return _shaped_quads(vox, m, lambda fx, fy, fz, n: foot - max(0, int(np.floor(fy - 0.5)) - 1))
 
 
 def mound_quads(px, m, height):
@@ -1920,6 +1923,8 @@ def mound_quads(px, m, height):
     vox = np.zeros((hmax + 1, 16, 16), bool)
     vox[0] = True
     zz = np.arange(16) + 0.5
+    ZC = np.full(16, 8.0)
+    T = np.zeros(16, int)
     for x in cols:
         ys = np.nonzero(m[:, x])[0]
         t, b = int(ys.min()), int(ys.max())
@@ -1929,12 +1934,24 @@ def mound_quads(px, m, height):
         h = max(h, 1.0)
         d = max(MOUND_MIN_DEPTH, (span * span - h * h) / (2.0 * span))
         zc = b + 1 - d
+        ZC[x], T[x] = zc, t
         prof = h * np.sqrt(np.clip(1 - ((zz - zc) / d) ** 2, 0, 1))
         for z in range(16):
             top = int(np.rint(prof[z]))
             if top > 0:
                 vox[1:top + 1, z, x] = True
-    return _shaped_quads(vox, m)
+
+    def row_of(fx, fy, fz, n):
+        # what the game's camera sees keeps its drawn pixel, (x, z - y);
+        # a face it cannot see -- turned away, or behind the drawn top --
+        # wears its mirror point on the front, so the back stays the
+        # thing's own
+        x = min(15, max(0, int(fx)))
+        row = int(np.floor(fz - fy))
+        if n[2] < 0 or row < T[x]:
+            row = int(np.floor(2 * ZC[x] - fz - fy))
+        return row
+    return _shaped_quads(vox, m, row_of)
 
 
 # ----------------------------------------------------------------- shell --
