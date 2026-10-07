@@ -493,6 +493,9 @@ def stair_levels(path, r, cls, H):
                and (it.get("measure") or {}).get("steps")]
     if not flights:
         return H, []
+    # lowest first: a flight's lower landing may be another's upper one,
+    # raised before it is measured from (north-south flights climb north)
+    flights.sort(key=lambda it: -it["rect"][3])
     H = np.array(H, dtype=np.int64)
     rows, cols = H.shape
     stair = np.zeros((rows, cols), bool)
@@ -502,76 +505,107 @@ def stair_levels(path, r, cls, H):
     floor = (cls == RE.CLASS_GROUND) & ~stair
     total = max(1, int(floor.sum()))
     out = []
-    for it in flights:
-        x0, y0, x1, y1 = it["rect"]
-        m = it["measure"]
-        ns = it["rise"] == "ns"
-        lab, _n = RE._label(floor)
-        if ns:
-            sa = [(y0 - 1, x) for x in range(x0, x1 + 1)]       # north: up
-            sb = [(y1 + 1, x) for x in range(x0, x1 + 1)]
-        else:
-            sa = [(y, x0 - 1) for y in range(y0, y1 + 1)]       # west
-            sb = [(y, x1 + 1) for y in range(y0, y1 + 1)]       # east
-        inside = lambda c: 0 <= c[0] < rows and 0 <= c[1] < cols
-        la = {int(lab[c]) for c in sa if inside(c) and lab[c]}
-        lb = {int(lab[c]) for c in sb if inside(c) and lab[c]}
-        rec = dict(rect=it["rect"], rise=it["rise"], steps=m["steps"],
-                   bands=m["bands"], up=None, base=None, top=None)
-        if not la or not lb or la & lb:
-            out.append(rec)                     # one level: leave as drawn
-            continue
-        area = lambda ids: int(np.isin(lab, list(ids)).sum())
-        if ns:
-            up, dn, up_side = la, lb, "n"
-        else:
-            up, dn, up_side = ((la, lb, "w") if area(la) <= area(lb)
-                               else (lb, la, "e"))
-        region = np.isin(lab, list(up))
-        if region.sum() > STAIR_MAX_SHARE * total:
-            out.append(rec)
-            continue
-        base = int(max(H[c] for c in (sb if up is la else sa) if inside(c)))
-        # faces beside the flight: blocked cells level with it, on either side
-        faces = []
-        if ns:
-            for y in range(y0, y1 + 1):
-                for x in (x0 - 1, x1 + 1):
-                    if inside((y, x)) and cls[y, x] in (RE.CLASS_WALL, RE.CLASS_LEDGE):
-                        faces.append(int(H[y, x]) - base)
-        risers = int(sum(b[3] for b in m["bands"]))
-        rise = int(np.median(faces)) if faces else risers
-        if not (STAIR_RISE[0] <= rise <= STAIR_RISE[1]):
-            rise = risers
-        rise = int(min(max(rise, STAIR_RISE[0]), STAIR_RISE[1]))
-        rise = 2 * ((rise + 1) // 2)
-        top = base + rise
-        H[region & (H < top)] = top
-        # Blocked clusters standing on the raised floor -- a house, a tree
-        # -- go up with it: those touching the raised floor and no lower
-        # floor. A cliff between the two levels touches both and stays;
-        # its measured face is already the step up.
-        blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~stair
-        blab, bn = RE._label(blocked)
-        lower = floor & ~region
-        Pr, Pl = np.pad(region, 1), np.pad(lower, 1)
-        touch_r = Pr[:-2, 1:-1] | Pr[2:, 1:-1] | Pr[1:-1, :-2] | Pr[1:-1, 2:]
-        touch_l = Pl[:-2, 1:-1] | Pl[2:, 1:-1] | Pl[1:-1, :-2] | Pl[1:-1, 2:]
-        for k in range(1, bn + 1):
-            comp = blab == k
-            if (touch_r & comp).any() and not (touch_l & comp).any():
-                H[comp] += rise
-        rec.update(up=up_side, base=base, top=top)
-        out.append(rec)
+    shared = {}                 # (upper, lower landing) -> [rises measured]
+    lifted = np.zeros((rows, cols), bool)
+    for pass_ in (0, 1):
+     for it in flights:
+         x0, y0, x1, y1 = it["rect"]
+         m = it["measure"]
+         ns = it["rise"] == "ns"
+         lab, _n = RE._label(floor)
+         if ns:
+             sa = [(y0 - 1, x) for x in range(x0, x1 + 1)]       # north: up
+             sb = [(y1 + 1, x) for x in range(x0, x1 + 1)]
+         else:
+             sa = [(y, x0 - 1) for y in range(y0, y1 + 1)]       # west
+             sb = [(y, x1 + 1) for y in range(y0, y1 + 1)]       # east
+         inside = lambda c: 0 <= c[0] < rows and 0 <= c[1] < cols
+         la = {int(lab[c]) for c in sa if inside(c) and lab[c]}
+         lb = {int(lab[c]) for c in sb if inside(c) and lab[c]}
+         rec = dict(rect=it["rect"], rise=it["rise"], steps=m["steps"],
+                    bands=m["bands"], up=None, base=None, top=None)
+         if not la or not lb or la & lb:
+             if pass_:
+                 out.append(rec)                 # one level: leave as drawn
+             continue
+         area = lambda ids: int(np.isin(lab, list(ids)).sum())
+         if ns:
+             up, dn, up_side = la, lb, "n"
+         else:
+             up, dn, up_side = ((la, lb, "w") if area(la) <= area(lb)
+                                else (lb, la, "e"))
+         region = np.isin(lab, list(up))
+         if region.sum() > STAIR_MAX_SHARE * total:
+             if pass_:
+                 out.append(rec)
+             continue
+         base = int(max(H[c] for c in (sb if up is la else sa) if inside(c)))
+         # faces beside the flight: blocked cells level with it, on either side
+         faces = []
+         if ns:
+             for y in range(y0, y1 + 1):
+                 for x in (x0 - 1, x1 + 1):
+                     if inside((y, x)) and cls[y, x] in (RE.CLASS_WALL, RE.CLASS_LEDGE):
+                         faces.append(int(H[y, x]) - base)
+         risers = int(sum(b[3] for b in m["bands"]))
+         rise = int(np.median(faces)) if faces else risers
+         if ns and len(m.get("edges") or []) > 1:
+             # a flight facing the camera is drawn as tall as the cliff it
+             # climbs: its drawing's span is the rise (the walls' class
+             # height, 16, was half of it in Hyrule Town)
+             drawn = int(m["edges"][-1] - m["edges"][0])
+             rise = max(rise if STAIR_RISE[0] <= rise <= STAIR_RISE[1] else risers, drawn)
+         elif not (STAIR_RISE[0] <= rise <= STAIR_RISE[1]):
+             rise = risers
+         rise = int(min(max(rise, STAIR_RISE[0]), STAIR_RISE[1]))
+         rise = 2 * ((rise + 1) // 2)
+         key = (frozenset(up), base)    # one upper level, from one lower height
+         if pass_ == 0:
+             # every flight between the same two levels measures the same
+             # step up: they share the middle of their measures
+             shared.setdefault(key, []).append(rise)
+             continue
+         if len(shared.get(key, ())) > 1:
+             rise = int(np.median(shared[key]))
+             rise = 2 * ((rise + 1) // 2)
+         top = base + rise
+         H[region & (H < top)] = top
+         # Blocked clusters standing on the raised floor -- a house, a tree
+         # -- go up with it: those touching the raised floor and no lower
+         # floor. A cliff between the two levels touches both and stays;
+         # its measured face is already the step up.
+         blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE]) & ~stair
+         blab, bn = RE._label(blocked)
+         lower = floor & ~region
+         Pr, Pl = np.pad(region, 1), np.pad(lower, 1)
+         touch_r = Pr[:-2, 1:-1] | Pr[2:, 1:-1] | Pr[1:-1, :-2] | Pr[1:-1, 2:]
+         touch_l = Pl[:-2, 1:-1] | Pl[2:, 1:-1] | Pl[1:-1, :-2] | Pl[1:-1, 2:]
+         for k in range(1, bn + 1):
+             comp = blab == k
+             if (touch_r & comp).any() and not (touch_l & comp).any():
+                 if not (lifted & comp).any():   # once, by its level's first flight
+                     H[comp] += rise
+                     lifted |= comp
+             elif (touch_r & comp).any():
+                 # the cliff between the levels: as tall as the step up
+                 H[comp & (H < top)] = top
+         rec.update(up=up_side, base=base, top=top, _up=[c for c in (sa if up is la else sb) if inside(c)])
+         out.append(rec)
+    # a later flight may raise a landing an earlier one climbs to: every
+    # flight ends level with its upper landing as finally built
+    for rec in out:
+        ups_ = rec.pop("_up", None)
+        if ups_:
+            rec["top"] = max(rec["top"], max(int(H[c]) for c in ups_))
     return H, out
 
 
 def stair_quads(fl, ox, oz, lift):
     """The steps of one raised flight, textured from the game's camera.
 
-    Steps as the drawing counts them, spaced by the drawn pitches and split
-    in height by the drawn risers (falling back to even steps), rising from
-    the lower landing to the upper across the flight's cells. Each is a
+    Steps as the drawing counts them, evenly spaced and evenly split in
+    height, rising from the lower landing to the upper across the flight's
+    cells. Each is a
     solid block down to the base: its tread, its riser facing down the
     flight, its two flanks. Texels project the room art from the game's
     camera, (x, z - height), so each tread takes the rows where it is drawn.
@@ -580,13 +614,11 @@ def stair_quads(fl, ox, oz, lift):
         return []
     x0, y0, x1, y1 = fl["rect"]
     n = int(fl["steps"])
-    bands = fl["bands"] or [(0, 1, 1, 1)] * n
-    pitch = np.array([max(1, b - a) for a, b, _t, _r in bands], float)
-    riser = np.array([max(0, rr) for _a, _b, _t, rr in bands], float)
-    if riser.sum() <= 0:
-        riser = np.ones(n)
-    # bands run from the top of the drawing down: the first is the top step
-    pitch, riser = pitch[::-1], riser[::-1]
+    # even steps: the drawing's bands narrow toward the top of the flight
+    # as the art foreshortens them, which built as drawn gave a flight of
+    # uneven treads and risers
+    pitch = np.ones(n)
+    riser = np.ones(n)
     base, top = fl["base"] + lift, fl["top"] + lift
     hs = base + np.rint(np.cumsum(riser) / riser.sum() * (top - base)).astype(int)
     X0, X1 = ox + x0 * 16, ox + (x1 + 1) * 16
