@@ -570,6 +570,7 @@ def stair_levels(path, r, cls, H):
              rise = 2 * ((rise + 1) // 2)
          top = base + rise
          H[region & (H < top)] = top
+         H[y0:y1 + 1, x0:x1 + 1] = base     # the steps stand here, nothing else
          # Blocked clusters standing on the raised floor -- a house, a tree
          # -- go up with it: those touching the raised floor and no lower
          # floor. A cliff between the two levels touches both and stays;
@@ -591,7 +592,10 @@ def stair_levels(path, r, cls, H):
                  # as tall as the step up (a bush beside the foot is not)
                  rows_ = np.zeros_like(comp)
                  rows_[y0:y1 + 1] = True
-                 H[comp & rows_ & (H < top)] = top
+                 up_ = comp & rows_ & (H < top)
+                 H[up_] = top
+                 cliff_ = rec.setdefault("cliff", [])
+                 cliff_ += [(int(a_), int(b_)) for a_, b_ in zip(*np.nonzero(up_))]
          rec.update(up=up_side, base=base, top=top, _up=[c for c in (sa if up is la else sb) if inside(c)])
          out.append(rec)
     # a later flight may raise a landing an earlier one climbs to: every
@@ -606,9 +610,10 @@ def stair_levels(path, r, cls, H):
 def stair_quads(fl, ox, oz, lift):
     """The steps of one raised flight, textured from the game's camera.
 
-    Steps as the drawing counts them, evenly spaced and evenly split in
-    height, rising from the lower landing to the upper across the flight's
-    cells. Each is a solid block down to the base: its tread, its riser
+    Steps as the drawing counts and proportions them -- each tread as deep
+    as its lit rows, each riser as tall as its shaded rows, scaled to the
+    flight's run and rise -- from the lower landing to the upper across
+    the flight's cells. Each is a solid block down to the base: its tread, its riser
     facing down the flight, its two flanks. A flight facing the camera
     wears its drawing step by step: each tread its band's lit rows, its
     riser and flanks the band's shaded rest. Others project the room art
@@ -618,11 +623,11 @@ def stair_quads(fl, ox, oz, lift):
         return []
     x0, y0, x1, y1 = fl["rect"]
     n = int(fl["steps"])
-    # even steps: the drawing's bands narrow toward the top of the flight
-    # as the art foreshortens them, which built as drawn gave a flight of
-    # uneven treads and risers
-    pitch = np.ones(n)
-    riser = np.ones(n)
+    # as drawn: a step's lit rows are its tread, its shaded rows its riser
+    # (the 45-degree rule), scaled together to the flight's run and rise
+    bands = fl["bands"] or [(0, 2, 1, 1)] * n
+    pitch = np.array([max(1, t_) for _a, _b, t_, _r in bands], float)[::-1]
+    riser = np.array([max(1, r_) for _a, _b, _t, r_ in bands], float)[::-1]
     base, top = fl["base"] + lift, fl["top"] + lift
     hs = base + np.rint(np.cumsum(riser) / riser.sum() * (top - base)).astype(int)
     X0, X1 = ox + x0 * 16, ox + (x1 + 1) * 16
@@ -1036,8 +1041,11 @@ def find_buildings(r, cls, H, doors, cf=None, crown=None):
             continue
         if ds:
             foot = max(d["cy"] for d in ds) + 1
-            base = int(max(d["base"] for d in ds))
-            hmin = max(d["hw"] for d in ds) + 8
+            # it stands where its front doors open: a back door on the
+            # level behind it (a house built against a ledge) is not its foot
+            front = [d for d in ds if d["cy"] + 1 == foot]
+            base = int(max(d["base"] for d in front))
+            hmin = max(d["hw"] for d in front) + 8
         else:
             # the foot: where the blocked cells under the roof end
             foot, bases = 0, []
@@ -3360,6 +3368,7 @@ CAPTURES = Path(os.environ.get("TMC_CAPTURES", str(Path(__file__).resolve().pare
 _SHOWN = {}
 
 
+TEX_SRC = {}             # (area, room, cx, cy) -> (sx, sy): whose drawing a cell wears
 ACTOR_KINDS = (3, 7)    # entity kinds: enemy, NPC (include/entity.h)
 ACTOR_PAD = 4           # px: an actor's position may sit just off its sprite
 
@@ -4242,6 +4251,35 @@ def build_area(job):
                         H[cy, cx] = u["base"]
                         under[(cy, cx)] = u["under"]
                 hang_between(ups)
+                # a cliff a flight climbs: its cells are drawn as its face,
+                # which stands at their foot; raised to the upper level,
+                # their tops are that level's ground, not the face again
+                for fl_ in flights:
+                    cl_ = set(fl_.get("cliff", ()))
+                    for (cy, cx) in cl_:
+                        # the ground right behind the cliff; a pillar or a
+                        # wall that goes on behind it keeps its own top
+                        sy = cy - 1
+                        while (sy, cx) in cl_:
+                            sy -= 1
+                        if sy < 0 or cls[sy, cx] != RE.CLASS_GROUND:
+                            continue
+                        # the plainest ground near there (grass, not a pot
+                        # or a flower bed, which would stand there twice)
+                        best = None
+                        for yy in range(max(0, sy - 3), sy + 1):
+                            for xx in range(max(0, cx - 3), min(cls.shape[1], cx + 4)):
+                                if cls[yy, xx] != RE.CLASS_GROUND or fam[yy, xx] is not None \
+                                        or (yy, xx) in cl_:
+                                    continue
+                                px_ = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16].reshape(-1, 3)
+                                sc = (len(np.unique(px_, axis=0)), abs(xx - cx) + (sy - yy))
+                                if best is None or sc < best[0]:
+                                    best = (sc, (yy, xx))
+                        if best is not None:
+                            under[(cy, cx)] = best[1]
+                    if os.environ.get("TV_DBG") and cl_:
+                        print("CLIFFTOP", fl_["rect"], len(cl_), file=sys.stderr)
                 # foliage: the solid stops FOLIAGE_ROUND short, and the
                 # rounded top rises from there -- walls end where it begins
                 fol = TI.foliage_hmaps(art, fam)
@@ -4374,6 +4412,9 @@ def build_area(job):
                     if k not in lib:
                         lib[k] = (len(lib), pix, ro, hm)
                     cells.append((k, cx, cy, int(H[cy, cx]) + dy_ + lift, ro))
+                    if sy is not None and (sy, sx) != (cy, cx) and (cy, cx) not in tilepix \
+                            and (cx, cy) not in covered:    # seen through its doorway: its own
+                        TEX_SRC[(r.area, r.room, cx, cy)] = (sx, sy)
             ov = None
             if overlay is not None:
                 decks, cf, top, occ, _c1, _crown = overlay
@@ -4489,7 +4530,10 @@ def build_area(job):
             m.obj(name)
             for k, cx, cy, y, ro in cells:
                 dv = art.shape[0] if (ro == "deck" and tex is not art) else 0
-                m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16 + dv))
+                # a cell built from another's drawing (the ground under a
+                # fence, behind a building, on a cliff's top) wears that one
+                tx_, ty_ = TEX_SRC.get((r.area, r.room, cx, cy), (cx, cy)) if not dv else (cx, cy)
+                m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (tx_ * 16, ty_ * 16 + dv))
             skip = {(d["cx"], d["cy"]) for d in doors}
             grain = (wood_patch(art) if PL.location(r.area, r.room)["view"] == "terrace"
                      else None)
