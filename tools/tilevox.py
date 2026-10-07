@@ -2094,29 +2094,36 @@ def hedge_cells(cls, fam, art):
             if comp(x, zs) in hh_of]
     box = np.zeros((Hp, Wp), int)            # height over each pixel
     south = np.zeros((Hp, Wp), int)          # the column's south edge
+    north = np.zeros((Hp, Wp), int)          # the column's drawn north edge
     for x, zn, zs, _hf, _f, hh in runs:
         z0 = max(zn, zs - max(2, zs - zn - hh))
         box[z0:zs, x] = hh
         south[z0:zs, x] = zs
+        north[z0:zs, x] = zn
     hedge = np.zeros((Hp, Wp), bool)         # drawn as hedge (top, front, outline)
     for x, zn, zs, _hf, _f, _h in runs:
         hedge[zn:zs, x] = True
-    # the ground the box was drawn over: the nearest pixel up its column
-    # that is not hedge (the grass behind it)
+    # the ground the box was drawn over: what lies beyond its outline,
+    # mirrored -- the grass or path behind it, row for row, not one row
+    # stretched (a smear)
     gsrc = np.tile(np.arange(Hp)[:, None], (1, Wp))
     for x in range(Wp):
-        last = None
-        for y in range(Hp):
+        y = 0
+        while y < Hp:
             if not hedge[y, x]:
-                last = y
-            elif last is not None:
-                gsrc[y, x] = last
-        nxt = None
-        for y in range(Hp - 1, -1, -1):
-            if not hedge[y, x]:
-                nxt = y
-            elif gsrc[y, x] == y and nxt is not None:
-                gsrc[y, x] = nxt
+                y += 1
+                continue
+            t = y
+            while y < Hp and hedge[y, x]:
+                y += 1
+            for yy in range(t, y):
+                up_, dn_ = 2 * t - 1 - yy, 2 * y - 1 - yy   # mirrored north, south
+                for src in ((up_, dn_) if yy - t < y - yy else (dn_, up_)):
+                    if 0 <= src < Hp and not hedge[src, x]:
+                        gsrc[yy, x] = src
+                        break
+                else:
+                    gsrc[yy, x] = t - 1 if t > 0 else min(Hp - 1, y)
 
     def uv(row, x, cy, cx):
         row = min(Hp - 1, max(0, int(row)))
@@ -2133,23 +2140,26 @@ def hedge_cells(cls, fam, art):
                     q.append(([(xl, 0, zl), (xl + 1, 0, zl), (xl + 1, 0, zl + 1), (xl, 0, zl + 1)],
                               uv(gsrc[z, x], x, cy, cx)))
                     continue
-                zs = south[z, x]
+                zs, zn = south[z, x], north[z, x]
+                # every face wears the hedge's own drawing, never the path
+                # or the grass beyond its outline
+                band = lambda row: min(zs - 1, max(zn, row))
                 q.append(([(xl, hgt, zl), (xl + 1, hgt, zl), (xl + 1, hgt, zl + 1), (xl, hgt, zl + 1)],
-                          uv(z - hgt, x, cy, cx)))
+                          uv(band(z - hgt), x, cy, cx)))
                 for y in range(hgt):
                     y0, y1 = y, y + 1
                     if z + 1 >= Hp or box[z + 1, x] < y1:      # front: the band
                         q.append(([(xl, y1, zl + 1), (xl + 1, y1, zl + 1), (xl + 1, y0, zl + 1), (xl, y0, zl + 1)],
-                                  uv(z - y, x, cy, cx)))
+                                  uv(band(z - y), x, cy, cx)))
                     if z == 0 or box[z - 1, x] < y1:           # back: the band again
                         q.append(([(xl + 1, y1, zl), (xl, y1, zl), (xl, y0, zl), (xl + 1, y0, zl)],
-                                  uv(zs - 1 - y, x, cy, cx)))
+                                  uv(band(zs - 1 - y), x, cy, cx)))
                     if x + 1 >= Wp or box[z, x + 1] < y1:      # ends: the band
                         q.append(([(xl + 1, y1, zl + 1), (xl + 1, y1, zl), (xl + 1, y0, zl), (xl + 1, y0, zl + 1)],
-                                  uv(zs - 1 - y, x, cy, cx)))
+                                  uv(band(zs - 1 - y), x, cy, cx)))
                     if x == 0 or box[z, x - 1] < y1:
                         q.append(([(xl, y1, zl), (xl, y1, zl + 1), (xl, y0, zl + 1), (xl, y0, zl)],
-                                  uv(zs - 1 - y, x, cy, cx)))
+                                  uv(band(zs - 1 - y), x, cy, cx)))
         out[(int(cy), int(cx))] = q
     return out, {(int(cy), int(cx)) for cy, cx in zip(*np.nonzero(cand))}
 
@@ -3326,6 +3336,10 @@ CAPTURES = Path(os.environ.get("TMC_CAPTURES", str(Path(__file__).resolve().pare
 _SHOWN = {}
 
 
+ACTOR_KINDS = (3, 7)    # entity kinds: enemy, NPC (include/entity.h)
+ACTOR_PAD = 4           # px: an actor's position may sit just off its sprite
+
+
 def shown(r):
     """(RGB, sprite mask) of the room as the running game shows it --
     tile layers and object sprites, no HUD, no Link -- from a capture
@@ -3339,7 +3353,26 @@ def shown(r):
             h, w = r.cells_h * 16, r.cells_w * 16
             rgb, spr = got
             if rgb.shape[0] >= h and rgb.shape[1] >= w:
-                _SHOWN[k] = (np.ascontiguousarray(rgb[:h, :w, :3]), spr[:h, :w])
+                rgb = np.array(rgb[:h, :w, :3])
+                spr = np.array(spr[:h, :w])
+                # people and enemies are actors, built by the entity stage
+                # and moving about: their sprites are not the room's
+                # surface. Each sprite shape round where one stands takes
+                # the tile art back.
+                tiles = RE.room_art_rgb(r, 0)
+                actors = [(e["x"] - r.origin_x, e["y"] - r.origin_y) for e in r.entities
+                          if e["kind"] in ACTOR_KINDS and not e.get("is_player")]
+                if actors and tiles is not None:
+                    tiles = tiles[:h, :w, :3]
+                    lab, n = RE._label(spr)
+                    for j in range(1, n + 1):
+                        ys_, xs_ = np.nonzero(lab == j)
+                        if any(xs_.min() - ACTOR_PAD <= ax <= xs_.max() + ACTOR_PAD
+                               and ys_.min() - ACTOR_PAD <= ay <= ys_.max() + ACTOR_PAD
+                               for ax, ay in actors):
+                            rgb[ys_, xs_] = tiles[ys_, xs_]
+                            spr[ys_, xs_] = False
+                _SHOWN[k] = (np.ascontiguousarray(rgb), spr)
     return _SHOWN[k]
 
 
