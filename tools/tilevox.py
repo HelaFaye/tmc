@@ -607,6 +607,94 @@ def stair_levels(path, r, cls, H):
     return H, out
 
 
+ARCH_MIN = 200          # px: smallest overhead shape built as a standing arch
+ARCH_OPEN = 0.25        # of its lower half's box, open between its legs
+ARCH_T = 6              # px: an arch's thickness
+ARCH_MAX_W, ARCH_MAX_H = 192, 128   # px: an arch is a gate, not a forest
+
+
+def standing_arches(top, cls, H):
+    """Arches the overhead layer draws standing on two legs -- the town
+    gate's: a shape whose lowest rows lie over stone and whose lower half
+    is open between its legs. Each: its pixels and the plane it stands in.
+    Laid flat as decks it hovered, and looked different from each side;
+    drawn by the 45-degree rule it is upright, every row as high above
+    its legs' foot as it is drawn above it."""
+    if top is None:
+        return []
+    alpha = np.asarray(top)[:, :, 3] > 0
+    h_, w_ = cls.shape
+    alpha = alpha[:h_ * 16, :w_ * 16]
+    lab, n = RE._label(alpha)
+    blocked = np.isin(cls, [RE.CLASS_WALL, RE.CLASS_LEDGE])
+    out = []
+    for j in range(1, n + 1):
+        ys, xs = np.nonzero(lab == j)
+        if len(ys) < ARCH_MIN:
+            continue
+        y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+        feet = ys >= y1 - 3
+        on = blocked[ys[feet] // 16, xs[feet] // 16]
+        if on.mean() < 0.8:
+            continue
+        mid = (y0 + y1) // 2
+        box = lab[mid:y1 + 1, x0:x1 + 1] == j
+        if 1 - box.mean() < ARCH_OPEN:
+            continue
+        if (x1 - x0 + 1) > ARCH_MAX_W or (y1 - y0 + 1) > ARCH_MAX_H:
+            continue
+        hue_, sat_, _v = TI._hsv(np.asarray(top)[ys, xs, :3])
+        if ((hue_ >= 60) & (hue_ < 170) & (sat_ >= 0.3)).mean() > 0.4:
+            continue            # leaf: a hedge drawn round a bed, not a gate
+        # exactly two legs at its foot, apart
+        foot = (lab[y1 - 3:y1 + 1, x0:x1 + 1] == j).any(axis=0)
+        runs_, inrun = [], False
+        for i_, v_ in enumerate(foot):
+            if v_ and not inrun:
+                runs_.append([i_, i_])
+            if v_:
+                runs_[-1][1] = i_
+            inrun = bool(v_)
+        if len(runs_) != 2 or runs_[1][0] - runs_[0][1] < 0.3 * (x1 - x0 + 1):
+            continue
+        # and open between them from under its top band to the foot
+        c_ = x0 + (runs_[0][1] + runs_[1][0]) // 2
+        col = lab[y0:y1 + 1, c_] == j
+        if col[-1] or not col.any():
+            continue
+        below = len(col) - 1 - int(np.nonzero(col)[0].max())
+        if below < 0.4 * (y1 - y0 + 1):
+            continue
+        base = int(max(H[y_ // 16, x_ // 16] for y_, x_ in zip(ys[feet], xs[feet])))
+        out.append(dict(px=set(zip(ys.tolist(), xs.tolist())), zp=int(y1) + 1 + base,
+                        base=base, cells={(int(y_) // 16, int(x_) // 16) for y_, x_ in zip(ys, xs)}))
+    return out
+
+
+def arch_quads(a, ox, oz, lift, voff):
+    """An arch as an upright slab ARCH_T thick in its plane, every pixel at
+    its drawn height above its legs' foot, the same face front and back."""
+    P = a["px"]
+    zp = a["zp"]
+    za, zb = oz + zp - ARCH_T // 2, oz + zp + (ARCH_T - ARCH_T // 2)
+    q = []
+    for (R, X) in P:
+        y0, y1 = lift + zp - R - 1, lift + zp - R
+        x0, x1 = ox + X, ox + X + 1
+        uv = [(X + 0.5, voff + R + 0.5)] * 4
+        q.append(([(x0, y1, zb), (x1, y1, zb), (x1, y0, zb), (x0, y0, zb)], uv))   # front
+        q.append(([(x1, y1, za), (x0, y1, za), (x0, y0, za), (x1, y0, za)], uv))   # back
+        if (R - 1, X) not in P:
+            q.append(([(x0, y1, za), (x1, y1, za), (x1, y1, zb), (x0, y1, zb)], uv))
+        if (R + 1, X) not in P:
+            q.append(([(x0, y0, zb), (x1, y0, zb), (x1, y0, za), (x0, y0, za)], uv))
+        if (R, X + 1) not in P:
+            q.append(([(x1, y1, zb), (x1, y1, za), (x1, y0, za), (x1, y0, zb)], uv))
+        if (R, X - 1) not in P:
+            q.append(([(x0, y1, za), (x0, y1, zb), (x0, y0, zb), (x0, y0, za)], uv))
+    return q
+
+
 def stair_quads(fl, ox, oz, lift):
     """The steps of one raised flight, textured from the game's camera.
 
@@ -4256,6 +4344,25 @@ def build_area(job):
                 # their tops are that level's ground, not the face again
                 for fl_ in flights:
                     cl_ = set(fl_.get("cliff", ()))
+                    if cl_ and fl_.get("top") is not None:
+                        # the stone the flight cuts into is one block: up
+                        # its columns while it is stone (a pillar's top),
+                        # and its foot row when ground lies before it
+                        hb_, wb_ = cls.shape
+                        blk_ = lambda y_, x_: (0 <= y_ < hb_ and 0 <= x_ < wb_ and cls[y_, x_] in
+                                               (RE.CLASS_WALL, RE.CLASS_LEDGE) and fam[y_, x_] is None)
+                        more = set()
+                        for (cy, cx) in cl_:
+                            y_ = cy - 1
+                            while blk_(y_, cx) and (y_, cx) not in cl_:
+                                more.add((y_, cx))
+                                y_ -= 1
+                            if (cy + 1, cx) not in cl_ and blk_(cy + 1, cx) and not blk_(cy + 2, cx) \
+                                    and not (0 <= cy + 2 < hb_ and cls[cy + 2, cx] in (RE.CLASS_WALL, RE.CLASS_LEDGE)):
+                                more.add((cy + 1, cx))
+                        for c_ in more:
+                            if H[c_] < fl_["top"]:
+                                H[c_] = fl_["top"]
                     for (cy, cx) in cl_:
                         # the ground right behind the cliff; a pillar or a
                         # wall that goes on behind it keeps its own top
@@ -4438,6 +4545,9 @@ def build_area(job):
                 arch = {(d["cx"] + dx_, y_) for d in doors for dx_ in (-1, 0, 1)
                         for y_ in range(d["top"], d["cy"] + 1)}
                 decks = [dk for dk in decks if (dk[0], dk[1]) not in arch]
+                arches = standing_arches(top, cls, H)
+                acells = {c for a_ in arches for c in a_["cells"]}
+                decks = [dk for dk in decks if (dk[1], dk[0]) not in acells]
                 for cx, cy, hh in decks:
                     pix = np.ascontiguousarray(
                         top[cy * 16:cy * 16 + 16, cx * 16:cx * 16 + 16].astype(np.uint8))
@@ -4446,7 +4556,7 @@ def build_area(job):
                     if k not in lib:
                         lib[k] = (len(lib), pix, "deck", None)
                     cells.append((k, cx, cy, hh + lift, "deck"))
-                ov = (decks, cf, occ, top)
+                ov = (decks, cf, occ, top, arches)
             solid_ = cls != RE.CLASS_VOID
             solid_[:caserows + 1] = False           # the bookcase's own
             if shown(r) is not None:
@@ -4507,6 +4617,8 @@ def build_area(job):
             # below the room's picture: the captured picture composites it
             # over the ground, which then wore it a second time
             deck_cells = [(cx, cy) for _k, cx, cy, _y, ro in cells if ro == "deck"]
+            if ov is not None:
+                deck_cells += [(cx, cy) for a_ in ov[4] for (cy, cx) in a_["cells"]]
             tex = art
             if deck_cells and ov is not None and ov[3] is not None:
                 top_ = np.asarray(ov[3])
@@ -4570,8 +4682,10 @@ def build_area(job):
             for fl in flights:
                 m.quads(stair_quads(fl, ox, oz, lift))
             if ov is not None:
-                decks, cf, occ, top_ = ov
+                decks, cf, occ, top_, arches_ = ov
                 m.quads(deck_skirts(decks, occ, H, ox, oz, lift, top_))
+                for a_ in arches_:
+                    m.quads(arch_quads(a_, ox, oz, lift, art.shape[0]))
                 if cf is not None:
                     m.quads(crown_quads(cf, ox, oz, lift))
             nfaces += m.faces
