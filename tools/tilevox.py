@@ -586,9 +586,12 @@ def stair_levels(path, r, cls, H):
                  if not (lifted & comp).any():   # once, by its level's first flight
                      H[comp] += rise
                      lifted |= comp
-             elif (touch_r & comp).any():
-                 # the cliff between the levels: as tall as the step up
-                 H[comp & (H < top)] = top
+             elif (touch_r & comp).any() and ns:
+                 # the cliff between the levels, in the flight's own rows:
+                 # as tall as the step up (a bush beside the foot is not)
+                 rows_ = np.zeros_like(comp)
+                 rows_[y0:y1 + 1] = True
+                 H[comp & rows_ & (H < top)] = top
          rec.update(up=up_side, base=base, top=top, _up=[c for c in (sa if up is la else sb) if inside(c)])
          out.append(rec)
     # a later flight may raise a landing an earlier one climbs to: every
@@ -605,10 +608,11 @@ def stair_quads(fl, ox, oz, lift):
 
     Steps as the drawing counts them, evenly spaced and evenly split in
     height, rising from the lower landing to the upper across the flight's
-    cells. Each is a
-    solid block down to the base: its tread, its riser facing down the
-    flight, its two flanks. Texels project the room art from the game's
-    camera, (x, z - height), so each tread takes the rows where it is drawn.
+    cells. Each is a solid block down to the base: its tread, its riser
+    facing down the flight, its two flanks. A flight facing the camera
+    wears its drawing step by step: each tread its band's lit rows, its
+    riser and flanks the band's shaded rest. Others project the room art
+    from the game's camera, (x, z - height).
     """
     if fl.get("up") is None:
         return []
@@ -630,6 +634,11 @@ def stair_quads(fl, ox, oz, lift):
     def uv(pts):
         return [(x - ox, (z - oz) - (y - lift)) for x, y, z in pts]
 
+    # the drawn bands, top of the flight first: (first row, end row, lit rows)
+    drawn = [(int(a_), int(b_), max(1, min(int(t_), int(b_) - int(a_) - 1)))
+             for a_, b_, t_, _r in (fl.get("bands") or [])]
+    if len(drawn) != n:
+        drawn = None
     quads = []
     prev = base
     for i in range(n):
@@ -662,10 +671,25 @@ def stair_quads(fl, ox, oz, lift):
                 [(xa, h, Z1), (xb, h, Z1), (xb, base, Z1), (xa, base, Z1)],
                 [(xb, h, Z0), (xa, h, Z0), (xa, base, Z0), (xb, base, Z0)],
             ]
-        for pts in boxes:
+        band = drawn[n - 1 - i] if drawn and up == "n" else None
+        for j, pts in enumerate(boxes):
             ys = {p[1] for p in pts}
-            if len(ys) == 1 or min(ys) < max(ys):
+            if not (len(ys) == 1 or min(ys) < max(ys)):
+                continue
+            if band is None:
                 quads.append((pts, uv(pts)))
+                continue
+            # the step wears its own drawn band: its tread the band's lit
+            # rows, its riser and flanks the rest -- projected, a tall
+            # flight's top tread reached past the cliff's lip into the grass
+            ra, rb, tr = band
+            if j == 0:
+                quads.append((pts, [(x - ox, ra + (z - za) / max(1, zb - za) * tr)
+                                    for x, y, z in pts]))
+            else:
+                lo = base if j > 1 else prev
+                quads.append((pts, [(x - ox, ra + tr + (h - y) / max(1, h - lo) * (rb - ra - tr))
+                                    for x, y, z in pts]))
         prev = h
     return quads
 
@@ -4438,12 +4462,34 @@ def build_area(job):
             ncell += len(cells)
             if not a.merge:
                 continue
-            Image.fromarray(art).save(out / f"{name}.png")
+            # what hangs overhead (an arch, a canopy) has its own strip
+            # below the room's picture: the captured picture composites it
+            # over the ground, which then wore it a second time
+            deck_cells = [(cx, cy) for _k, cx, cy, _y, ro in cells if ro == "deck"]
+            tex = art
+            if deck_cells and ov is not None and ov[3] is not None:
+                top_ = np.asarray(ov[3])
+                low = RE.room_art_rgb(r, 0)
+                tex = np.array(art)
+                strip = np.zeros_like(tex)
+                hh_, ww_ = tex.shape[:2]
+                for cx, cy in deck_cells:
+                    sl = (slice(cy * 16, cy * 16 + 16), slice(cx * 16, cx * 16 + 16))
+                    t_ = top_[sl]
+                    if t_.shape[:2] != (16, 16):
+                        continue
+                    strip[sl] = t_[:, :, :3]
+                    if low is not None:
+                        on = t_[:, :, 3] > 0 if t_.shape[2] == 4 else np.ones((16, 16), bool)
+                        tex[sl][on] = np.asarray(low)[sl][:, :, :3][on]
+                tex = np.vstack([tex, strip])
+            Image.fromarray(np.ascontiguousarray(tex.astype(np.uint8))).save(out / f"{name}.png")
             m = Obj(out / f"{name}.obj", HEADER + f"# {name}: tiles placed on the terrain\n",
-                    f"{name}.png", art.shape[1], art.shape[0])
+                    f"{name}.png", tex.shape[1], tex.shape[0])
             m.obj(name)
             for k, cx, cy, y, ro in cells:
-                m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16))
+                dv = art.shape[0] if (ro == "deck" and tex is not art) else 0
+                m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (cx * 16, cy * 16 + dv))
             skip = {(d["cx"], d["cy"]) for d in doors}
             grain = (wood_patch(art) if PL.location(r.area, r.room)["view"] == "terrace"
                      else None)
