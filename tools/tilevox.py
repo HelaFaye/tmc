@@ -666,6 +666,15 @@ def standing_arches(top, cls, H):
         if below < 0.4 * (y1 - y0 + 1):
             continue
         base = int(max(H[y_ // 16, x_ // 16] for y_, x_ in zip(ys[feet], xs[feet])))
+        # what sits on it -- the gate's winged Triforce -- is its own piece
+        # in the layer: within the arch's width, just above or on its top
+        for k in range(1, n + 1):
+            if k == j:
+                continue
+            ky, kx = np.nonzero(lab == k)
+            if len(ky) and len(ky) < len(ys) and kx.min() >= x0 and kx.max() <= x1 \
+                    and ky.max() <= y0 + (y1 - y0) // 3 and ky.min() >= y0 - 24:
+                ys, xs = np.concatenate([ys, ky]), np.concatenate([xs, kx])
         out.append(dict(px=set(zip(ys.tolist(), xs.tolist())), zp=int(y1) + 1 + base,
                         base=base, cells={(int(y_) // 16, int(x_) // 16) for y_, x_ in zip(ys, xs)}))
     return out
@@ -693,6 +702,9 @@ def arch_quads(a, ox, oz, lift, voff):
         if (R, X - 1) not in P:
             q.append(([(x0, y1, za), (x0, y1, zb), (x0, y0, zb), (x0, y0, za)], uv))
     return q
+
+
+STEP_MIN_TREAD = 3      # px: a step's tread at least, however thin it is drawn
 
 
 def stair_quads(fl, ox, oz, lift):
@@ -732,16 +744,29 @@ def stair_quads(fl, ox, oz, lift):
              for a_, b_, t_, _r in (fl.get("bands") or [])]
     if len(drawn) != n:
         drawn = None
+    # facing the camera, each tread lies where the 45-degree rule puts its
+    # drawn lit rows: its height further south (the level it climbs to
+    # moved there too); top step first, each below it south of it
+    ZAB = None
+    if up == "n" and drawn:
+        ZAB, end = {}, None
+        for i in range(n - 1, -1, -1):
+            ra, rb, tr = drawn[n - 1 - i]
+            hrel = int(hs[i]) - lift
+            za_ = ra + hrel if end is None else max(ra + hrel, end)
+            zb_ = max(za_ + STEP_MIN_TREAD, ra + tr + hrel)
+            ZAB[i] = (oz + za_, oz + zb_)
+            end = zb_
     quads = []
     prev = base
     for i in range(n):
         h = int(hs[i])
         a_, b_ = int(cuts[i]), int(cuts[i + 1])      # from the low end
-        if b_ <= a_ or h <= base:
+        if (b_ <= a_ and ZAB is None) or h <= base:
             prev = max(prev, h)
             continue
         if up == "n":          # low end south, rising north
-            za, zb = Z1 - b_, Z1 - a_
+            za, zb = ZAB[i] if ZAB is not None else (Z1 - b_, Z1 - a_)
             boxes = [
                 [(X0, h, za), (X1, h, za), (X1, h, zb), (X0, h, zb)],          # tread
                 [(X0, h, zb), (X1, h, zb), (X1, prev, zb), (X0, prev, zb)],    # riser
@@ -2223,6 +2248,19 @@ def hedge_cells(cls, fam, art):
     hedge = np.zeros((Hp, Wp), bool)         # drawn as hedge (top, front, outline)
     for x, zn, zs, _hf, _f, _h in runs:
         hedge[zn:zs, x] = True
+    return column_box_quads(box, south, north, hedge, region), \
+        {(int(cy), int(cx)) for cy, cx in zip(*np.nonzero(cand))}
+
+
+def column_box_quads(box, south, north, hedge, region):
+    """Cell-local quads for boxes fitted column by column to a drawing by
+    the 45-degree rule (hedges, stone blocks): box[z, x] the height over
+    each pixel, south/north each column's drawn extent, hedge where it is
+    drawn, region the cells to build. Texels are room-art rows relative
+    to the cell: the top wears the drawing h rows up, the front its band,
+    the back and ends the band again, the ground it was drawn over what
+    lies beyond its outline, mirrored."""
+    Hp, Wp = box.shape
     # the ground the box was drawn over: what lies beyond its outline,
     # mirrored -- the grass or path behind it, row for row, not one row
     # stretched (a smear)
@@ -2281,7 +2319,82 @@ def hedge_cells(cls, fam, art):
                         q.append(([(xl, y1, zl), (xl, y1, zl + 1), (xl, y0, zl + 1), (xl, y0, zl)],
                                   uv(band(zs - 1 - y), x, cy, cx)))
         out[(int(cy), int(cx))] = q
-    return out, {(int(cy), int(cx)) for cy, cx in zip(*np.nonzero(cand))}
+    return out
+
+
+
+BLOCK_MIN_SEG = 4       # px: a block's lit top and shaded front are at least this
+
+
+def flank_blocks(cls, art, flights, fam, faces_px=None):
+    """The stone a flight cuts into, standing on its own (the town gate's
+    two blocks): wall cells beside a flight with no ground of the upper
+    level right behind them. Each block is fitted column by column: the
+    lit rows its top, the shaded rows below them its front, the front's
+    height the block's (the median over its columns), the top's rows its
+    depth. Returns ({cell: quads}, cells, {cell: block height})."""
+    h_, w_ = cls.shape
+    blk = lambda y_, x_: (0 <= y_ < h_ and 0 <= x_ < w_ and cls[y_, x_] in
+                          (RE.CLASS_WALL, RE.CLASS_LEDGE) and fam[y_, x_] is None)
+    B = set()
+    for fl in flights:
+        for (cy, cx) in fl.get("cliff", ()):
+            if (cy, cx) in (faces_px or ()):
+                continue
+            y = cy
+            while blk(y - 1, cx):
+                y -= 1
+            while blk(y, cx):
+                B.add((y, cx))
+                y += 1
+    if not B:
+        return {}, set(), {}
+    M = np.zeros((h_, w_), bool)
+    for c in B:
+        M[c] = True
+    lab, n = RE._label(M)
+    A = art[:h_ * 16, :w_ * 16, :3].astype(float)
+    L = A @ np.array([0.299, 0.587, 0.114])
+    Hp, Wp = h_ * 16, w_ * 16
+    box = np.zeros((Hp, Wp), int)
+    south = np.zeros((Hp, Wp), int)
+    north = np.zeros((Hp, Wp), int)
+    drawn = np.zeros((Hp, Wp), bool)
+    heights = {}
+    for j in range(1, n + 1):
+        comp = lab == j
+        ys_, xs_ = np.nonzero(comp)
+        cols, hs = [], []
+        for x in range(xs_.min() * 16, xs_.max() * 16 + 16):
+            cyc = np.nonzero(comp[:, x // 16])[0]
+            if not len(cyc):
+                continue
+            t, b = cyc.min() * 16, cyc.max() * 16 + 15
+            run = L[t:b + 1, x]
+            best = None
+            for s_ in range(t + BLOCK_MIN_SEG, b + 1 - BLOCK_MIN_SEG):
+                d_ = run[:s_ - t].mean() - run[s_ - t:].mean()
+                if best is None or d_ > best[0]:
+                    best = (d_, s_)
+            if best is None or best[0] <= 0:
+                continue
+            cols.append((x, t, b))
+            hs.append(b + 1 - best[1])
+        if not hs:
+            continue
+        hh = int(np.median(hs))
+        for x, t, b in cols:
+            depth = max(2, (b + 1 - t) - hh)
+            box[b + 1 - depth:b + 1, x] = hh
+            south[b + 1 - depth:b + 1, x] = b + 1
+            north[b + 1 - depth:b + 1, x] = t
+            drawn[t:b + 1, x] = True
+        for (cy, cx) in zip(*np.nonzero(comp)):
+            heights[(int(cy), int(cx))] = hh
+    region = np.zeros((h_, w_), bool)
+    for c in heights:
+        region[c] = True
+    return column_box_quads(box, south, north, drawn, region), set(heights), heights
 
 
 # ----------------------------------------------------------------- shell --
@@ -3794,7 +3907,7 @@ def shell_quads(sh, ox, oz, lift):
 
 # ----------------------------------------------------------------- faces --
 
-def side_face(cx, cy, dx, dz, top, bottom, ox, oz):
+def side_face(cx, cy, dx, dz, top, bottom, ox, oz, g=0, rel=None):
     """One vertical face of cell (cx, cy) from height top down to bottom.
 
     Texels are in room-art pixels. Every face takes the d rows drawn above
@@ -3807,10 +3920,13 @@ def side_face(cx, cy, dx, dz, top, bottom, ox, oz):
     version did, streaked every flank.
     """
     x0, z0 = cx * 16, cy * 16
-    X0, X1, Z0, Z1 = ox + x0, ox + x0 + 16, oz + z0, oz + z0 + 16
+    X0, X1, Z0, Z1 = ox + x0, ox + x0 + 16, oz + z0 + g, oz + z0 + 16 + g
     a, b, d = top, bottom, top - bottom
-    foot = z0 + 16
+    foot = z0 + 16 + g
     tt, tb = foot - d, foot
+    if g and rel is not None:
+        # moved by its level: the rows the camera draws it at, z - height
+        tt, tb = foot - rel[0], foot - rel[1]
     # Windings are room_explore's, outward. The band runs left to right as
     # seen from outside: on the east and west faces the first corner is the
     # right-hand one, so their texels run the other way.
@@ -4030,7 +4146,7 @@ def bookcase_quads(cls, H, art, ox, oz, lift):
     return q, Em
 
 
-def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None, skipd=()):
+def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None, skipd=(), G=None):
     """Vertical faces wherever a cell drops to a lower neighbour; not the
     south face of the cells in skip (doorways, built by door_quads). With
     grain, faces other than south fronts wear that wood patch."""
@@ -4050,8 +4166,10 @@ def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None, skipd=()):
                     # above the floor, the drawn front; below it, the pit's
                     # own drawing (pit_face)
                     split = min(hh, max(nh, 0)) if nh < 0 and inside_room(ny, nx, rows, cols) else nh
+                    g_ = int(G[cy, cx]) if G is not None else 0
                     if split < hh:
-                        f = side_face(cx, cy, dx, dz, hh + lift, split + lift, ox, oz)
+                        f = side_face(cx, cy, dx, dz, hh + lift, split + lift, ox, oz, g_,
+                                      (hh, split))
                         if grain is not None and dz != 1:
                             quads.extend(grain_face(f[0], grain, dx, dz))
                         else:
@@ -4060,6 +4178,163 @@ def drop_faces(H, solid, ox, oz, lift, outside, skip=(), grain=None, skipd=()):
                         quads.append(pit_face(cx, cy, dx, dz, split + lift, nh + lift,
                                               ox, oz))
     return quads
+
+
+SHIFT_MIN = 8           # px: a level this high moves south by its height
+SHIFT = {}              # (area, room) -> (G, faces): each cell's shift south, face cells
+BLOCKS = {}             # (area, room) -> {cell: height}: stone blocks fitted to their drawing
+RE_CLS = {}             # (area, room) -> cell classes, for level_fills
+
+
+def room_shift(cls, H, flights, shell, boxes=(), blds=(), covered=()):
+    """The game's camera draws a point h above the ground at row z - h, so
+    a level drawn at row R and h high lies at depth R + h. Built where
+    drawn, a raised level stood h too far north and its front was built
+    twice: once as its face, once as the tops of the cells it is drawn in.
+
+    Returns G, each cell's shift south in px, and the face cells: the
+    wall cells of a cliff a flight climbs, whose drawing is that level's
+    face standing at their foot, not a top. A level under SHIFT_MIN
+    (relief) stays; an enclosed room stays. Ground moves by its height;
+    a blocked cell by the lowest ground beside it (a bush or a house
+    moves with the level it stands on, a cliff with the one below it).
+    A flight's steps move by the same rule (stair_quads)."""
+    h_, w_ = cls.shape
+    G = np.zeros((h_, w_), np.int64)
+    faces = set()
+    if shell is not None:
+        return G, faces
+    ground = cls == RE.CLASS_GROUND
+    Hg = np.where(ground & (H >= SHIFT_MIN), H, 0)
+    G[ground] = Hg[ground]
+    for cy, cx in zip(*np.nonzero(~ground & (cls != RE.CLASS_VOID))):
+        # it rests on the ground at its foot: the first open ground south
+        y_ = cy + 1
+        while y_ < h_ and not ground[y_, cx] and cls[y_, cx] != RE.CLASS_VOID:
+            y_ += 1
+        if y_ < h_ and ground[y_, cx]:
+            G[cy, cx] = Hg[y_, cx]
+            continue
+        nb = [Hg[y_, x_] for y_, x_ in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1))
+              if 0 <= y_ < h_ and 0 <= x_ < w_ and ground[y_, x_]]
+        G[cy, cx] = min(nb) if nb else 0
+    # boxes fitted to their drawing (hedges, stone blocks) already stand
+    # where the rule puts them over their ground: they move with that only
+    for c in boxes:
+        G[c] = H[c] if H[c] >= SHIFT_MIN else 0
+    # under and behind a building: with the ground it stands on
+    for b in blds:
+        g_ = int(b["base"]) if b["base"] >= SHIFT_MIN else 0
+        for (y_, x_) in b["roof"]:
+            G[y_, x_] = g_
+    for (x_, y_) in covered:
+        if 0 <= y_ < h_ and 0 <= x_ < w_:
+            # the building it is under: its columns, its foot at or south
+            # of it, the nearest such foot
+            near = sorted((b["foot"] - y_, int(b["base"])) for b in blds
+                          if b["c0"] <= x_ <= b["c1"] and b["foot"] >= y_)
+            if near:
+                G[y_, x_] = near[0][1] if near[0][1] >= SHIFT_MIN else 0
+    # a flight's own cells lie at its lower landing
+    for fl in flights:
+        x0, y0, x1, y1 = fl["rect"]
+        if fl.get("base") is not None:
+            G[y0:y1 + 1, x0:x1 + 1] = G[min(y1 + 1, h_ - 1), x0]
+    faces = cliff_faces(cls, flights)
+    for (cy, cx) in faces:
+        # with the level below it
+        y_ = cy + 1
+        while (y_, cx) in faces:
+            y_ += 1
+        G[cy, cx] = G[y_, cx] if y_ < h_ else 0
+    return G, faces
+
+
+def cliff_faces(cls, flights):
+    """The cells of a cliff a flight climbs that are drawn as its face: a
+    run down a column with the upper level's ground right behind it. A
+    run with stone behind it is a block standing on its own."""
+    h_ = cls.shape[0]
+    faces = set()
+    for fl in flights:
+        cl_ = set(fl.get("cliff", ()))
+        for (cy, cx) in cl_:
+            y = cy
+            while (y - 1, cx) in cl_:
+                y -= 1
+            if y > 0 and cls[y - 1, cx] == RE.CLASS_GROUND:
+                faces.add((cy, cx))
+    return faces
+
+
+def shift_quads(quads, dz):
+    """quads moved dz south; their texels stay."""
+    if not dz:
+        return quads
+    return [([(x, y, z + dz) for x, y, z in pts], uv) for pts, uv in quads]
+
+
+def plain_ground(art, cls, G, cy, cx, reach=3):
+    """The plainest ground cell near (cy, cx) on the same level: fewest
+    colours (grass, not a pot or a flower bed). None if there is none."""
+    h_, w_ = cls.shape
+    best = None
+    for yy in range(max(0, cy - reach), min(h_, cy + reach + 1)):
+        for xx in range(max(0, cx - reach), min(w_, cx + reach + 1)):
+            if cls[yy, xx] != RE.CLASS_GROUND or G[yy, xx] != G[cy, cx]:
+                continue
+            px = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16].reshape(-1, 3)
+            sc = (len(np.unique(px, axis=0)), abs(yy - cy) + abs(xx - cx))
+            if best is None or sc < best[0]:
+                best = (sc, (yy, xx))
+    return best[1] if best else None
+
+
+def level_fills(G, H, cls, faces, ox, oz, lift, art=None):
+    """What the shift leaves open: behind a moved level, from where the
+    cell north of it now ends to where it now begins, at its height,
+    wearing its own first rows mirrored; on a face run, from where the
+    level behind it now ends to the face's foot, at the face's top,
+    wearing the lip drawn there."""
+    h_, w_ = G.shape
+    q = []
+    for cy in range(h_):
+        for cx in range(w_):
+            if (cy, cx) in faces or cls[cy, cx] != RE.CLASS_GROUND or G[cy, cx] <= 0:
+                continue
+            gn = G[cy - 1, cx] if cy > 0 and (cy - 1, cx) not in faces else 0
+            if gn >= G[cy, cx]:
+                continue
+            y = int(H[cy, cx]) + lift
+            src = plain_ground(art, cls, G, cy, cx) if art is not None else None
+            sy, sx = src if src else (cy, cx)
+            x0, x1 = ox + cx * 16, ox + cx * 16 + 16
+            z = cy * 16 + int(gn)
+            while z < cy * 16 + int(G[cy, cx]):     # tiled a cell at a time
+                n_ = min(16, cy * 16 + int(G[cy, cx]) - z)
+                q.append(([(x0, y, oz + z), (x1, y, oz + z), (x1, y, oz + z + n_), (x0, y, oz + z + n_)],
+                          [(sx * 16, sy * 16), (sx * 16 + 16, sy * 16),
+                           (sx * 16 + 16, sy * 16 + n_), (sx * 16, sy * 16 + n_)]))
+                z += n_
+    for (cy, cx) in faces:
+        if (cy - 1, cx) in faces:
+            continue
+        ye = cy
+        while (ye + 1, cx) in faces:
+            ye += 1
+        up = (cy - 1, cx)
+        if cy == 0 or (cls[up] != RE.CLASS_GROUND):
+            continue
+        hh = int(H[cy, cx])
+        z0 = cy * 16 + int(G[up])
+        z1 = (ye + 1) * 16
+        if z1 <= z0:
+            continue
+        y = hh + lift
+        x0, x1 = ox + cx * 16, ox + cx * 16 + 16
+        q.append(([(x0, y, oz + z0), (x1, y, oz + z0), (x1, y, oz + z1), (x0, y, oz + z1)],
+                  [(cx * 16, z0 - hh), (cx * 16 + 16, z0 - hh), (cx * 16 + 16, z1 - hh), (cx * 16, z1 - hh)]))
+    return q
 
 
 # ---------------------------------------------------------------- overlay --
@@ -4363,28 +4638,6 @@ def build_area(job):
                         for c_ in more:
                             if H[c_] < fl_["top"]:
                                 H[c_] = fl_["top"]
-                    for (cy, cx) in cl_:
-                        # the ground right behind the cliff; a pillar or a
-                        # wall that goes on behind it keeps its own top
-                        sy = cy - 1
-                        while (sy, cx) in cl_:
-                            sy -= 1
-                        if sy < 0 or cls[sy, cx] != RE.CLASS_GROUND:
-                            continue
-                        # the plainest ground near there (grass, not a pot
-                        # or a flower bed, which would stand there twice)
-                        best = None
-                        for yy in range(max(0, sy - 3), sy + 1):
-                            for xx in range(max(0, cx - 3), min(cls.shape[1], cx + 4)):
-                                if cls[yy, xx] != RE.CLASS_GROUND or fam[yy, xx] is not None \
-                                        or (yy, xx) in cl_:
-                                    continue
-                                px_ = art[yy * 16:yy * 16 + 16, xx * 16:xx * 16 + 16].reshape(-1, 3)
-                                sc = (len(np.unique(px_, axis=0)), abs(xx - cx) + (sy - yy))
-                                if best is None or sc < best[0]:
-                                    best = (sc, (yy, xx))
-                        if best is not None:
-                            under[(cy, cx)] = best[1]
                     if os.environ.get("TV_DBG") and cl_:
                         print("CLIFFTOP", fl_["rect"], len(cl_), file=sys.stderr)
                 # foliage: the solid stops FOLIAGE_ROUND short, and the
@@ -4395,12 +4648,24 @@ def build_area(job):
                     shapes[key_] = (hm, 0)
                 # clipped hedges: boxes as tall as their drawn front
                 hedges, hedge_walls = hedge_cells(cls, fam, art)
+                bq_, bcells_, bheights_ = flank_blocks(cls, art, flights, fam,
+                                                       cliff_faces(cls, flights))
+                low_ = {}
+                for fl_ in flights:
+                    if fl_.get("base") is not None:
+                        for c_ in bcells_:
+                            low_[c_] = fl_["base"]
+                for c_, q_ in bq_.items():
+                    hedges[c_] = q_
+                for c_ in bcells_:
+                    hedge_walls.add(c_)
+                BLOCKS[(r.area, r.room)] = bheights_
                 if os.environ.get("TV_DBG") and hedges:
                     print("HEDGE", f"{r.area:02d}_{r.room:02d}", len(hedge_walls),
                           sorted((x_, y_) for y_, x_ in hedge_walls)[:40], file=sys.stderr)
                 for key_ in hedges:
                     if key_ in hedge_walls:
-                        H[key_] = ffloor[key_]
+                        H[key_] = low_.get(key_, ffloor[key_])
                     shapes.pop(key_, None)
                     if fam[key_] == "foliage":
                         fam[key_] = None
@@ -4478,6 +4743,14 @@ def build_area(job):
                     H = np.array(H)
                     fl_ = (cls == RE.CLASS_GROUND)[caserows + 1:]
                     H[:caserows + 1] = int(np.median(H[caserows + 1:][fl_])) if fl_.any() else 0
+            if PL.location(r.area, r.room)["view"] == "terrace":
+                G_, faces_ = np.zeros(cls.shape, np.int64), set()
+            else:
+                G_, faces_ = room_shift(cls, np.asarray(H), flights, shell,
+                                        set(hedges) if not a.no_families else (),
+                                        blds, covered)
+            SHIFT[(r.area, r.room)] = (G_, faces_)
+            RE_CLS[(r.area, r.room)] = cls
             cells = []
             for cy in range(r.cells_h):
                 for cx in range(r.cells_w):
@@ -4486,6 +4759,8 @@ def build_area(job):
                         continue
                     if cy <= caserows:
                         continue
+                    if (cy, cx) in faces_:
+                        continue            # drawn as a face: it stands at their foot
                     if shell is not None and shell["R"][cy, cx]:
                         continue
                     if shell is not None and shell.get("box") is not None \
@@ -4545,7 +4820,10 @@ def build_area(job):
                 arch = {(d["cx"] + dx_, y_) for d in doors for dx_ in (-1, 0, 1)
                         for y_ in range(d["top"], d["cy"] + 1)}
                 decks = [dk for dk in decks if (dk[0], dk[1]) not in arch]
-                arches = standing_arches(top, cls, H)
+                Ha_ = np.array(H)
+                for c_, hh_ in BLOCKS.get((r.area, r.room), {}).items():
+                    Ha_[c_] = Ha_[c_] + hh_
+                arches = standing_arches(top, cls, Ha_)
                 acells = {c for a_ in arches for c in a_["cells"]}
                 decks = [dk for dk in decks if (dk[1], dk[0]) not in acells]
                 for cx, cy, hh in decks:
@@ -4607,9 +4885,11 @@ def build_area(job):
         for r, lift, art, H, solid, cells, ov, flights, doors, blds, ups, shell in placed:
             name = f"room_{r.area:02d}_{r.room:02d}"
             ox, oz = r.origin_x, r.origin_y
+            G, faces = SHIFT.get((r.area, r.room), (np.zeros(H.shape, np.int64), set()))
             for k, cx, cy, y, ro in cells:
+                g_ = (y - lift) if ro == "deck" and G.any() else int(G[cy, cx])
                 place.write(f"{k} {name} {cx} {cy} {ox + cx * 16} {y} "
-                            f"{oz + cy * 16} {ro}\n")
+                            f"{oz + cy * 16 + g_} {ro}\n")
             ncell += len(cells)
             if not a.merge:
                 continue
@@ -4645,7 +4925,10 @@ def build_area(job):
                 # a cell built from another's drawing (the ground under a
                 # fence, behind a building, on a cliff's top) wears that one
                 tx_, ty_ = TEX_SRC.get((r.area, r.room, cx, cy), (cx, cy)) if not dv else (cx, cy)
-                m.quads(models[k], (ox + cx * 16, y, oz + cy * 16), (tx_ * 16, ty_ * 16 + dv))
+                # what hangs overhead moves by its own height, h up drawn h south
+                g_ = (y - lift) if ro == "deck" and G.any() else int(G[cy, cx])
+                m.quads(models[k], (ox + cx * 16, y, oz + cy * 16 + g_),
+                        (tx_ * 16, ty_ * 16 + dv))
             skip = {(d["cx"], d["cy"]) for d in doors}
             grain = (wood_patch(art) if PL.location(r.area, r.room)["view"] == "terrace"
                      else None)
@@ -4654,7 +4937,9 @@ def build_area(job):
                 solid = np.zeros_like(solid)
             cb = cliffs.get((r.area, r.room))
             m.quads(drop_faces(H, solid, ox, oz, lift, a.outside, skip, grain,
-                               cb["skip"] if cb else ()))
+                               cb["skip"] if cb else (), G))
+            m.quads(level_fills(G, H, RE_CLS.get((r.area, r.room)), faces, ox, oz, lift, art)
+                    if (r.area, r.room) in RE_CLS else [])
             if cb:
                 m.quads([([(ox + x, y + lift, oz + z) for x, y, z in p], uv)
                          for p, uv in cb["faces"]])
@@ -4667,20 +4952,25 @@ def build_area(job):
                 for pz in shell.get("pieces", []):
                     m.quads(shell_quads(pz, ox, oz, lift))
             box_ = shell is not None and shell.get("box") is not None
+            gh_, gw_ = G.shape
+            g_at = lambda y_, x_: int(G[min(max(y_, 0), gh_ - 1), min(max(x_, 0), gw_ - 1)])
             for d in doors:
                 if not box_:            # in a box, a doorway is its wall's opening
-                    m.quads(door_quads(d, ox, oz, lift))
+                    m.quads(shift_quads(door_quads(d, ox, oz, lift), g_at(d["cy"], d["cx"])))
             for b in blds:
-                m.quads(building_quads(b, ox, oz, lift))
+                m.quads(shift_quads(building_quads(b, ox, oz, lift),
+                                    max(g_at(b["foot"], c_) for c_ in range(b["c0"], b["c1"] + 1))))
             for u in ups:
-                m.quads(upright_quads(u, ox, oz, lift))
+                cx_, cy_ = u["cells"][0]
+                m.quads(shift_quads(upright_quads(u, ox, oz, lift), g_at(cy_, cx_)))
             m.use("tmc_flame")
             for u in ups:
                 m.quads(upright_flame(u, ox, oz, lift))
             m.quads(torch_flames(r, art, H, lift, ox, oz))
             m.use("tmc")
             for fl in flights:
-                m.quads(stair_quads(fl, ox, oz, lift))
+                m.quads(shift_quads(stair_quads(fl, ox, oz, lift),
+                                    g_at(fl["rect"][3] + 1, fl["rect"][0])))
             if ov is not None:
                 decks, cf, occ, top_, arches_ = ov
                 m.quads(deck_skirts(decks, occ, H, ox, oz, lift, top_))
