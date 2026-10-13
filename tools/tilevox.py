@@ -681,8 +681,11 @@ def standing_arches(top, cls, H):
         T_ = np.asarray(top)
         lum = {(int(y_), int(x_)): float(T_[y_, x_, :3] @ np.array([0.299, 0.587, 0.114]))
                for y_, x_ in zip(ys, xs)}
+        hue_, sat_, _v = TI._hsv(T_[ys, xs, :3])
+        gold = {(int(y_), int(x_)) for y_, x_, h_, s_ in zip(ys, xs, hue_, sat_)
+                if 35 <= h_ < 70 and s_ >= 0.45}
         out.append(dict(px=set(zip(ys.tolist(), xs.tolist())), zp=int(y1) + 1 + base,
-                        base=base, lum=lum,
+                        base=base, lum=lum, gold=gold, box=(int(y0), int(y1), int(x0), int(x1)),
                         cells={(int(y_) // 16, int(x_) // 16) for y_, x_ in zip(ys, xs)}))
     return out
 
@@ -695,7 +698,8 @@ def arch_quads(a, ox, oz, lift, voff):
     front pixel at its drawn height above the legs' foot (the 45-degree
     rule), its top wearing the lit band, its back the front again."""
     lum = a.get("lum", {})
-    P = {p for p in a["px"] if lum.get(p, 255) >= ARCH_OUTLINE}
+    gold = a.get("gold", set())
+    P = {p for p in a["px"] if lum.get(p, 255) >= ARCH_OUTLINE and p not in gold}
     if not P:
         return []
     cols = {}
@@ -749,6 +753,66 @@ def arch_quads(a, ox, oz, lift, voff):
         if (R, X - 1) not in F:
             q.append(([(x0, y1, za), (x0, y1, zb), (x0, y0, zb), (x0, y0, za)], uv))
     return q
+
+
+ORNAMENT_T = 4          # px: an ornament's thickness (the Triforce on the arch)
+
+
+def slab_quads(P, zc, T, ox, oz, lift, voff, round_=False):
+    """Pixels P {(row, x)} standing in the plane z = zc, each at its drawn
+    height above zc's ground (zc - row); a flat slab T thick, or, round,
+    each row a disc as wide as it is drawn (a bell). Every face wears its
+    row's pixel, so its back and sides match its front."""
+    rows = {}
+    for (R, X) in P:
+        rows.setdefault(R, []).append(X)
+    vox = set()
+    for R, xs in rows.items():
+        x0_, x1_ = min(xs), max(xs)
+        if round_:
+            cx, rr = (x0_ + x1_ + 1) / 2.0, (x1_ - x0_ + 1) / 2.0
+            for X in xs:
+                d = np.sqrt(max(0.0, rr * rr - (X + 0.5 - cx) ** 2))
+                for z in range(int(np.floor(zc - d)), int(np.ceil(zc + d))):
+                    vox.add((R, X, z))
+        else:
+            for X in xs:
+                for z in range(zc - T // 2, zc - T // 2 + T):
+                    vox.add((R, X, z))
+    q = []
+    for (R, X, z) in vox:
+        y0, y1 = lift + zc - R - 1, lift + zc - R
+        x0, x1, Z0, Z1 = ox + X, ox + X + 1, oz + z, oz + z + 1
+        uv = [(X + 0.5, voff + R + 0.5)] * 4
+        if (R - 1, X, z) not in vox:
+            q.append(([(x0, y1, Z0), (x1, y1, Z0), (x1, y1, Z1), (x0, y1, Z1)], uv))
+        if (R + 1, X, z) not in vox:
+            q.append(([(x0, y0, Z1), (x1, y0, Z1), (x1, y0, Z0), (x0, y0, Z0)], uv))
+        if (R, X, z + 1) not in vox:
+            q.append(([(x0, y1, Z1), (x1, y1, Z1), (x1, y0, Z1), (x0, y0, Z1)], uv))
+        if (R, X, z - 1) not in vox:
+            q.append(([(x1, y1, Z0), (x0, y1, Z0), (x0, y0, Z0), (x1, y0, Z0)], uv))
+        if (R, X + 1, z) not in vox:
+            q.append(([(x1, y1, Z1), (x1, y1, Z0), (x1, y0, Z0), (x1, y0, Z1)], uv))
+        if (R, X - 1, z) not in vox:
+            q.append(([(x0, y1, Z0), (x0, y1, Z1), (x0, y0, Z1), (x0, y0, Z0)], uv))
+    return q
+
+
+def arch_hangs(a, sprite):
+    """Sprite shapes hanging inside an arch (the town gate's bell): within
+    its box, clear of its foot."""
+    if sprite is None:
+        return []
+    y0, y1, x0, x1 = a["box"]
+    sub = sprite[y0:y1 + 1, x0:x1 + 1]
+    lab, n = RE._label(sub)
+    out = []
+    for j in range(1, n + 1):
+        ys, xs = np.nonzero(lab == j)
+        if len(ys) >= 20 and ys.max() < (y1 - y0) - 8:
+            out.append({(int(y) + y0, int(x) + x0) for y, x in zip(ys, xs)})
+    return out
 
 
 STEP_MIN_TREAD = 3      # px: a step's tread at least, however thin it is drawn
@@ -5240,6 +5304,17 @@ def build_area(job):
                     if low is not None:
                         on = t_[:, :, 3] > 0 if t_.shape[2] == 4 else np.ones((16, 16), bool)
                         tex[sl][on] = np.asarray(low)[sl][:, :, :3][on]
+                # what hangs in an arch: its pixels to the strip, the
+                # ground under them to the ground layer
+                sh_ = shown(r)
+                for a_ in (ov[4] if ov is not None else ()):
+                    a_["hangs"] = arch_hangs(a_, sh_[1] if sh_ is not None else None)
+                    for hp_ in a_["hangs"]:
+                        for (R, X) in hp_:
+                            if R < tex.shape[0] and X < tex.shape[1]:
+                                strip[R, X] = art[R, X]
+                                if low is not None:
+                                    tex[R, X] = np.asarray(low)[R, X, :3]
                 tex = np.vstack([tex, strip])
             Image.fromarray(np.ascontiguousarray(tex.astype(np.uint8))).save(out / f"{name}.png")
             m = Obj(out / f"{name}.obj", HEADER + f"# {name}: tiles placed on the terrain\n",
@@ -5307,6 +5382,10 @@ def build_area(job):
                 m.quads(deck_skirts(decks, occ, H, ox, oz, lift, top_))
                 for a_ in arches_:
                     m.quads(arch_quads(a_, ox, oz, lift, art.shape[0]))
+                    if a_.get("gold"):
+                        m.quads(slab_quads(a_["gold"], a_["zp"], ORNAMENT_T, ox, oz, lift, art.shape[0]))
+                    for hp_ in a_.get("hangs", ()):
+                        m.quads(slab_quads(hp_, a_["zp"], 0, ox, oz, lift, art.shape[0], round_=True))
                 if cf is not None:
                     m.quads(crown_quads(cf, ox, oz, lift))
             nfaces += m.faces
