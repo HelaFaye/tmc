@@ -1649,11 +1649,13 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
                 cap = gz0 + gy * st - ct[x]
                 sc = min(sc, max(0.0, (cap - hb_) / float(Hg[gy, gx] - hb_)))
         if b["doors"]:
-            # a house with a front: each column to its own drawn top
+            # a house with a front: to its roof's typical drawn top, one
+            # smooth line across it (column by column was bumpy)
+            ch_ = hp.get("chimney")
+            tops = [t for x, t in ct.items() if not (ch_ and ch_[2] <= x <= ch_[3])]
+            tline = int(np.percentile(tops, 25)) if tops else min(ct.values())
             for gy, gx in zip(*np.nonzero(M)):
-                x = gx0 + gx * st + st // 2
-                if x in ct:
-                    Hg[gy, gx] = max(1, min(Hg[gy, gx], gz0 + gy * st - ct[x]))
+                Hg[gy, gx] = max(1, min(Hg[gy, gx], gz0 + gy * st - tline))
         else:
             # one seen only from above and behind (stacked mushroom houses):
             # lowered evenly, so its columns do not ramp along the camera
@@ -1685,8 +1687,9 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
         # camera (north), which the game never draws, wears the front half
         # mirrored about the ridge
         P_ = np.asarray(pts, float)
+        # (emit_canopy winds a south wall to a negative z cross product)
         nz = np.cross(P_[1] - P_[0], P_[2] - P_[0])[2]
-        if nz < -1e-6:
+        if nz > 1e-6:
             return [(x - ox, (2 * zmid - z) - oz - (y - ground)) for x, y, z in pts]
         return [(x - ox, z - oz - (y - ground)) for x, y, z in pts]
 
