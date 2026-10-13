@@ -1253,46 +1253,236 @@ def find_buildings(r, cls, H, doors, cf=None, crown=None):
     return H, out, covered
 
 
-def building_quads(b, ox, oz, lift):
+ROOF_RISE = 16          # px: a roof's flat top above its eaves
+CHIMNEY_MIN = 30        # px: smallest stone shape on a roof built as a chimney
+CHIMNEY_MAX = (28, 40)  # px: widest, tallest
+PLANK_W = (2, 12)       # px: a plank's drawn width
+PLANK_MIN = 16          # px: shortest plank
+
+
+def _hsl(px):
+    hue, sat, v = TI._hsv(px)
+    return hue, sat, px[..., :3].astype(float) @ np.array([0.299, 0.587, 0.114])
+
+
+def house_parts(b, art, top, H=None):
+    """What a house's drawing says beyond its outline. In the columns over
+    its roof (the overhead layer):
+      eave    the roof's lowest drawn row per column; the wall below it to
+              the foot is the house's wall height
+      flat    the roof's lightest blob (the light patch): its flat top
+      chimney a light stone shape on the roof (low colour, bright)
+      plank   a narrow strip of wood running down onto the roof
+    Each is None where the drawing has none."""
+    if top is None or art is None:
+        return None
+    c0, c1, foot = b["c0"], b["c1"], b["foot"]
+    y0 = max(0, min(b["top"].values()) * 16 - 48)
+    x0, x1, y1 = c0 * 16, (c1 + 1) * 16, foot * 16
+    A = np.asarray(top)[y0:y1, x0:x1]
+    # its own roof cells only: the overhead layer holds walls beside it too
+    own = np.zeros(A.shape[:2], bool)
+    for (cy, cx) in b["roof"]:
+        yy, xx = cy * 16 - y0, cx * 16 - x0
+        if 0 <= yy < own.shape[0] and 0 <= xx < own.shape[1]:
+            own[max(0, yy):yy + 16, max(0, xx):xx + 16] = True
+    alpha = (A[:, :, 3] > 0) & own
+    if alpha.sum() < 64:
+        return None
+    hue, sat, lum = _hsl(np.asarray(art)[y0:y1, x0:x1])
+    wood = (hue >= 10) & (hue < 45) & (sat >= 0.3) & (sat < 0.75) & (lum > 50) & (lum < 200)
+    stone = (sat < 0.2) & (lum > 120)
+    out = dict(y0=y0, x0=x0, hw=None, flat=None, chimney=None, plank=None, roof_top=None)
+    # the plank: a narrow tall wood blob
+    lab, n = RE._label(wood)
+    for j in range(1, n + 1):
+        ys, xs = np.nonzero(lab == j)
+        w_, h_ = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+        if PLANK_W[0] <= w_ <= PLANK_W[1] and h_ >= PLANK_MIN and h_ >= 2 * w_:
+            out["plank"] = (int(ys.min()) + y0, int(ys.max()) + y0,
+                            int(xs.min()) + x0, int(xs.max()) + x0)
+            break
+    roof = alpha & ~wood
+    lab, n = RE._label(roof & stone)
+    best = None
+    for j in range(1, n + 1):
+        k = int((lab == j).sum())
+        if k < CHIMNEY_MIN or (best is not None and k <= best[0]):
+            continue
+        ys_, xs_ = np.nonzero(lab == j)
+        if xs_.max() - xs_.min() + 1 > CHIMNEY_MAX[0] or ys_.max() - ys_.min() + 1 > CHIMNEY_MAX[1]:
+            continue
+        # on the roof: roof to either side of it, in its rows
+        rs = slice(ys_.min(), ys_.max() + 1)
+        left = roof[rs, :max(0, xs_.min())].any()
+        right = roof[rs, xs_.max() + 1:].any()
+        if left and right:
+            best = (k, j)
+    if best:
+        ys, xs = np.nonzero(lab == best[1])
+        out["chimney"] = (int(ys.min()) + y0, int(ys.max()) + y0,
+                          int(xs.min()) + x0, int(xs.max()) + x0)
+        roof = roof & ~(lab == best[1])
+    # grey stone beside it (a wall the overhead layer also draws) is not roof
+    lab_s, n_s = RE._label(roof & (sat < 0.2))
+    for j in range(1, n_s + 1):
+        ys_, xs_ = np.nonzero(lab_s == j)
+        if xs_.min() == 0 or xs_.max() == roof.shape[1] - 1:
+            roof = roof & ~(lab_s == j)
+    if roof.any():
+        out["roof_top"] = int(np.nonzero(roof.any(axis=1))[0].min()) + y0
+    # eaves and the wall
+    eaves = [int(np.nonzero(roof[:, x])[0].max()) + y0 for x in range(roof.shape[1])
+             if roof[:, x].any()]
+    if eaves:
+        out["hw"] = int(min(48, max(8, y1 - int(np.median(eaves)))))
+    # the flat top: the lightest blob of roof
+    if roof.sum() >= 64:
+        lim = np.percentile(lum[roof], 75)
+        lab, n = RE._label(roof & (lum >= lim) & (sat >= 0.2))
+        if n:
+            sizes = np.bincount(lab.ravel())
+            sizes[0] = 0
+            j = int(sizes.argmax())
+            if sizes[j] >= 0.05 * roof.sum():
+                F = np.zeros(art.shape[:2], bool)
+                F[y0:y1, x0:x1] = lab == j
+                out["flat"] = F
+    return out
+
+
+def chimney_quads(ch, z_base, y_base, ox, oz, lift, ground=0):
+    """A chimney: a square base, a round stack on it, as wide as drawn and
+    as tall as its drawing less its round top's depth; textured from the
+    game's camera."""
+    r0, r1, x0, x1 = ch
+    w = x1 - x0 + 1
+    hc = max(4, (r1 - r0 + 1) - w // 2)
+    hbase = max(2, int(round(hc * 0.4)))
+    cx, cz = (x0 + x1 + 1) / 2.0, z_base - w / 2.0
+    rad = w / 2.0 * 0.85
+    vox = {}
+    for y in range(hc):
+        for z in range(int(z_base - w), int(z_base)):
+            for x in range(x0, x1 + 1):
+                if y >= hbase and (x + 0.5 - cx) ** 2 + (z + 0.5 - cz) ** 2 > rad * rad:
+                    continue
+                vox[(x, y, z)] = True
+    q = []
+    S_ = set(vox)
+    for (x, y, z), _uv in vox.items():
+        X, Y, Z = ox + x, lift + ground + y_base + y, oz + z
+        t = [(x + 0.5, z - (y_base + y) + 0.5)] * 4
+        if (x, y + 1, z) not in S_:
+            q.append(([(X, Y + 1, Z), (X + 1, Y + 1, Z), (X + 1, Y + 1, Z + 1), (X, Y + 1, Z + 1)], t))
+        if (x, y, z + 1) not in S_:
+            q.append(([(X, Y + 1, Z + 1), (X + 1, Y + 1, Z + 1), (X + 1, Y, Z + 1), (X, Y, Z + 1)], t))
+        if (x, y, z - 1) not in S_:
+            q.append(([(X + 1, Y + 1, Z), (X, Y + 1, Z), (X, Y, Z), (X + 1, Y, Z)], t))
+        if (x + 1, y, z) not in S_:
+            q.append(([(X + 1, Y + 1, Z), (X + 1, Y + 1, Z + 1), (X + 1, Y, Z + 1), (X + 1, Y, Z)], t))
+        if (x - 1, y, z) not in S_:
+            q.append(([(X, Y + 1, Z + 1), (X, Y + 1, Z), (X, Y, Z), (X, Y, Z + 1)], t))
+    return q
+
+
+def plank_quads(pl, y_top, y_bot, ox, oz, lift):
+    """A plank drawn running down onto a roof: a board from its upper end,
+    on the level it starts from, to its lower end on the roof, each drawn
+    row where the 45-degree rule puts it, the same face above and below."""
+    r0, r1, x0, x1 = pl
+    q = []
+    n = max(1, r1 - r0)
+    for r in range(r0, r1 + 1):
+        ya = y_top + (y_bot - y_top) * (r - r0) / n
+        yb = y_top + (y_bot - y_top) * (r + 1 - r0) / n
+        za, zb = r + ya, r + 1 + yb
+        X0, X1 = ox + x0, ox + x1 + 1
+        uv = [(x0, r), (x1 + 1, r), (x1 + 1, r + 1), (x0, r + 1)]
+        pts = [(X0, lift + ya + 1, oz + za), (X1, lift + ya + 1, oz + za),
+               (X1, lift + yb + 1, oz + zb), (X0, lift + yb + 1, oz + zb)]
+        q.append((pts, uv))
+        q.append((pts[::-1], uv[::-1]))
+    return q
+
+
+def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
     """The building's volume, textured by projecting the room art from the
     game's camera -- its top takes the roof drawn above it, its front the
     wall and door drawn above its foot. Door cells are notched out full
     height (door_quads builds their front) and lidded at the roof."""
     st = BUILDING_STEP
     c0, c1, foot = b["c0"], b["c1"], b["foot"]
-    dmax = max(b["depth"].values())
+    hp = house_parts(b, art, top, H)
+    dmax = int(np.median(list(b["depth"].values())))
+    if hp and hp["hw"] and hp["roof_top"] is not None:
+        # its back eave, hw up, is drawn at the roof's top row: by the
+        # 45-degree rule it stands that far behind the foot
+        dmax = max(16, foot * 16 - (hp["roof_top"] + hp["hw"]))
     rows = (dmax + st - 1) // st
     cols = (c1 - c0 + 1) * 16 // st
     gx0, gz0 = c0 * 16, foot * 16 - rows * st        # room pixels
     Hg = np.zeros((rows, cols), int)
     M = np.zeros((rows, cols), bool)
+    # a house is a box: one depth across it (over a door the roof drawn
+    # shallower is the door's arch, not a notch in the house)
+    dep_all = dmax
     for gx in range(cols):
-        c = c0 + (gx * st) // 16
-        dep = b["depth"][c]
+        dep = dep_all
         for gy in range(rows):
             z = gz0 + gy * st
             if z >= foot * 16 - dep:
                 M[gy, gx] = True
-    door_cols = {d["cx"] for d in b["doors"]}
-    for gx in range(cols):
-        if c0 + (gx * st) // 16 in door_cols:
-            for gy in range(rows):
-                if gz0 + gy * st >= foot * 16 - 16:
-                    M[gy, gx] = False
-    # roof: dome or gable over the plan, heights in 2px steps
+    # a doorway is not cut through the house: door_quads builds its front
+    # ys, xs: the plan
     ys, xs = np.nonzero(M)
     if not len(ys):
         return []
     zc, xc = (ys.min() + ys.max() + 1) / 2.0, (xs.min() + xs.max() + 1) / 2.0
     rz, rx = max(1.0, (ys.max() - ys.min() + 1) / 2.0), max(1.0, (xs.max() - xs.min() + 1) / 2.0)
-    for gy, gx in zip(ys, xs):
-        v = (gy + 0.5 - zc) / rz
-        u = (gx + 0.5 - xc) / rx
-        if b["style"] == "dome":
-            add = BUILDING_ROOF * np.sqrt(max(0.0, 1.0 - u * u - v * v))
-        else:
-            add = BUILDING_ROOF * max(0.0, 1.0 - abs(v))
-        Hg[gy, gx] = b["hb"] + 2 * int(round(add / 2.0))
+    hb = b["hb"]
+    Fp = None
+    if hp and hp["hw"] and hp["flat"] is not None:
+        # the light patch is its flat top, ROOF_RISE over walls as tall as
+        # the drawn wall; the roof falls from it to the eaves
+        hb = hp["hw"]
+        Ht = hb + ROOF_RISE
+        Fp = np.zeros((rows, cols), bool)
+        F = hp["flat"]
+        for gy, gx in zip(ys, xs):
+            z = gz0 + gy * st + st // 2
+            x = gx0 + gx * st + st // 2
+            r_ = z - Ht
+            if 0 <= r_ < F.shape[0] and 0 <= x < F.shape[1] and F[r_, x]:
+                Fp[gy, gx] = True
+        if not Fp.any():
+            Fp = None
+    if Fp is not None:
+        D = np.where(Fp, 0, 10 ** 6)
+        for _ in range(rows + cols):
+            P = np.pad(D, 1, constant_values=10 ** 6)
+            D2 = np.minimum.reduce([D, P[:-2, 1:-1] + 1, P[2:, 1:-1] + 1,
+                                    P[1:-1, :-2] + 1, P[1:-1, 2:] + 1])
+            if (D2 == D).all():
+                break
+            D = D2
+        run = max(1, int(D[M].max()))
+        for gy, gx in zip(ys, xs):
+            Hg[gy, gx] = hb + int(round(ROOF_RISE * (1 - D[gy, gx] / run)))
+        b = dict(b, hb=hb)
+        if os.environ.get("TV_ROOF"):
+            print("ROOF", b["c0"], b["foot"], "run", run, file=sys.stderr)
+            for row in Hg:
+                print(" ".join("%2d" % v for v in row), file=sys.stderr)
+    else:
+        for gy, gx in zip(ys, xs):
+            v = (gy + 0.5 - zc) / rz
+            u = (gx + 0.5 - xc) / rx
+            if b["style"] == "dome":
+                add = BUILDING_ROOF * np.sqrt(max(0.0, 1.0 - u * u - v * v))
+            else:
+                add = BUILDING_ROOF * max(0.0, 1.0 - abs(v))
+            Hg[gy, gx] = b["hb"] + 2 * int(round(add / 2.0))
     ground = b["base"] + lift
     q = []
 
@@ -1312,6 +1502,13 @@ def building_quads(b, ox, oz, lift):
 
     def wall_uv(pts):
         ys = [p_[1] for p_ in pts]
+        zs0 = {p_[2] for p_ in pts}
+        if max(ys) > ground + b["hb"] and max(ys) != min(ys) and len(zs0) == 1 \
+                and next(iter(zs0)) == plan_z0:
+            # the roof's back, which the game never draws: the drawn front
+            # slope above the eaves, rising as the back does
+            eave = foot * 16 - b["hb"]
+            return [(x - ox, eave - 2 * max(0, y - ground - b["hb"])) for x, y, z in pts]
         if min(ys) > ground or max(ys) == min(ys):
             return uvf(pts)
         xs_ = {p_[0] for p_ in pts}
@@ -1328,12 +1525,16 @@ def building_quads(b, ox, oz, lift):
         q.append((pts, uv))
     RE.emit_canopy(quad, (Hg, np.zeros((rows, cols, 3)), M), ox + gx0, oz + gz0,
                    ground, step=st, uvf=wall_uv, merge=True)
-    # lids over the door notches
-    for d in b["doors"]:
-        X0, Z1 = ox + d["cx"] * 16, oz + foot * 16
-        y = ground + b["hb"]
-        p = [(X0, y, Z1 - 16), (X0 + 16, y, Z1 - 16), (X0 + 16, y, Z1), (X0, y, Z1)]
-        q.append((p, uvf(p)))
+    if hp and Fp is not None:
+        Ht = hb + ROOF_RISE
+        if hp["chimney"]:
+            # on the flat top: its foot drawn at row r1 stands at r1 + Ht
+            q.extend(chimney_quads(hp["chimney"], hp["chimney"][1] + 1 + Ht,
+                                   Ht, ox, oz, lift, b["base"]))
+        if hp["plank"] and H is not None and not os.environ.get("TV_NOPLANK"):
+            r0, r1, px0, px1 = hp["plank"]
+            hy, hx = min(r0 // 16, H.shape[0] - 1), min(px0 // 16, H.shape[1] - 1)
+            q.extend(plank_quads(hp["plank"], int(H[hy, hx]), b["base"] + Ht, ox, oz, lift))
     return q
 
 
@@ -2326,7 +2527,7 @@ def column_box_quads(box, south, north, hedge, region):
 BLOCK_MIN_SEG = 4       # px: a block's lit top and shaded front are at least this
 
 
-def flank_blocks(cls, art, flights, fam, faces_px=None):
+def flank_blocks(cls, art, flights, fam, faces_px=None, exclude=()):
     """The stone a flight cuts into, standing on its own (the town gate's
     two blocks): wall cells beside a flight with no ground of the upper
     level right behind them. Each block is fitted column by column: the
@@ -2334,8 +2535,10 @@ def flank_blocks(cls, art, flights, fam, faces_px=None):
     height the block's (the median over its columns), the top's rows its
     depth. Returns ({cell: quads}, cells, {cell: block height})."""
     h_, w_ = cls.shape
+    ex = set(exclude)
     blk = lambda y_, x_: (0 <= y_ < h_ and 0 <= x_ < w_ and cls[y_, x_] in
-                          (RE.CLASS_WALL, RE.CLASS_LEDGE) and fam[y_, x_] is None)
+                          (RE.CLASS_WALL, RE.CLASS_LEDGE) and fam[y_, x_] is None
+                          and (y_, x_) not in ex)
     B = set()
     for fl in flights:
         for (cy, cx) in fl.get("cliff", ()):
@@ -4648,8 +4851,9 @@ def build_area(job):
                     shapes[key_] = (hm, 0)
                 # clipped hedges: boxes as tall as their drawn front
                 hedges, hedge_walls = hedge_cells(cls, fam, art)
-                bq_, bcells_, bheights_ = flank_blocks(cls, art, flights, fam,
-                                                       cliff_faces(cls, flights))
+                bq_, bcells_, bheights_ = flank_blocks(
+                    cls, art, flights, fam, cliff_faces(cls, flights),
+                    {(y_, x_) for (x_, y_) in covered} | {c_ for b_ in blds for c_ in b_["roof"]})
                 low_ = {}
                 for fl_ in flights:
                     if fl_.get("base") is not None:
@@ -4954,11 +5158,17 @@ def build_area(job):
             box_ = shell is not None and shell.get("box") is not None
             gh_, gw_ = G.shape
             g_at = lambda y_, x_: int(G[min(max(y_, 0), gh_ - 1), min(max(x_, 0), gw_ - 1)])
+            # a building's door away from its foot (the blue house's, where
+            # the plank lands) has no front of its own to build
+            back = {(d["cx"], d["cy"]) for b in blds for d in b["doors"] if d["cy"] + 1 != b["foot"]}
             for d in doors:
+                if (d["cx"], d["cy"]) in back:
+                    continue
                 if not box_:            # in a box, a doorway is its wall's opening
                     m.quads(shift_quads(door_quads(d, ox, oz, lift), g_at(d["cy"], d["cx"])))
             for b in blds:
-                m.quads(shift_quads(building_quads(b, ox, oz, lift),
+                m.quads(shift_quads(building_quads(b, ox, oz, lift, art,
+                                                   ov[3] if ov is not None else None, H),
                                     max(g_at(b["foot"], c_) for c_ in range(b["c0"], b["c1"] + 1))))
             for u in ups:
                 cx_, cy_ = u["cells"][0]
