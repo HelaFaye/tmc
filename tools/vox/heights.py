@@ -21,6 +21,7 @@ from . import regions as RG
 from .room import RE
 
 RISE = {RG.LIT: 0.0, RG.MID: 0.5, RG.SHADED: 1.0}
+FOOTPRINT = True        # objects from their collision footprint (else the run walk)
 RUN_STEP = 20           # luminance: a front is this much darker than the top above it
 SMOOTH_R = 4            # px: the smoothing window's reach
 RUN_MIN = 3             # px: a shorter run is texture
@@ -105,6 +106,8 @@ def solve(rm, labels, shade, box=None, pic=None):
                 r = s[y + 1, x] if y + 1 < h else 0.0
             yb[y, x], s[y, x] = base, r
             below = base + r
+    if FOOTPRINT:
+        yb, s = footprint_heights(labels, rise, ground, lvl, cls, cy, cx, yb, s)
     # any heights draw the same from the game's camera, so an object's are
     # free to be smoothed: a median over its own pixels near each one takes
     # the texture's spikes out and keeps its steps
@@ -127,3 +130,79 @@ def rm_pic(rm, box, shape):
         return rm.picture
     x0, y0, _x1, _y1 = box
     return rm.picture[y0 * 16:y0 * 16 + shape[0], x0 * 16:x0 * 16 + shape[1]]
+
+
+FP_SMOOTH = 9           # px: front heights and back edges agree across this many columns
+
+
+def _colmed(a, valid, k):
+    out = a.astype(float).copy()
+    idx = np.nonzero(valid)[0]
+    for i in idx:
+        lo, hi = max(0, i - k // 2), min(len(a), i + k // 2 + 1)
+        sel = [j for j in range(lo, hi) if valid[j]]
+        out[i] = np.median(a[sel])
+    return out
+
+
+def footprint_heights(labels, rise, ground, lvl, cls, cy, cx, yb, s):
+    """An object's every pixel from its footprint. In each column its run
+    of drawn pixels from the foot (row rb, on the ground in front) up to
+    its top (rt) is a front -- the shaded rows from the foot, upright, hf
+    high -- then a top, spread back over the footprint's depth: the
+    blocked cells under the column, from the foot back to their north
+    edge zn. A top pixel at row R lies at depth z, from the foot to zn as
+    R goes from the front's top to rt; its height is z - R. Front heights
+    and back edges are smoothed across columns, so an object is one
+    shape. Rise is per pixel: 1 on the front, the slope's on the top."""
+    h, w = labels.shape
+    obj = ~ground & (labels >= 0)
+    runs = []
+    for x in range(w):
+        y = h - 1
+        while y >= 0:
+            if not obj[y, x]:
+                y -= 1
+                continue
+            rb = y
+            while y >= 0 and obj[y, x]:
+                y -= 1
+            rt = y + 1
+            # its front: the rows from the foot that rise (shaded)
+            f = rb
+            while f >= rt and rise[f, x] >= 0.75:
+                f -= 1
+            hf = rb - f
+            # the footprint: blocked cells in this column from the foot north
+            c0 = cy[rb, x]
+            cn = c0
+            while cn - 1 >= 0 and cls[cn - 1, cx[rb, x]] != RE.CLASS_GROUND:
+                cn -= 1
+            zn = (cn - cy[0, 0]) * 16       # in the crop's pixels
+            runs.append([x, rt, rb, hf, zn, lvl[min(rb + 1, h - 1), x]])
+    if not runs:
+        return yb, s
+    R = np.array(runs, float)
+    # smooth front height and back edge across neighbouring runs
+    order = np.argsort(R[:, 0])
+    R = R[order]
+    hf_s = _colmed(R[:, 3], np.ones(len(R), bool), FP_SMOOTH)
+    zn_s = _colmed(R[:, 4], np.ones(len(R), bool), FP_SMOOTH)
+    for (x, rt, rb, _hf, _zn, g), hf, zn in zip(R, hf_s, zn_s):
+        x, rt, rb = int(x), int(rt), int(rb)
+        hf = int(min(hf, rb - rt + 1))
+        zs = rb + 1                     # the foot's depth
+        zn = min(zn, zs - 1)
+        rf = rb - hf                    # the front's top row
+        for r in range(rb, rf, -1):     # the front, upright
+            yb[r, x], s[r, x] = g + (rb - r), 1.0
+        n = max(1, rf - rt + 1)
+        ztop = zs
+        for k, r in enumerate(range(rf, rt - 1, -1)):
+            z1 = zs + (zn - zs) * (k + 1) / n       # back edge of this row
+            y_lo = ztop - (r + 1) - g
+            y_hi = z1 - r - g
+            yb[r, x] = g + max(0.0, y_lo)
+            s[r, x] = max(0.0, y_hi) - max(0.0, y_lo)
+            ztop = z1
+    return yb, s
