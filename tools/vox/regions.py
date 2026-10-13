@@ -89,7 +89,31 @@ def split(px):
             continue
         s = np.where(lum[sel] >= hi, LIT, np.where(lum[sel] <= lo, SHADED, MID))
         shade[sel] = s
+    shade = smooth(shade, labels)
     return labels, int(labels.max()), shade
+
+
+SMOOTH_PASSES = 3
+
+
+def smooth(shade, labels):
+    """Texture inside a region (shingles, brick lines, leaves) is not
+    shape: each pixel takes the shading most of its 3x3 neighbours in the
+    same region have."""
+    h, w = shade.shape
+    for _ in range(SMOOTH_PASSES):
+        P = np.pad(shade, 1)
+        L = np.pad(labels, 1, constant_values=-1)
+        votes = np.zeros((4, h, w), np.int16)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                nb = P[1 + dy:h + 1 + dy, 1 + dx:w + 1 + dx]
+                same = L[1 + dy:h + 1 + dy, 1 + dx:w + 1 + dx] == labels
+                for k, c in enumerate((LIT, MID, SHADED)):
+                    votes[k] += (same & (nb == c))
+        best = np.array([LIT, MID, SHADED])[votes[:3].argmax(0)]
+        shade = np.where((labels > 0) & (votes[:3].max(0) > 0), best, shade).astype(np.int8)
+    return shade
 
 
 def overlay(px, labels, shade):

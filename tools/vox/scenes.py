@@ -13,8 +13,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+import math
+
+from . import heights as HT
+from . import mesh as MS
 from . import regions as RG
 from . import room as RM
+from .room import HERE  # noqa: F401  (tools/ on the path)
+import refcheck as RC  # noqa: E402
 
 SCENES = {
     "gate":        ("02_00", (26, 14, 37, 24)),   # arch on two blocks, bell, steps
@@ -47,6 +53,24 @@ def sheet(panels, labels, path):
     o.save(path)
 
 
+TALL = 64
+
+
+def render(V, F, UV, pic, yaw, pitch, game):
+    """The surface from a camera, textured with the picture."""
+    H, W = pic.shape[:2]
+    T = np.array([(u / W, 1.0 - v / H) for u, v in UV for _ in range(4)])
+    FT = [[4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3] for i in range(len(F))]
+    C = np.full((len(V), 3), 0.6)
+    box = (0, W, 0, H)
+    if game:
+        img = RC.render(V, C, F, RC.camera(0, 45), box, scale=(1.0, math.sqrt(2)),
+                        tall=TALL, tex=(pic, T, FT), lit=False)
+        return np.asarray(img)[TALL:TALL + H, :W]
+    return np.asarray(RC.render(V, C, F, RC.camera(yaw, pitch), box, tall=TALL,
+                                tex=(pic, T, FT)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -69,6 +93,15 @@ def main():
             lab, _n, sh = RG.split(pic)
             sheet([pic, RG.overlay(pic, lab, sh)], ["the game", "regions and shading"],
                   out / f"{name}_regions.png")
+        elif a.what == "build":
+            lab, _n, sh = RG.split(pic)
+            yb, sl, gnd = HT.solve(rm, lab, sh, box)
+            V, F, UV = MS.build(yb, sl, gnd)
+            panels, labels = [pic], ["the game"]
+            for yaw, pitch, game in ((0, 45, True), (35, 30, False), (-35, 30, False)):
+                panels.append(render(V, F, UV, pic, yaw, pitch, game))
+                labels.append("built, game camera" if game else f"yaw {yaw} pitch {pitch}")
+            sheet(panels, labels, out / f"{name}_build.png")
         print(name)
 
 
