@@ -17,6 +17,7 @@ import math
 
 from . import heights as HT
 from . import mesh as MS
+from . import overhead as OV
 from . import regions as RG
 from . import room as RM
 from .room import HERE  # noqa: F401  (tools/ on the path)
@@ -56,10 +57,12 @@ def sheet(panels, labels, path):
 TALL = 64
 
 
-def render(V, F, UV, pic, yaw, pitch, game):
-    """The surface from a camera, textured with the picture."""
-    H, W = pic.shape[:2]
-    T = np.array([(u / W, 1.0 - v / H) for u, v in UV for _ in range(4)])
+def render(V, F, UV, pic, yaw, pitch, game, size=None):
+    """The surface from a camera, textured with the picture (size: the
+    crop's own height and width, when the texture is taller)."""
+    TH, W = pic.shape[:2]
+    T = np.array([(u / W, 1.0 - v / TH) for u, v in UV for _ in range(4)])
+    H = size[0] if size else TH
     FT = [[4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3] for i in range(len(F))]
     C = np.full((len(V), 3), 0.6)
     box = (0, W, 0, H)
@@ -94,12 +97,28 @@ def main():
             sheet([pic, RG.overlay(pic, lab, sh)], ["the game", "regions and shading"],
                   out / f"{name}_regions.png")
         elif a.what == "build":
-            lab, _n, sh = RG.split(pic)
-            yb, sl, gnd = HT.solve(rm, lab, sh, box)
+            base, om = OV.under(rm, box)
+            lab, _n, sh = RG.split(base)
+            yb, sl, gnd = HT.solve(rm, lab, sh, box, base)
             V, F, UV = MS.build(yb, sl, gnd)
+            V, F = list(map(tuple, V)), list(F)
+            top = yb + sl
+            Hh = pic.shape[0]
+            for P, zp, T in OV.shapes(om, pic, top, ~gnd):
+                if zp == "roof":
+                    v2, f2, uv2 = OV.roof(P, pic, top, ~gnd, Hh)
+                elif zp is not None:
+                    v2, f2, uv2 = OV.slab(P, zp, T, Hh)
+                else:
+                    v2, f2, uv2 = OV.sheet(P, top, Hh)
+                F += [[i + len(V) for i in f] for f in f2]
+                V += v2
+                UV += uv2
+            V = np.asarray(V, float)
+            tex = np.vstack([base, pic])
             panels, labels = [pic], ["the game"]
             for yaw, pitch, game in ((0, 45, True), (35, 30, False), (-35, 30, False)):
-                panels.append(render(V, F, UV, pic, yaw, pitch, game))
+                panels.append(render(V, F, UV, tex, yaw, pitch, game, pic.shape[:2]))
                 labels.append("built, game camera" if game else f"yaw {yaw} pitch {pitch}")
             sheet(panels, labels, out / f"{name}_build.png")
         print(name)

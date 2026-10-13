@@ -34,7 +34,7 @@ def ground_levels(rm):
     return cls, np.asarray(H, float)
 
 
-def solve(rm, labels, shade, box=None):
+def solve(rm, labels, shade, box=None, pic=None):
     """(yb, s, ground): per pixel the height at its lower edge, its rise,
     and whether it is ground. box (x0, y0, x1, y1) in cells limits the
     work to a crop of the room (labels and shade are of that crop)."""
@@ -69,7 +69,7 @@ def solve(rm, labels, shade, box=None):
     # each region is one surface: a front when it is darker than what is
     # drawn just above it (across its upper edge, outline skipped), else a
     # top. Decided per region, so neighbouring columns agree.
-    lum = RG.luminance(rm_pic(rm, box, labels.shape))
+    lum = RG.luminance(pic if pic is not None else rm_pic(rm, box, labels.shape))
     n = labels.max() + 1
     acc = np.zeros(n)
     cnt = np.zeros(n)
