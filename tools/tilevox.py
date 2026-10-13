@@ -1253,7 +1253,8 @@ def find_buildings(r, cls, H, doors, cf=None, crown=None):
     return H, out, covered
 
 
-ROOF_RISE = 16          # px: a roof's flat top above its eaves
+ROOF_RISE = 16          # px: a roof's flat top above its eaves, at least
+ROOF_SHARE = 0.5        # of the roof's drawn rows over the eaves: its rise
 CHIMNEY_MIN = 30        # px: smallest stone shape on a roof built as a chimney
 CHIMNEY_MAX = (28, 40)  # px: widest, tallest
 PLANK_W = (2, 12)       # px: a plank's drawn width
@@ -1292,7 +1293,7 @@ def house_parts(b, art, top, H=None):
     hue, sat, lum = _hsl(np.asarray(art)[y0:y1, x0:x1])
     wood = (hue >= 10) & (hue < 45) & (sat >= 0.3) & (sat < 0.75) & (lum > 50) & (lum < 200)
     stone = (sat < 0.2) & (lum > 120)
-    out = dict(y0=y0, x0=x0, hw=None, flat=None, chimney=None, plank=None, roof_top=None)
+    out = dict(y0=y0, x0=x0, hw=None, flat=None, chimney=None, plank=None, roof_top=None, xr=None)
     # the plank: a narrow tall wood blob
     lab, n = RE._label(wood)
     for j in range(1, n + 1):
@@ -1325,12 +1326,18 @@ def house_parts(b, art, top, H=None):
         roof = roof & ~(lab == best[1])
     # grey stone beside it (a wall the overhead layer also draws) is not roof
     lab_s, n_s = RE._label(roof & (sat < 0.2))
+    coloured = roof & (sat >= 0.2)
+    ctop = int(np.nonzero(coloured.any(axis=1))[0].min()) if coloured.any() else 0
     for j in range(1, n_s + 1):
         ys_, xs_ = np.nonzero(lab_s == j)
-        if xs_.min() == 0 or xs_.max() == roof.shape[1] - 1:
+        # at the roof's edge and running on past its top: a wall beside
+        # the house; inside the roof's rows it is the house's own end wall
+        if (xs_.min() == 0 or xs_.max() == roof.shape[1] - 1) and ys_.min() < ctop - 8:
             roof = roof & ~(lab_s == j)
     if roof.any():
         out["roof_top"] = int(np.nonzero(roof.any(axis=1))[0].min()) + y0
+        xs_r = np.nonzero(roof.any(axis=0))[0]
+        out["xr"] = (int(xs_r.min()) + x0, int(xs_r.max()) + x0)
     # eaves and the wall
     eaves = [int(np.nonzero(roof[:, x])[0].max()) + y0 for x in range(roof.shape[1])
              if roof[:, x].any()]
@@ -1418,7 +1425,10 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
     if hp and hp["hw"] and hp["roof_top"] is not None:
         # its back eave, hw up, is drawn at the roof's top row: by the
         # 45-degree rule it stands that far behind the foot
-        dmax = max(16, foot * 16 - (hp["roof_top"] + hp["hw"]))
+        # drawn rows over the eaves = half the depth (to the ridge) + the
+        # rise: the roof rises ROOF_SHARE of them, the rest is depth
+        over = foot * 16 - hp["hw"] - hp["roof_top"]
+        dmax = max(16, int(round(2 * over * (1 - ROOF_SHARE))))
     rows = (dmax + st - 1) // st
     cols = (c1 - c0 + 1) * 16 // st
     gx0, gz0 = c0 * 16, foot * 16 - rows * st        # room pixels
@@ -1429,6 +1439,8 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
     dep_all = dmax
     for gx in range(cols):
         dep = dep_all
+        if hp and hp.get("xr") and not (hp["xr"][0] <= gx0 + gx * st + st // 2 <= hp["xr"][1]):
+            continue            # beside the roof: a wall of its own, not the house
         for gy in range(rows):
             z = gz0 + gy * st
             if z >= foot * 16 - dep:
@@ -1446,7 +1458,11 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
         # the light patch is its flat top, ROOF_RISE over walls as tall as
         # the drawn wall; the roof falls from it to the eaves
         hb = hp["hw"]
-        Ht = hb + ROOF_RISE
+        # as high as its drawn roof says: the rows over the eaves
+        rise = ROOF_RISE
+        if hp["roof_top"] is not None:
+            rise = max(ROOF_RISE, int(round(ROOF_SHARE * (foot * 16 - hb - hp["roof_top"]))))
+        Ht = hb + rise
         Fp = np.zeros((rows, cols), bool)
         F = hp["flat"]
         for gy, gx in zip(ys, xs):
@@ -1468,20 +1484,27 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
             D = D2
         run = max(1, int(D[M].max()))
         for gy, gx in zip(ys, xs):
-            Hg[gy, gx] = hb + int(round(ROOF_RISE * (1 - D[gy, gx] / run)))
+            t_ = min(1.0, D[gy, gx] / run)
+            # rounded over the top, sloping to the eaves
+            Hg[gy, gx] = hb + int(round(rise * (1 - t_ * t_)))
         b = dict(b, hb=hb)
         if os.environ.get("TV_ROOF"):
             print("ROOF", b["c0"], b["foot"], "run", run, file=sys.stderr)
             for row in Hg:
                 print(" ".join("%2d" % v for v in row), file=sys.stderr)
     else:
+        R_ = BUILDING_ROOF
+        if hp and hp["hw"]:
+            b = dict(b, hb=hp["hw"])        # walls as tall as drawn
+        if hp and hp["roof_top"] is not None:
+            R_ = max(BUILDING_ROOF, int(round(ROOF_SHARE * (foot * 16 - b["hb"] - hp["roof_top"]))))
         for gy, gx in zip(ys, xs):
             v = (gy + 0.5 - zc) / rz
             u = (gx + 0.5 - xc) / rx
             if b["style"] == "dome":
-                add = BUILDING_ROOF * np.sqrt(max(0.0, 1.0 - u * u - v * v))
+                add = R_ * max(0.0, 1.0 - u * u - v * v)
             else:
-                add = BUILDING_ROOF * max(0.0, 1.0 - abs(v))
+                add = R_ * max(0.0, 1.0 - abs(v))
             Hg[gy, gx] = b["hb"] + 2 * int(round(add / 2.0))
     ground = b["base"] + lift
     q = []
@@ -1526,7 +1549,7 @@ def building_quads(b, ox, oz, lift, art=None, top=None, H=None):
     RE.emit_canopy(quad, (Hg, np.zeros((rows, cols, 3)), M), ox + gx0, oz + gz0,
                    ground, step=st, uvf=wall_uv, merge=True)
     if hp and Fp is not None:
-        Ht = hb + ROOF_RISE
+        Ht = hb + rise
         if hp["chimney"]:
             # on the flat top: its foot drawn at row r1 stands at r1 + Ht
             q.extend(chimney_quads(hp["chimney"], hp["chimney"][1] + 1 + Ht,
