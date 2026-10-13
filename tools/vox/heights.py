@@ -21,6 +21,9 @@ from . import regions as RG
 from .room import RE
 
 RISE = {RG.LIT: 0.0, RG.MID: 0.5, RG.SHADED: 1.0}
+RUN_STEP = 20           # luminance: a front is this much darker than the top above it
+SMOOTH_R = 4            # px: the smoothing window's reach
+RUN_MIN = 3             # px: a shorter run is texture
 GROUND_SHARE = 0.6      # of a region's pixels on ground cells, for it to be ground
 
 
@@ -63,6 +66,30 @@ def solve(rm, labels, shade, box=None):
             v = v[~np.isnan(v)]
             if len(v):
                 rise[R, xs[m]] = np.median(v)
+    # each region is one surface: a front when it is darker than what is
+    # drawn just above it (across its upper edge, outline skipped), else a
+    # top. Decided per region, so neighbouring columns agree.
+    lum = RG.luminance(rm_pic(rm, box, labels.shape))
+    n = labels.max() + 1
+    acc = np.zeros(n)
+    cnt = np.zeros(n)
+    for x in range(w):
+        for y in range(1, h):
+            j = labels[y, x]
+            if j == 0 or ground[y, x]:
+                continue
+            k = y - 1
+            while k >= 0 and labels[k, x] == 0 and y - k <= 3:
+                k -= 1
+            if k < 0 or labels[k, x] in (0, j):
+                continue
+            acc[j] += lum[k, x] - lum[y, x]
+            cnt[j] += 1
+    mean_lum = np.bincount(labels.ravel(), weights=lum.ravel(), minlength=n) / np.maximum(tot, 1)
+    darker = acc / np.maximum(cnt, 1)
+    front = (cnt >= 2) & (darker > RUN_STEP)
+    obj = ~ground & (labels > 0)
+    rise = np.where(obj, np.where(front[labels], 1.0, 0.0), rise)
     yb = np.zeros((h, w))
     s = np.zeros((h, w))
     for x in range(w):
@@ -78,4 +105,25 @@ def solve(rm, labels, shade, box=None):
                 r = s[y + 1, x] if y + 1 < h else 0.0
             yb[y, x], s[y, x] = base, r
             below = base + r
+    # any heights draw the same from the game's camera, so an object's are
+    # free to be smoothed: a median over its own pixels near each one takes
+    # the texture's spikes out and keeps its steps
+    obj = ~ground
+    top = yb + s
+    R_ = SMOOTH_R
+    P = np.pad(np.where(obj, top, np.nan), R_, constant_values=np.nan)
+    stack = [P[R_ + dy:R_ + dy + h, R_ + dx:R_ + dx + w]
+             for dy in range(-R_, R_ + 1) for dx in range(-R_, R_ + 1)]
+    with np.errstate(all="ignore"):
+        med = np.nanmedian(np.stack(stack), axis=0)
+    top2 = np.where(obj & ~np.isnan(med), med, top)
+    # keep each pixel's rise, move it to its new top; never below its ground
+    yb = np.where(obj, np.maximum(top2 - s, 0), yb)
     return yb, s, ground
+
+
+def rm_pic(rm, box, shape):
+    if box is None:
+        return rm.picture
+    x0, y0, _x1, _y1 = box
+    return rm.picture[y0 * 16:y0 * 16 + shape[0], x0 * 16:x0 * 16 + shape[1]]
