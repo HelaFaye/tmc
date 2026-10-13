@@ -609,7 +609,10 @@ def stair_levels(path, r, cls, H):
 
 ARCH_MIN = 200          # px: smallest overhead shape built as a standing arch
 ARCH_OPEN = 0.25        # of its lower half's box, open between its legs
-ARCH_T = 6              # px: an arch's thickness
+ARCH_T = 6              # px: an arch's thickness without a lit band to read
+ARCH_T_MIN, ARCH_T_MAX = 4, 20      # px: thickness read from the lit band
+ARCH_LIT = 140          # luminance: at or above, the lit top band
+ARCH_OUTLINE = 50       # luminance: below, the drawn outline, not the arch
 ARCH_MAX_W, ARCH_MAX_H = 192, 128   # px: an arch is a gate, not a forest
 
 
@@ -675,31 +678,63 @@ def standing_arches(top, cls, H):
             if len(ky) and len(ky) < len(ys) and kx.min() >= x0 and kx.max() <= x1 \
                     and ky.max() <= y0 + (y1 - y0) // 3 and ky.min() >= y0 - 24:
                 ys, xs = np.concatenate([ys, ky]), np.concatenate([xs, kx])
+        T_ = np.asarray(top)
+        lum = {(int(y_), int(x_)): float(T_[y_, x_, :3] @ np.array([0.299, 0.587, 0.114]))
+               for y_, x_ in zip(ys, xs)}
         out.append(dict(px=set(zip(ys.tolist(), xs.tolist())), zp=int(y1) + 1 + base,
-                        base=base, cells={(int(y_) // 16, int(x_) // 16) for y_, x_ in zip(ys, xs)}))
+                        base=base, lum=lum,
+                        cells={(int(y_) // 16, int(x_) // 16) for y_, x_ in zip(ys, xs)}))
     return out
 
 
 def arch_quads(a, ox, oz, lift, voff):
-    """An arch as an upright slab ARCH_T thick in its plane, every pixel at
-    its drawn height above its legs' foot, the same face front and back."""
-    P = a["px"]
-    zp = a["zp"]
-    za, zb = oz + zp - ARCH_T // 2, oz + zp + (ARCH_T - ARCH_T // 2)
-    q = []
+    """An arch from its drawing. The dark outline is drawn round it, not
+    part of it. In each column the lit band along its top is its top face
+    -- the band's width is the arch's thickness -- and the shaded rows
+    below are its front, its silhouette. Built as a slab that thick, each
+    front pixel at its drawn height above the legs' foot (the 45-degree
+    rule), its top wearing the lit band, its back the front again."""
+    lum = a.get("lum", {})
+    P = {p for p in a["px"] if lum.get(p, 255) >= ARCH_OUTLINE}
+    if not P:
+        return []
+    cols = {}
     for (R, X) in P:
+        cols.setdefault(X, []).append(R)
+    lit_rows, widths = {}, []
+    for X, rs in cols.items():
+        rs.sort()
+        hi = ARCH_LIT
+        n = 0
+        while n < len(rs) and lum[(rs[n], X)] >= hi and (n == 0 or rs[n] == rs[n - 1] + 1):
+            n += 1
+        lit_rows[X] = rs[:n]
+        if n:
+            widths.append(n)
+    T = int(min(ARCH_T_MAX, max(ARCH_T_MIN, np.median(widths) if widths else ARCH_T)))
+    zp = a["zp"]
+    zb = oz + zp + T // 2       # front plane
+    za = zb - T
+    F = {(R, X) for (R, X) in P if R not in lit_rows.get(X, ())}
+    q = []
+    for (R, X) in F:
         y0, y1 = lift + zp - R - 1, lift + zp - R
         x0, x1 = ox + X, ox + X + 1
         uv = [(X + 0.5, voff + R + 0.5)] * 4
         q.append(([(x0, y1, zb), (x1, y1, zb), (x1, y0, zb), (x0, y0, zb)], uv))   # front
         q.append(([(x1, y1, za), (x0, y1, za), (x0, y0, za), (x1, y0, za)], uv))   # back
-        if (R - 1, X) not in P:
-            q.append(([(x0, y1, za), (x1, y1, za), (x1, y1, zb), (x0, y1, zb)], uv))
-        if (R + 1, X) not in P:
+        if (R - 1, X) not in F:          # its top: the lit band drawn above it
+            lr = lit_rows.get(X) or [R]
+            for k in range(T):
+                r_ = lr[min(len(lr) - 1, int(k * len(lr) / T))]
+                tuv = [(X + 0.5, voff + r_ + 0.5)] * 4
+                zz0, zz1 = zb - k - 1, zb - k
+                q.append(([(x0, y1, zz0), (x1, y1, zz0), (x1, y1, zz1), (x0, y1, zz1)], tuv))
+        if (R + 1, X) not in F:
             q.append(([(x0, y0, zb), (x1, y0, zb), (x1, y0, za), (x0, y0, za)], uv))
-        if (R, X + 1) not in P:
+        if (R, X + 1) not in F:
             q.append(([(x1, y1, zb), (x1, y1, za), (x1, y0, za), (x1, y0, zb)], uv))
-        if (R, X - 1) not in P:
+        if (R, X - 1) not in F:
             q.append(([(x0, y1, za), (x0, y1, zb), (x0, y0, zb), (x0, y0, za)], uv))
     return q
 
