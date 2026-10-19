@@ -132,6 +132,9 @@ def rm_pic(rm, box, shape):
     return rm.picture[y0 * 16:y0 * 16 + shape[0], x0 * 16:x0 * 16 + shape[1]]
 
 
+SPLIT_FRONT = 4         # px: a shaded band this tall behind a top starts a new thing
+SPLIT_DEPTH = 112       # px: a footprint deeper than this may hold several things
+TOP_MIN = 8             # px: after at least this much top
 FP_SMOOTH = 9           # px: front heights and back edges agree across this many columns
 
 
@@ -146,60 +149,85 @@ def _colmed(a, valid, k):
 
 
 def footprint_heights(labels, rise, ground, lvl, cls, cy, cx, yb, s):
-    """An object's every pixel from its footprint. In each column its run
-    of drawn pixels from the foot (row rb, on the ground in front) up to
-    its top (rt) is a front -- the shaded rows from the foot, upright, hf
-    high -- then a top, spread back over the footprint's depth: the
-    blocked cells under the column, from the foot back to their north
-    edge zn. A top pixel at row R lies at depth z, from the foot to zn as
-    R goes from the front's top to rt; its height is z - R. Front heights
-    and back edges are smoothed across columns, so an object is one
-    shape. Rise is per pixel: 1 on the front, the slope's on the top."""
+    """An object's every pixel from its footprint. In each column a run of
+    drawn object pixels from the foot (row rb, on the ground in front) up
+    to its top (rt) is a front -- the shaded rows from the foot, upright,
+    hf high -- then a top spread back over its depth to zn. The depth is
+    the blocked cells under the column, from the foot to their north edge;
+    but where the run, after a stretch of top, meets another shaded front
+    of SPLIT_FRONT rows or more, a second thing stands behind the first
+    (houses one behind another, the collision one block): the first ends
+    at the second's foot. Front heights and back edges are smoothed across
+    columns, thing by thing, so each is one shape."""
     h, w = labels.shape
     obj = ~ground & (labels >= 0)
-    runs = []
+    runs = []                   # [x, k, rt, rb, hf, zn, g]
     for x in range(w):
         y = h - 1
         while y >= 0:
             if not obj[y, x]:
                 y -= 1
                 continue
-            rb = y
+            rb0 = y
             while y >= 0 and obj[y, x]:
                 y -= 1
-            rt = y + 1
-            # its front: the rows from the foot that rise (shaded)
-            f = rb
-            while f >= rt and rise[f, x] >= 0.75:
-                f -= 1
-            hf = rb - f
-            # the footprint: blocked cells in this column from the foot north
-            c0 = cy[rb, x]
-            cn = c0
-            while cn - 1 >= 0 and cls[cn - 1, cx[rb, x]] != RE.CLASS_GROUND:
+            rt0 = y + 1
+            # the footprint's north edge
+            cn = cy[rb0, x]
+            while cn - 1 >= 0 and cls[cn - 1, cx[rb0, x]] != RE.CLASS_GROUND:
                 cn -= 1
-            zn = (cn - cy[0, 0]) * 16       # in the crop's pixels
-            runs.append([x, rt, rb, hf, zn, lvl[min(rb + 1, h - 1), x]])
+            zn_all = max((cn - cy[0, 0]) * 16, rt0)
+            g = lvl[min(rb0 + 1, h - 1), x]
+            # only a footprint deeper than one thing is likely to be holds
+            # several things one behind another
+            deep = (rb0 + 1 - zn_all) > SPLIT_DEPTH
+            # split the run where a new front starts behind a top
+            parts, rb = [], rb0
+            r = rb0
+            while r >= rt0:
+                f = r
+                while f >= rt0 and rise[f, x] >= 0.75:
+                    f -= 1
+                hf = r - f
+                t = f
+                while t >= rt0:
+                    if rise[t, x] >= 0.75:
+                        k_ = t
+                        while k_ >= rt0 and rise[k_, x] >= 0.75:
+                            k_ -= 1
+                        if t - k_ >= SPLIT_FRONT and f - t >= TOP_MIN and deep:
+                            break
+                        t = k_
+                        continue
+                    t -= 1
+                parts.append((t + 1, rb, hf))
+                rb = t
+                r = t
+            for k, (rt, rb, hf) in enumerate(parts):
+                zn = parts[k + 1][1] + 1 if k + 1 < len(parts) else zn_all
+                runs.append([x, k, rt, rb, hf, max(zn, rt), g])
     if not runs:
         return yb, s
     R = np.array(runs, float)
-    # smooth front height and back edge across neighbouring runs
-    order = np.argsort(R[:, 0])
-    R = R[order]
-    hf_s = _colmed(R[:, 3], np.ones(len(R), bool), FP_SMOOTH)
-    zn_s = _colmed(R[:, 4], np.ones(len(R), bool), FP_SMOOTH)
-    for (x, rt, rb, _hf, _zn, g), hf, zn in zip(R, hf_s, zn_s):
+    hf_s = np.zeros(len(R))
+    zn_s = np.zeros(len(R))
+    for k in np.unique(R[:, 1]):
+        idx = np.nonzero(R[:, 1] == k)[0]
+        idx = idx[np.argsort(R[idx, 0])]
+        hf_s[idx] = _colmed(R[idx, 4], np.ones(len(idx), bool), FP_SMOOTH)
+        zn_s[idx] = _colmed(R[idx, 5], np.ones(len(idx), bool), FP_SMOOTH)
+    for (x, k, rt, rb, _hf, _zn, g), hf, zn in zip(R, hf_s, zn_s):
         x, rt, rb = int(x), int(rt), int(rb)
         hf = int(min(hf, rb - rt + 1))
-        zs = rb + 1                     # the foot's depth
-        zn = min(zn, zs - 1)
-        rf = rb - hf                    # the front's top row
-        for r in range(rb, rf, -1):     # the front, upright
+        zs = rb + 1
+        zn = min(max(zn, rt), zs - 1)
+        rf = rb - hf
+        for r in range(rb, rf, -1):
             yb[r, x], s[r, x] = g + (rb - r), 1.0
         n = max(1, rf - rt + 1)
         ztop = zs
-        for k, r in enumerate(range(rf, rt - 1, -1)):
-            z1 = zs + (zn - zs) * (k + 1) / n       # back edge of this row
+        for i, r in enumerate(range(rf, rt - 1, -1)):
+            z1 = zs + (zn - zs) * (i + 1) / n
             y_lo = ztop - (r + 1) - g
             y_hi = z1 - r - g
             yb[r, x] = g + max(0.0, y_lo)
