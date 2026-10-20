@@ -113,6 +113,73 @@ def render(V, F, UV, pic, yaw, pitch, game, size=None):
                                 tex=(pic, T, FT)))
 
 
+def build_scene(rm, box, pic, poster=False, styles=False):
+    """(V, F, UV, tex): the crop built, as quads textured from tex (the
+    ground layer's picture over the shown one). box in cells; a whole
+    room is (0, 0, cells_w, cells_h)."""
+    base, om = OV.under(rm, box)
+    post, _idx = PO.posterize(base) if poster else (base, None)
+    lab, _n, sh = RG.split(post)
+    yb, sl, gnd = HT.solve(rm, lab, sh, box, post)
+    top = yb + sl
+    Hh = pic.shape[0]
+    # buildings by their style, from the full picture
+    bmask = np.zeros(pic.shape[:2], bool)
+    amask = np.zeros(pic.shape[:2], bool)
+    bparts = []
+    if styles:
+        objs, _dp = CL.objects(rm, box, pic, om)
+        objs = CL._merge(objs, pic)
+        labs = [CL.label(m, bb, pic, [], isb) for m, bb, isb in objs]
+        eave = {}               # building index -> its wall's top
+        for j, ((m, bb, isb), L) in enumerate(zip(objs, labs)):
+            if isb is not True:
+                continue
+            if L["kind"] != "building" or L["style"] not in BD.BUILT:
+                continue
+            gat = lambda r, x: float(top[min(r + 1, Hh - 1), x]) if gnd[min(r + 1, Hh - 1), x] else 0.0
+            byb, bs = BD.heights(m, pic, L["style"], L["top"], gat, L.get("band"))
+            m = m & ~np.isnan(byb)
+            bparts.append((m, byb, bs))
+            bmask |= m
+            wall = (bs >= 0.75) & m
+            if wall.any():
+                eave[j] = float(np.median([(byb[:, x][wall[:, x]] + 1).max()
+                                           for x in np.nonzero(wall.any(axis=0))[0]]))
+        for i in CL.awnings(objs, labs):
+            hang_awning(objs[i][0], pic, labs[i]["top"], gnd, yb, sl,
+                        eave.get(labs[i]["attached"]))
+            amask |= objs[i][0]
+    yb_g = np.where(bmask, -1e6, yb)
+    V, F, UV = MS.build(yb_g, sl, gnd | bmask, open_=amask)
+    keep = [i for i, f in enumerate(F) if V[f].min(axis=0)[1] > -1e5]
+    F = [F[i] for i in keep]
+    UV = [UV[i] for i in keep]
+    V, F = list(map(tuple, V)), list(F)
+    for m, byb, bs in bparts:
+        yy = np.where(m, byb, -1e6)
+        v2, f2, uv2 = MS.build(np.nan_to_num(yy, nan=-1e6), np.where(m, bs, 0), ~m)
+        kp = [i for i, f in enumerate(f2) if v2[f].min(axis=0)[1] > -1e5]
+        F += [[i + len(V) for i in f2[k]] for k in kp]
+        UV += [(uv2[k][0], uv2[k][1] + Hh) for k in kp]
+        V += list(map(tuple, v2))
+    om = om & ~bmask & ~amask
+    pic_p = PO.posterize(pic)[0] if poster else pic
+    for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
+        if zp == "roof":
+            v2, f2, uv2 = OV.roof(P, pic_p, top, ~gnd, Hh)
+        elif zp is not None:
+            v2, f2, uv2 = OV.slab(P, zp, T, Hh)
+        else:
+            v2, f2, uv2 = OV.sheet(P, top, Hh)
+        F += [[i + len(V) for i in f] for f in f2]
+        V += v2
+        UV += uv2
+    V = np.asarray(V, float)
+    tex = np.vstack([base, pic])
+    return V, F, UV, tex
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -139,66 +206,7 @@ def main():
             sheet([pic, RG.overlay(pic, lab, sh)], ["the game", "regions and shading"],
                   out / f"{name}_regions.png")
         elif a.what == "build":
-            base, om = OV.under(rm, box)
-            post, _idx = PO.posterize(base) if a.poster else (base, None)
-            lab, _n, sh = RG.split(post)
-            yb, sl, gnd = HT.solve(rm, lab, sh, box, post)
-            top = yb + sl
-            Hh = pic.shape[0]
-            # buildings by their style, from the full picture
-            bmask = np.zeros(pic.shape[:2], bool)
-            amask = np.zeros(pic.shape[:2], bool)
-            bparts = []
-            if a.styles:
-                objs, _dp = CL.objects(rm, box, pic, om)
-                objs = CL._merge(objs, pic)
-                labs = [CL.label(m, bb, pic, [], isb) for m, bb, isb in objs]
-                eave = {}               # building index -> its wall's top
-                for j, ((m, bb, isb), L) in enumerate(zip(objs, labs)):
-                    if isb is not True:
-                        continue
-                    if L["kind"] != "building" or L["style"] not in BD.BUILT:
-                        continue
-                    gat = lambda r, x: float(top[min(r + 1, Hh - 1), x]) if gnd[min(r + 1, Hh - 1), x] else 0.0
-                    byb, bs = BD.heights(m, pic, L["style"], L["top"], gat, L.get("band"))
-                    m = m & ~np.isnan(byb)
-                    bparts.append((m, byb, bs))
-                    bmask |= m
-                    wall = (bs >= 0.75) & m
-                    if wall.any():
-                        eave[j] = float(np.median([(byb[:, x][wall[:, x]] + 1).max()
-                                                   for x in np.nonzero(wall.any(axis=0))[0]]))
-                for i in CL.awnings(objs, labs):
-                    hang_awning(objs[i][0], pic, labs[i]["top"], gnd, yb, sl,
-                                eave.get(labs[i]["attached"]))
-                    amask |= objs[i][0]
-            yb_g = np.where(bmask, -1e6, yb)
-            V, F, UV = MS.build(yb_g, sl, gnd | bmask, open_=amask)
-            keep = [i for i, f in enumerate(F) if V[f].min(axis=0)[1] > -1e5]
-            F = [F[i] for i in keep]
-            UV = [UV[i] for i in keep]
-            V, F = list(map(tuple, V)), list(F)
-            for m, byb, bs in bparts:
-                yy = np.where(m, byb, -1e6)
-                v2, f2, uv2 = MS.build(np.nan_to_num(yy, nan=-1e6), np.where(m, bs, 0), ~m)
-                kp = [i for i, f in enumerate(f2) if v2[f].min(axis=0)[1] > -1e5]
-                F += [[i + len(V) for i in f2[k]] for k in kp]
-                UV += [(uv2[k][0], uv2[k][1] + Hh) for k in kp]
-                V += list(map(tuple, v2))
-            om = om & ~bmask & ~amask
-            pic_p = PO.posterize(pic)[0] if a.poster else pic
-            for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
-                if zp == "roof":
-                    v2, f2, uv2 = OV.roof(P, pic_p, top, ~gnd, Hh)
-                elif zp is not None:
-                    v2, f2, uv2 = OV.slab(P, zp, T, Hh)
-                else:
-                    v2, f2, uv2 = OV.sheet(P, top, Hh)
-                F += [[i + len(V) for i in f] for f in f2]
-                V += v2
-                UV += uv2
-            V = np.asarray(V, float)
-            tex = np.vstack([base, pic])
+            V, F, UV, tex = build_scene(rm, box, pic, a.poster, a.styles)
             panels, labels = [pic], ["the game"]
             for yaw, pitch, game in ((0, 45, True), (35, 30, False), (-35, 30, False)):
                 panels.append(render(V, F, UV, tex, yaw, pitch, game, pic.shape[:2]))
