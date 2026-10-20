@@ -134,6 +134,7 @@ def rm_pic(rm, box, shape):
 
 SPLIT_FRONT = 4         # px: a shaded band this tall behind a top starts a new thing
 SPLIT_DEPTH = 112       # px: a footprint deeper than this may hold several things
+SPLIT_WIN = 12          # px: a thing's foot is agreed over this many columns each side
 TOP_MIN = 8             # px: after at least this much top
 FP_SMOOTH = 9           # px: front heights and back edges agree across this many columns
 
@@ -161,7 +162,9 @@ def footprint_heights(labels, rise, ground, lvl, cls, cy, cx, yb, s):
     columns, thing by thing, so each is one shape."""
     h, w = labels.shape
     obj = ~ground & (labels >= 0)
-    runs = []                   # [x, k, rt, rb, hf, zn, g]
+    # pass 1: each column's run (from the foot up) and the rows where a new
+    # thing's foot starts behind a top
+    cols = {}                   # x -> [(rt0, rb0, zn_all, g, [split feet])]
     for x in range(w):
         y = h - 1
         while y >= 0:
@@ -172,40 +175,62 @@ def footprint_heights(labels, rise, ground, lvl, cls, cy, cx, yb, s):
             while y >= 0 and obj[y, x]:
                 y -= 1
             rt0 = y + 1
-            # the footprint's north edge
             cn = cy[rb0, x]
             while cn - 1 >= 0 and cls[cn - 1, cx[rb0, x]] != RE.CLASS_GROUND:
                 cn -= 1
             zn_all = max((cn - cy[0, 0]) * 16, rt0)
             g = lvl[min(rb0 + 1, h - 1), x]
-            # only a footprint deeper than one thing is likely to be holds
-            # several things one behind another
             deep = (rb0 + 1 - zn_all) > SPLIT_DEPTH
-            # split the run where a new front starts behind a top
-            parts, rb = [], rb0
+            feet = []
             r = rb0
-            while r >= rt0:
+            while deep and r >= rt0:
                 f = r
                 while f >= rt0 and rise[f, x] >= 0.75:
                     f -= 1
-                hf = r - f
                 t = f
+                found = None
                 while t >= rt0:
                     if rise[t, x] >= 0.75:
                         k_ = t
                         while k_ >= rt0 and rise[k_, x] >= 0.75:
                             k_ -= 1
-                        if t - k_ >= SPLIT_FRONT and f - t >= TOP_MIN and deep:
+                        if t - k_ >= SPLIT_FRONT and f - t >= TOP_MIN:
+                            found = t
                             break
                         t = k_
                         continue
                     t -= 1
-                parts.append((t + 1, rb, hf))
-                rb = t
-                r = t
-            for k, (rt, rb, hf) in enumerate(parts):
-                zn = parts[k + 1][1] + 1 if k + 1 < len(parts) else zn_all
-                runs.append([x, k, rt, rb, hf, max(zn, rt), g])
+                if found is None:
+                    break
+                feet.append(found)
+                r = found
+            cols.setdefault(x, []).append((rt0, rb0, zn_all, g, feet))
+    # pass 2: a thing's foot is one line across it -- each column takes the
+    # median of its neighbours' k-th split, when most of them have one
+    xs_ = sorted(cols)
+    runs = []                   # [x, k, rt, rb, hf, zn, g]
+    for x in xs_:
+        for (rt0, rb0, zn_all, g, feet) in cols[x]:
+            nb = [c for xx in range(x - SPLIT_WIN, x + SPLIT_WIN + 1) if xx in cols
+                  for c in cols[xx] if c[0] <= rb0 and c[1] >= rt0]
+            agreed = []
+            for k in range(max([len(c[4]) for c in nb] + [0])):
+                have = [c[4][k] for c in nb if len(c[4]) > k]
+                if len(have) * 2 < len(nb):
+                    break
+                ft = int(np.median(have))
+                if not (rt0 + TOP_MIN <= ft <= (agreed[-1] if agreed else rb0) - TOP_MIN):
+                    break
+                agreed.append(ft)
+            bounds = [rb0] + agreed
+            for k in range(len(bounds)):
+                rb = bounds[k]
+                rt = bounds[k + 1] + 1 if k + 1 < len(bounds) else rt0
+                f = rb
+                while f >= rt and rise[f, x] >= 0.75:
+                    f -= 1
+                zn = bounds[k + 1] + 1 if k + 1 < len(bounds) else zn_all
+                runs.append([x, k, rt, rb, rb - f, max(zn, rt), g])
     if not runs:
         return yb, s
     R = np.array(runs, float)
