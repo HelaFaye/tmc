@@ -1,0 +1,81 @@
+"""Buildings built by their style (classify.py).
+
+A building is built as one piece from its own pixels. In each column, the
+rows from its foot that are not its top's material are its wall: upright,
+their height smoothed across the building. The rows above are its roof,
+with a profile by style:
+
+  cap, thatch   rounded over the top
+  slate         rising to a flat top
+  block         flat
+
+Each roof row's height is solved so the game's camera sees exactly the
+drawing (a point at height y over depth z is drawn at row z - y).
+"""
+import numpy as np
+
+from . import classify as CL
+from . import regions as RG
+
+BUILT = ("cap", "thatch")   # styles built here so far; others keep the general pass
+WALL_SMOOTH = 15        # px: wall heights agree across this many columns
+SLATE_RISE = 0.35       # of a slate roof's depth to its flat top's run
+
+
+def profile(n, style):
+    """Heights above the eaves for a roof drawn n rows tall."""
+    if n <= 0:
+        return np.zeros(1)
+    steps = 600
+    t = np.linspace(0, 1, steps)
+    if style == "block":
+        return np.zeros(n + 1)
+    D = float(n)
+    if style == "slate":
+        P = n * 0.4
+        yy = P * np.minimum(1.0, t / SLATE_RISE)
+    else:
+        P = n / 2.0
+        yy = P * (1 - (1 - t) ** 2)
+    rr = t * D / 2 + yy if style != "slate" else t * D * 0.6 + yy
+    rr = rr * (n / rr[-1])          # the whole profile shows its n rows
+    return np.interp(np.arange(n + 1), rr, yy)
+
+
+def heights(mask, pic, style, top_mat, ground_at):
+    """(yb, s) for a building's pixels; nan elsewhere."""
+    h, w = mask.shape
+    fam = np.full((h, w), "", object)
+    ys, xs = np.nonzero(mask)
+    cols = {}
+    for x in np.unique(xs):
+        col = ys[xs == x]
+        cols[x] = (col.min(), col.max())
+    # wall: rows from the foot up whose material is not the top's
+    walls = {}
+    for x, (rt, rb) in cols.items():
+        r = rb
+        while r >= rt:
+            f = CL.family(pic[r:r + 1, x], saturated_first=True)
+            if f == top_mat:
+                break
+            r -= 1
+        walls[x] = rb - r
+    xs_ = sorted(walls)
+    k = WALL_SMOOTH
+    wall_s = {x: int(np.median([walls[xx] for xx in xs_[max(0, i - k // 2):i + k // 2 + 1]]))
+              for i, x in enumerate(xs_)}
+    yb = np.full((h, w), np.nan)
+    s = np.zeros((h, w))
+    for x, (rt, rb) in cols.items():
+        g = ground_at(rb, x)
+        hw = min(wall_s[x], rb - rt + 1)
+        for r in range(rb, rb - hw, -1):
+            yb[r, x], s[r, x] = g + (rb - r), 1.0
+        n = (rb - hw) - rt + 1
+        ys_ = profile(n, style)
+        for i in range(n):
+            r = rb - hw - i
+            yb[r, x] = g + hw + ys_[i]
+            s[r, x] = ys_[i + 1] - ys_[i]
+    return yb, s

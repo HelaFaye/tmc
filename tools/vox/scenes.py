@@ -20,6 +20,7 @@ from . import mesh as MS
 from . import overhead as OV
 from . import poster as PO
 from . import classify as CL
+from . import buildings as BD
 from . import regions as RG
 from . import room as RM
 from .room import HERE  # noqa: F401  (tools/ on the path)
@@ -85,6 +86,7 @@ def main():
     ap.add_argument("--what", default="regions")
     ap.add_argument("--poster", action="store_true", help="read shapes from a posterized picture")
     ap.add_argument("--tag", default="", help="suffix for the sheets")
+    ap.add_argument("--styles", action="store_true", help="build buildings by their style")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -105,10 +107,37 @@ def main():
             post, _idx = PO.posterize(base) if a.poster else (base, None)
             lab, _n, sh = RG.split(post)
             yb, sl, gnd = HT.solve(rm, lab, sh, box, post)
-            V, F, UV = MS.build(yb, sl, gnd)
-            V, F = list(map(tuple, V)), list(F)
             top = yb + sl
             Hh = pic.shape[0]
+            # buildings by their style, from the full picture
+            bmask = np.zeros(pic.shape[:2], bool)
+            bparts = []
+            if a.styles:
+                objs, _dp = CL.objects(rm, box, pic, om)
+                for m, bb, isb in CL._merge(objs, pic):
+                    if not isb:
+                        continue
+                    L = CL.label(m, bb, pic, [], True)
+                    if L["kind"] != "building" or L["style"] not in BD.BUILT:
+                        continue
+                    gat = lambda r, x: float(top[min(r + 1, Hh - 1), x]) if gnd[min(r + 1, Hh - 1), x] else 0.0
+                    byb, bs = BD.heights(m, pic, L["style"], L["top"], gat)
+                    bparts.append((m, byb, bs))
+                    bmask |= m
+            yb_g = np.where(bmask, -1e6, yb)
+            V, F, UV = MS.build(yb_g, sl, gnd | bmask)
+            keep = [i for i, f in enumerate(F) if V[f].min(axis=0)[1] > -1e5]
+            F = [F[i] for i in keep]
+            UV = [UV[i] for i in keep]
+            V, F = list(map(tuple, V)), list(F)
+            for m, byb, bs in bparts:
+                yy = np.where(m, byb, -1e6)
+                v2, f2, uv2 = MS.build(np.nan_to_num(yy, nan=-1e6), np.where(m, bs, 0), ~m)
+                kp = [i for i, f in enumerate(f2) if v2[f].min(axis=0)[1] > -1e5]
+                F += [[i + len(V) for i in f2[k]] for k in kp]
+                UV += [(uv2[k][0], uv2[k][1] + Hh) for k in kp]
+                V += list(map(tuple, v2))
+            om = om & ~bmask
             pic_p = PO.posterize(pic)[0] if a.poster else pic
             for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
                 if zp == "roof":
