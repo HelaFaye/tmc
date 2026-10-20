@@ -72,6 +72,49 @@ It stays an option, off by default. Worth trying again per material
 (posterize within a region, not across the room), so tones are kept and
 only texture folds.
 
+## Stairs (`stairs.py`)
+
+Flights come from collision (`find_stairs.py`: slope cells) and their
+landings from `tilevox.stair_levels`, which raises the upper one;
+`heights.ground_levels` now asks for those levels. Each flight's pixels
+are fixed before the general pass:
+- **width:** a column is in the flight when its rows go light and dark
+  as the flight's do (the town's west steps: one cell of slope, drawn
+  nearly two wide);
+- **steps:** each measured band is a riser, upright, under a level tread.
+  The risers are scaled together to climb exactly from one landing to
+  the other; any split of a band draws the same from the game's camera.
+  Each step keeps 2 rows of tread. Where the art is too short for that
+  (the west steps climb 30 px in 29 rows), the risers lean forward up to
+  1.5 px a row;
+- **cliff:** the cells tilevox lists beside the flight (the wall it is
+  cut into, the gate's pedestals) rise a pixel a row from the lower
+  level at their drawn foot to the upper one. A lit wall no longer reads
+  as a top;
+- **one level** (Hyrule Field's bank): the two sides meet round the end
+  of the bank, so the flight climbs a ridge. The ridge's height is the
+  bank's drawn face, the rows beside the flight darker than halfway from
+  its lip to its face. The bank's cells are built like a cliff;
+- **east-west:** each band is a level step across the flight.
+
+`mesh.py` now also lays the floor strip behind every back face. A raised
+top drawn on row R stands at depth R + height, so the ground behind ended
+short of it and left a hole. The game's camera never sees the strip.
+
+Of the game's 90 layer-0 flights, 48 are raised north-south flights, 14
+raised east-west and 27 one-level. One has no steps the reader can find.
+The raised flights are built as above. The 24 one-level north-south
+flights are built as ridges where a bank of at least 8 drawn rows stands
+beside them. The rest (east-west one-level flights, `stair-arch`,
+`steps-to-door` and `stairwell`) are still left as drawn relief.
+
+Houses: a slate house (the blue house) is built by `buildings.py` like
+the caps and thatch. Its wall runs from the foot to the first 4 rows of
+roof material, so the blue specks in a door frame stay wall and the lower
+floor stands upright. Before, the general pass read its lit wall as a
+top and the 45-degree rule squashed it. The slate roof rises to a quarter
+of its drawn rows.
+
 ## Scope: the early game first
 
 Playable through the story scenes before Link leaves the castle:

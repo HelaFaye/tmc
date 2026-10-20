@@ -33,6 +33,7 @@ SCENES = {
     "mushrooms":   ("02_00", (17, 30, 25, 46)),   # stacked mushroom houses
     "links_house": ("03_01", (36, 16, 48, 27)),   # thatch, square chimney, woodpile
     "garden":      ("07_00", (18, 9, 26, 15)),    # clipped hedges
+    "field_bank":  ("03_03", (0, 4, 9, 14)),      # steps up an earth bank, one level
 }
 ZOOM = 3
 
@@ -121,7 +122,8 @@ def main():
                     if L["kind"] != "building" or L["style"] not in BD.BUILT:
                         continue
                     gat = lambda r, x: float(top[min(r + 1, Hh - 1), x]) if gnd[min(r + 1, Hh - 1), x] else 0.0
-                    byb, bs = BD.heights(m, pic, L["style"], L["top"], gat)
+                    byb, bs = BD.heights(m, pic, L["style"], L["top"], gat, L.get("band"))
+                    m = m & ~np.isnan(byb)
                     bparts.append((m, byb, bs))
                     bmask |= m
             yb_g = np.where(bmask, -1e6, yb)

@@ -17,9 +17,12 @@ import numpy as np
 from . import classify as CL
 from . import regions as RG
 
-BUILT = ("cap", "thatch")   # styles built here so far; others keep the general pass
+BUILT = ("cap", "thatch", "slate")  # styles built here so far; others keep the general pass
 WALL_SMOOTH = 15        # px: wall heights agree across this many columns
+ROOF_RUN = 4            # rows: the roof starts at this many rows of its material
+                        # (a speck of it in a door frame or a window is wall)
 SLATE_RISE = 0.35       # of a slate roof's depth to its flat top's run
+SLATE_PEAK = 0.25       # a slate roof's height, of its drawn rows (the rest is depth)
 
 
 def profile(n, style):
@@ -32,7 +35,7 @@ def profile(n, style):
         return np.zeros(n + 1)
     D = float(n)
     if style == "slate":
-        P = n * 0.4
+        P = n * SLATE_PEAK
         yy = P * np.minimum(1.0, t / SLATE_RISE)
     else:
         P = n / 2.0
@@ -42,25 +45,34 @@ def profile(n, style):
     return np.interp(np.arange(n + 1), rr, yy)
 
 
-def heights(mask, pic, style, top_mat, ground_at):
-    """(yb, s) for a building's pixels; nan elsewhere."""
+def heights(mask, pic, style, top_mat, ground_at, band_mat=None):
+    """(yb, s) for a building's pixels; nan elsewhere, and in columns that
+    never reach its roof (a wall the mask took in beside it)."""
     h, w = mask.shape
-    fam = np.full((h, w), "", object)
+    roof = {top_mat} | ({band_mat} if style == "slate" and band_mat else set())
     ys, xs = np.nonzero(mask)
     cols = {}
     for x in np.unique(xs):
         col = ys[xs == x]
         cols[x] = (col.min(), col.max())
-    # wall: rows from the foot up whose material is not the top's
+    # wall: rows from the foot up to the roof's material -- for slate, the
+    # first ROOF_RUN rows of it (a cap's pale spots break any run, so a cap
+    # or thatch stops at its first pixel, as drawn round its rim)
+    need = ROOF_RUN if style == "slate" else 1
     walls = {}
-    for x, (rt, rb) in cols.items():
-        r = rb
+    for x, (rt, rb) in list(cols.items()):
+        r, run = rb, 0
         while r >= rt:
-            f = CL.family(pic[r:r + 1, x], saturated_first=True)
-            if f == top_mat:
+            run = run + 1 if CL.family(pic[r:r + 1, x], saturated_first=True) in roof else 0
+            if run >= need:
                 break
             r -= 1
-        walls[x] = rb - r
+        if r < rt and style == "slate":
+            del cols[x]
+            continue
+        walls[x] = rb - r - (need - 1)
+    if not walls:
+        return np.full((h, w), np.nan), np.zeros((h, w))
     xs_ = sorted(walls)
     k = WALL_SMOOTH
     wall_s = {x: int(np.median([walls[xx] for xx in xs_[max(0, i - k // 2):i + k // 2 + 1]]))

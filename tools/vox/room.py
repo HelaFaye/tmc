@@ -62,4 +62,4 @@ def load(dump, captures=CAP.OUT):
                     pic[ys, xs] = ground[ys, xs]
                     spr[ys, xs] = False
     cls = RE.classify_room(r, 0)
-    return Room(rid, r, pic, ground, over, spr, cls)
+    return Room(rid, r, pic, ground, over, spr, cls, dict(path=str(dump)))

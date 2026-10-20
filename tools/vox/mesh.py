@@ -37,6 +37,14 @@ def build(yb, s, ground, ox=0, oz=0, px0=0, py0=0):
                     zb = R + y1
                     quad([(ox + x1, y1, oz + zb), (ox + x0, y1, oz + zb),
                           (ox + x0, ya, oz + zb), (ox + x1, ya, oz + zb)], X, R)
+                    # the floor behind ends at depth R + ya (its pixel's
+                    # lower edge); the back stands at zb. Fill between, in
+                    # that pixel's own colour: the game's camera never sees
+                    # it (the raised top in front covers its rows)
+                    ta = top[R - 1, X]
+                    if abs(ta - ya) < 1e-6:
+                        quad([(ox + x0, ya, oz + R + ya), (ox + x1, ya, oz + R + ya),
+                              (ox + x1, ya, oz + zb), (ox + x0, ya, oz + zb)], X, R - 1)
             # sides: the neighbour east is lower along the shared edge
             for dx, xe in ((1, x1), (-1, x0)):
                 Xn = X + dx

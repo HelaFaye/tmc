@@ -33,15 +33,17 @@ around it, the castle garden, and the first dungeon room.
 
 ## Sprint 1: the town and the field read right
 
-1. **West stairs cut into the wall.** The steps sit in a notch in the
-   upper level, not in front of the cliff.
+1. **West stairs cut into the wall.** Done in vox (`stairs.py`): the steps
+   climb from the lower level to the raised upper one, cut into a cliff
+   built upright from its foot.
 2. **The gate's bell** hangs inside the arch, not flat on the ground.
 3. **The blue house sits into the corner** with the stone wall. Its plan
    meets the wall, with no gap.
 4. **Link's house:** check the roof against the drawing from three
    angles. The woodpile and stump stand on the ground.
-5. **Holes left by the depth model** at the room's edges and behind
-   houses are filled.
+5. **Holes left by the depth model** behind raised things are filled
+   (`mesh.py` lays the floor strip behind each back face). The room's
+   edges are still open.
 
 ## Sprint 2: Link and enemies stand on the world
 

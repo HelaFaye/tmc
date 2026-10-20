@@ -29,16 +29,21 @@ GROUND_SHARE = 0.6      # of a region's pixels on ground cells, for it to be gro
 
 
 def ground_levels(rm):
-    """Per cell, the ground's height (tilevox's measured levels)."""
+    """Per cell, the ground's height (tilevox's measured levels, with the
+    upper landing of every flight of steps raised)."""
     import tilevox as TV
-    cls, H, _bl, _fl, _d = TV.room_heights(rm.raw, 0)
+    from pathlib import Path
+    path = rm.meta.get("path")
+    cls, H, _bl, _fl, _d = TV.room_heights(rm.raw, 0, path=Path(path) if path else None)
     return cls, np.asarray(H, float)
 
 
 def solve(rm, labels, shade, box=None, pic=None):
     """(yb, s, ground): per pixel the height at its lower edge, its rise,
     and whether it is ground. box (x0, y0, x1, y1) in cells limits the
-    work to a crop of the room (labels and shade are of that crop)."""
+    work to a crop of the room (labels and shade are of that crop).
+    Flights of steps (stairs.py) are ground with their own heights."""
+    from . import stairs as ST
     cls, H = ground_levels(rm)
     x0c, y0c = (box[0], box[1]) if box else (0, 0)
     h, w = labels.shape
@@ -54,7 +59,9 @@ def solve(rm, labels, shade, box=None, pic=None):
     gnd = np.bincount(labels.ravel(), weights=on_ground.ravel().astype(float), minlength=n)
     region_ground = gnd >= GROUND_SHARE * np.maximum(tot, 1)
     ground = on_ground & region_ground[labels]
-    rise = np.vectorize(lambda v: RISE.get(int(v), np.nan))(shade).astype(float)
+    st_m, st_yb, st_s = ST.fixed(rm, labels, box)
+    ground = ground | st_m
+    rise =np.vectorize(lambda v: RISE.get(int(v), np.nan))(shade).astype(float)
     # a front or a top runs level across its width: each row of a region
     # rises as most of its pixels in that row do
     for j in range(1, n):
@@ -96,6 +103,10 @@ def solve(rm, labels, shade, box=None, pic=None):
     for x in range(w):
         below = None            # height at the upper edge of the pixel below
         for y in range(h - 1, -1, -1):
+            if st_m[y, x]:
+                yb[y, x], s[y, x] = st_yb[y, x], st_s[y, x]
+                below = st_yb[y, x] + st_s[y, x]
+                continue
             if ground[y, x]:
                 yb[y, x], s[y, x] = lvl[y, x], 0.0
                 below = lvl[y, x]
