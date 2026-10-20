@@ -10,6 +10,9 @@ set_xmakever("2.7.0")
 add_rules("mode.debug", "mode.release")
 set_defaultmode("release")
 
+-- VR voxel fork: the `vr` option and the vr_meshtest tool target.
+includes("xmake-vr.lua")
+
 -- Game version options
 option("game_version")
     set_default("USA")
@@ -797,6 +800,17 @@ target("tmc_pc")
     add_files("port/port_gpu_raster_gl.cpp") -- GLES 3.1 compute PPU rasterizer (no-Vulkan devices; docs/gpu-rasterizer-design.md)
     add_files("port/port_glslp_parser.cpp")  -- libretro .glslp parser — steps 1-4 of the runtime scaffold (Stage 5+C)
     add_files("port/port_glslp_runtime.cpp") -- libretro .glslp runtime — step 5 (load + shader-build; present pending)
+
+    -- VR voxel fork (--vr=y): the port/vr capture modules (room dumps,
+    -- sprite frames, world capture) the TMC_VR blocks in
+    -- port_repro_roomcap.c call. Flat PC only; no OpenXR yet.
+    if has_config("vr") then
+        add_defines("TMC_VR=1")
+        add_includedirs("port/vr")
+        add_files("port/vr/vr_world.c", "port/vr/vr_anchor.c",
+                  "port/vr/vr_greedy_mesh.c", "port/vr/vr_interp.c",
+                  "port/vr/vr_spritedump.c", "port/vr/vr_debug_panel.cpp")
+    end
 
     -- SDL_GPU shader blobs. Compiled offline via port/shaders/build.sh
     -- (run when *.vert / *.frag change); the .spv files are committed

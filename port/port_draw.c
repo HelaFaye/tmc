@@ -94,6 +94,13 @@ void Port_LoadOverlayDataFromConst(const u8* data, u32 size) {
     }
 }
 
+#ifdef TMC_VR
+/* The OAM size table, for port/vr/vr_spritedump.c. */
+const u8* Port_GetSizeTable(void) {
+    return sSizeTableLoaded ? sSizeTable : NULL;
+}
+#endif
+
 /* ====================================================================
  *  ram_UpdateEntities — Port of arm_UpdateEntities @ 0x080B21B0
  * ==================================================================== */

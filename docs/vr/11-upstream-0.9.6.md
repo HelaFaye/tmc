@@ -42,6 +42,26 @@ Merged into `vr` on 2026-10-20, resolved as above. Checks run:
 `tools/room_capture.py` now reads `failed` (formerly `skip`) and `capture
 failed`, and resumes after either.
 
+Later checks on the merged tree:
+- `xmake build -y tmc_pc` builds. The two warnings are in upstream's
+  `port_voxel.cpp`: a missing pair of brackets in a hash, and a GCC
+  array-bounds false positive inside `std::sort`.
+- The headless smoke run reaches `Port layer initialized. Entering
+  AgbMain...`.
+- **Fixed: headless runs never quit.** SDL turns SIGTERM into a quit event,
+  which opens the save-before-quit dialog (upstream's, already in `vr`
+  before the merge), and nobody can answer it headless. With the `dummy` or
+  `offscreen` video driver the game now quits without saving.
+- **Fixed: no committed way to build capture.** `xmake.lua` now includes
+  `xmake-vr.lua`, and `--vr=y` defines `TMC_VR` and compiles `port/vr`;
+  `port_draw.c` exposes `Port_GetSizeTable`. The default build is
+  unchanged: it has none of the VR symbols.
+- **A real tour of Hyrule Town (02_00) runs** with the merged harness: 40
+  views, 94% of the room seen, 3 views dropped (under 70% like the tile art:
+  the market sprites in the square). The older capture saw 99%, but its
+  camera sits 176 px left of Link, so it came from a 352 px wide build;
+  240 px views leave the busy square a larger share of each view.
+
 ## Cues the VR work can use
 
 **Actors on the upper layer.** An entity's `collisionLayer == 2` means it

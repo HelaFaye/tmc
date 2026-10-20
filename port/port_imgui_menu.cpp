@@ -1069,6 +1069,13 @@ extern "C" void Port_ImGui_RequestQuitModal(void) {
      * exit. This catches the rare double-click on the X button. */
     if (sQuitModalConfirmed)
         return;
+    /* Headless runs (smoke tests, capture tours) have nobody to answer the
+     * modal, so a SIGTERM/SIGINT would never exit. Quit without saving. */
+    const char* drv = SDL_GetCurrentVideoDriver();
+    if (drv && (SDL_strcmp(drv, "dummy") == 0 || SDL_strcmp(drv, "offscreen") == 0)) {
+        sQuitModalConfirmed = true;
+        return;
+    }
     sQuitModalArmed = true;
 }
 

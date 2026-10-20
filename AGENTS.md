@@ -30,7 +30,7 @@ Project Picori is a native PC port of **The Legend of Zelda: The Minish Cap**. I
 - The offline pipeline is Python in `tools/` (numpy + Pillow, `requirements.txt`): `harvest_rooms.py` → `.tmcr` dumps → `mk_manifests.py` / `shapefit.py` / `room_explore.py` → `.obj`. `tools/voxelate_all.sh` runs it end to end.
 - Read world state from the engine (`gMapTop`/`gMapBottom`, the entity list, `gPlayerEntity`), never from the PPU or OAM. Never read `scroll_x/y`, `aff_x/y`, `oam_offset_x/y` or BG offsets for a view.
 - Never commit the ROM or anything derived from it: dumps, decoded art, sprite frames, meshes. Commit only code and manifests of coordinates and indices; add every new output directory to `.gitignore` in the same commit.
-- The `vr` xmake option is not wired into `xmake.lua` yet; see "Setup" in `docs/vr/README.md`.
+- Capture builds use `xmake f -y --game_version=USA --repro_harness=y --vr=y`; see "Setup" in `docs/vr/README.md`.
 
 ## Development Commands
 ```bash

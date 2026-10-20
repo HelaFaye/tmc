@@ -13,7 +13,7 @@ option("vr")
     set_default(false)
     set_showmenu(true)
     set_category("Graphics")
-    set_description("Build the OpenXR VR renderer (own Vulkan 1.1 device)")
+    set_description("Build the VR fork's capture modules (port/vr, TMC_VR); OpenXR renderer later")
 option_end()
 
 -- Phase 0/1 host tools. No graphics, no OpenXR, no game loop — these exist to

@@ -94,39 +94,21 @@ python3 -m venv .venv
 
 The scripts use `.venv/bin/python` automatically when it exists.
 
-Capture needs a `tmc_pc` built with `TMC_VR` defined. **That wiring is not
-committed yet** (see below). Until it is, add `includes("xmake-vr.lua")` near
-the top of `xmake.lua` and this flat-PC block inside `target("tmc_pc")`:
-
-```lua
-if has_config("vr") then
-    add_defines("TMC_VR=1")
-    add_includedirs("port/vr")
-    add_files("port/vr/vr_world.c", "port/vr/vr_anchor.c",
-              "port/vr/vr_greedy_mesh.c", "port/vr/vr_interp.c",
-              "port/vr/vr_spritedump.c", "port/vr/vr_debug_panel.cpp")
-end
-```
-
-(The `TMC_VR BLOCK` inside `xmake-vr.lua` is the later OpenXR/Vulkan build
-and needs files that do not exist yet.) Then expose the sprite size table
-from `port/port_draw.c`, which `vr_spritedump.c` links against:
-
-```c
-#ifdef TMC_VR
-const u8* Port_GetSizeTable(void) {
-    return sSizeTableLoaded ? sSizeTable : NULL;
-}
-#endif
-```
-
-and build:
+Capture needs a `tmc_pc` built with the `vr` option and the repro harness.
+`xmake.lua` includes `xmake-vr.lua` (the option), and with `--vr=y` the
+`tmc_pc` target defines `TMC_VR` and compiles the `port/vr` modules.
+`port_draw.c` exposes the sprite size table (`Port_GetSizeTable`) that
+`vr_spritedump.c` links against. (The `TMC_VR BLOCK` inside `xmake-vr.lua`
+is the later OpenXR/Vulkan build and needs files that do not exist yet.)
 
 ```sh
-xmake f -y --game_version=USA --vr=y
+xmake f -y --game_version=USA --repro_harness=y --vr=y
 xmake build -y tmc_pc
 python3 tools/apply_roomcap_hook.py --check    # the TMC_VR hook is present
 ```
+
+A headless run (`SDL_VIDEODRIVER=dummy`) quits on SIGTERM or SIGINT without
+the save-before-quit dialog, which nobody could answer there.
 
 That is enough for capture. The live ImGui panel (collision grid, entity
 table, anchor controls) also needs `VrDebug_Tick()` called once per tick and
@@ -225,11 +207,10 @@ Kept here because a README that only lists successes is misleading.
 
 **Pipeline and build**
 
-- **The `vr` build option is not wired in.** `xmake.lua` does not include
-  `xmake-vr.lua`, and the three engine hooks (`Port_GetSizeTable` in
-  `port_draw.c`, `VrDebug_Tick` in `port_bios.c`, `VrDebug_DrawPanel` in
-  `port_imgui_menu.cpp`) are not committed. Without them `TMC_VR` is never
-  defined, the capture code is compiled out, and a harvest writes no dumps.
+- **The VR debug panel is not hooked up.** `--vr=y` builds the capture code,
+  but `VrDebug_Tick` (in `port_bios.c`) and `VrDebug_DrawPanel` (in
+  `port_imgui_menu.cpp`) are not called yet, so the live ImGui panel never
+  shows.
 - **Two capture modes were lost in a hook revision.** `harvest_night.sh`
   sets `TMC_ROOMCAP_SPRITERANGE` (every sprite's animation frames) and
   `harvest_rooms.py --entsheet` sets `TMC_ROOMCAP_ENTSHEET` (per-entity

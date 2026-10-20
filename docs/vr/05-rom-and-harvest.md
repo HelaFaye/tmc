@@ -50,11 +50,11 @@ cd dist/USA && ./tmc_pc
 
 ## 3. Rebuild with the VR capture code
 
-A normal build leaves the capture code out. Wire in the `vr` option first
-(see [Setup](README.md#setup); it is not committed yet), then:
+A normal build leaves the capture code out. The `vr` option and the repro
+harness put it in (see [Setup](README.md#setup)):
 
 ```sh
-xmake f -y --game_version=USA --vr=y
+xmake f -y --game_version=USA --repro_harness=y --vr=y
 xmake build -y tmc_pc
 cp build/pc/tmc_pc dist/USA/
 ```
