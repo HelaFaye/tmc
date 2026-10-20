@@ -57,3 +57,73 @@ arches with one solver.
 - No stage patches another's output. If a later stage needs something,
   the earlier stage produces it.
 - Renders hold ROM-derived art and stay out of the repository.
+
+## Posterizing first (tried)
+
+`vox/poster.py` reduces a room's picture to `POSTER_COLOURS` colours
+(median cut) before shapes and shading are read from it
+(`scenes.py --poster`). At 24 colours it does not help yet:
+- merging similar colours also merges the tones that tell a top from a
+  front, so more fronts read as tops;
+- the mushroom stack gains fins, the blue house a stray slab;
+- Link's house and the gate barely change.
+
+It stays an option, off by default. Worth trying again per material
+(posterize within a region, not across the room), so tones are kept and
+only texture folds.
+
+## Scope: the early game first
+
+Playable through the story scenes before Link leaves the castle:
+- Link's house, inside and out;
+- Hyrule Field around it;
+- Hyrule Town on festival day (square, gate, houses, shops);
+- the road to the castle;
+- Hyrule Castle's garden, gate and the rooms of the opening scenes.
+
+Every room on that route joins the reference scenes before it is called
+done.
+
+## Classes and labels
+
+Buildings are grouped by:
+- **style:** a domed cap (mushroom), a thatched roof, a slate roof with
+  a flat top, a stone block;
+- **material:** the roof's and walls' colour family;
+- **height:** drawn wall height and roof rise, measured.
+
+Objects take the same three, plus a **shape cue**:
+- mound (bush, rock, pot);
+- stand (sapling, post);
+- box (crate, table);
+- slab (sign, fence);
+- arch;
+- step.
+
+A group shares one way of being built, and a correction to one member
+is a correction to the group.
+
+## What may be committed (assets)
+
+Nothing that reproduces the game's art:
+- no colours, textures, palettes or atlases taken from the ROM;
+- no rendered pictures;
+- no voxels carrying colour.
+
+The rule is on the safe side of derivative-work concerns: a coloured
+model that "looks like the tile from the game's camera" is a copy of the
+art by design.
+
+What may be committed is structure:
+- shapes as heights or occupancy;
+- labels (class, style, material class, shape cue);
+- tile and metatile indices, room and cell coordinates;
+- UVs into a texture the player's own build extracts from their own ROM.
+
+The coloured result is made on the player's machine, from their ROM, by
+the same code. The repository already treats the ROM this way (AGENTS.md).
+
+Geometry that closely traces drawn silhouettes is still a grey area, far
+weaker than shipping art. Labels and indices are the safest.
+
+This is a project policy, not legal advice.

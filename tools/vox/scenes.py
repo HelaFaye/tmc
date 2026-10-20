@@ -18,6 +18,7 @@ import math
 from . import heights as HT
 from . import mesh as MS
 from . import overhead as OV
+from . import poster as PO
 from . import regions as RG
 from . import room as RM
 from .room import HERE  # noqa: F401  (tools/ on the path)
@@ -81,6 +82,8 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--only", default="")
     ap.add_argument("--what", default="regions")
+    ap.add_argument("--poster", action="store_true", help="read shapes from a posterized picture")
+    ap.add_argument("--tag", default="", help="suffix for the sheets")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -98,15 +101,17 @@ def main():
                   out / f"{name}_regions.png")
         elif a.what == "build":
             base, om = OV.under(rm, box)
-            lab, _n, sh = RG.split(base)
-            yb, sl, gnd = HT.solve(rm, lab, sh, box, base)
+            post, _idx = PO.posterize(base) if a.poster else (base, None)
+            lab, _n, sh = RG.split(post)
+            yb, sl, gnd = HT.solve(rm, lab, sh, box, post)
             V, F, UV = MS.build(yb, sl, gnd)
             V, F = list(map(tuple, V)), list(F)
             top = yb + sl
             Hh = pic.shape[0]
-            for P, zp, T in OV.shapes(om, pic, top, ~gnd):
+            pic_p = PO.posterize(pic)[0] if a.poster else pic
+            for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
                 if zp == "roof":
-                    v2, f2, uv2 = OV.roof(P, pic, top, ~gnd, Hh)
+                    v2, f2, uv2 = OV.roof(P, pic_p, top, ~gnd, Hh)
                 elif zp is not None:
                     v2, f2, uv2 = OV.slab(P, zp, T, Hh)
                 else:
@@ -120,7 +125,7 @@ def main():
             for yaw, pitch, game in ((0, 45, True), (35, 30, False), (-35, 30, False)):
                 panels.append(render(V, F, UV, tex, yaw, pitch, game, pic.shape[:2]))
                 labels.append("built, game camera" if game else f"yaw {yaw} pitch {pitch}")
-            sheet(panels, labels, out / f"{name}_build.png")
+            sheet(panels, labels, out / f"{name}_build{a.tag}.png")
         print(name)
 
 
