@@ -115,6 +115,22 @@ floor stands upright. Before, the general pass read its lit wall as a
 top and the 45-degree rule squashed it. The slate roof rises to a quarter
 of its drawn rows.
 
+## Review findings
+
+From the shared review page (`vox/review.py` writes its data):
+- **Steps are one thing.** The gate's steps were labelled a "stand" (a
+  strip down their middle). `classify` now takes each flight's drawn
+  steps (`stairs.drawn`) out of other objects and labels it `steps`,
+  as wide as it is drawn. Scraps under 96 px left touching it join it.
+- **Awnings.** The mushroom shop's orange canopy was a box from the
+  ground. An object beside a building, of its roof's material, at least
+  12 px each way, is now an `awning` attached to it. It is built as a
+  level sheet hung at the building's wall top (its rim upright), open
+  underneath (`mesh.build(open_=...)`), and kept out of the overhead
+  pass.
+- **Cue, not used yet:** the shadow the gate's arch casts on the ground
+  at the top of the steps shows its height and shape.
+
 ## Scope: the early game first
 
 Playable through the story scenes before Link leaves the castle:

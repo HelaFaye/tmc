@@ -182,6 +182,32 @@ def profile(fl):
     return list(reversed(rows)), bands[0][0]
 
 
+def drawn(rm, shape, box=None):
+    """[(mask, flight)]: each flight's drawn steps over the crop -- its
+    measured rows (north-south) or bands (east-west), across its width."""
+    from . import regions as RG
+    h, w = shape[:2]
+    ox, oy = (box[0] * 16, box[1] * 16) if box else (0, 0)
+    lum = RG.luminance(rm.picture)
+    out = []
+    for fl in flights(rm):
+        m = np.zeros((h, w), bool)
+        x0, y0, x1, y1 = fl["rect"]
+        if fl["up"] == "n":
+            cols = _columns(lum, fl)
+            if not cols:
+                continue
+            r0, r1 = fl["edges"][0], fl["edges"][-1]
+            c0, c1 = cols[0], cols[-1] + 1
+        else:
+            r0, r1 = y0 * 16, (y1 + 1) * 16
+            c0, c1 = fl["edges"][0], fl["edges"][-1]
+        m[max(0, r0 - oy):max(0, r1 - oy), max(0, c0 - ox):max(0, c1 - ox)] = True
+        if m.any():
+            out.append((m, fl))
+    return out
+
+
 def fixed(rm, pic, box=None):
     """(mask, yb, s) over the crop: the pixels the flights fix, and their
     heights. box (x0, y0, x1, y1) in cells, as heights.solve takes it."""

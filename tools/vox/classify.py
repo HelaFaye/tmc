@@ -32,6 +32,7 @@ GROW_SIDE = 8           # px: a piece joins a building only within its columns, 
 FRONT_ROWS = 6          # px: a front's material from its bottom rows
 GROW_MIN = 20           # px: a piece a building overlaps this much may join it
 MIN_PX = 40             # px: smaller is detail
+STEP_SCRAP = 96         # px: a piece this small touching a flight is part of it
 
 
 def family(px, saturated_first=False):
@@ -74,6 +75,11 @@ def objects(rm, box, pic, overhead_mask):
     cells = np.isin(cls[y0:y1, x0:x1], [RE.CLASS_WALL, RE.CLASS_LEDGE])
     solid = np.kron(cells, np.ones((16, 16), bool))[:h, :w] | overhead_mask
     body = solid & (RG.luminance(pic) >= RG.OUTLINE)
+    # flights of steps are one thing each, as wide as they are drawn
+    from . import stairs as ST
+    steps = ST.drawn(rm, pic.shape, box)
+    for sm, _fl in steps:
+        body &= ~sm
     out = []
     lab0, n0 = RE._label(body)
     fam0 = {}
@@ -114,10 +120,20 @@ def objects(rm, box, pic, overhead_mask):
     lab, n = RE._label(body)
     for j in range(1, n + 1):
         m = lab == j
+        # a scrap left beside a flight (its drawn edge rows) is the flight's
+        near = np.pad(m, 1)
+        near = near[:-2, 1:-1] | near[2:, 1:-1] | near[1:-1, :-2] | near[1:-1, 2:]
+        k = next((i for i, (sm, _f) in enumerate(steps) if (near & sm).any()), None)
+        if k is not None and m.sum() < STEP_SCRAP:
+            steps[k] = (steps[k][0] | m, steps[k][1])
+            continue
         if m.sum() < MIN_PX:
             continue
         ys, xs = np.nonzero(m)
         out.append((m, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1), False))
+    for sm, _fl in steps:
+        ys, xs = np.nonzero(sm)
+        out.append((sm, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1), "steps"))
     door_px = [((d["cx"] - x0) * 16 + 8, (d["cy"] - y0) * 16 + 8) for d in doors]
     return out, door_px
 
@@ -135,7 +151,13 @@ def buildings(rm, cls, doors):
 
 
 def label(m, bbox, pic, door_px, is_building=False):
+    """is_building: True, False, or "steps" (a flight, stairs.drawn)."""
     x0, y0, x1, y1 = bbox
+    if is_building == "steps":
+        ys, xs = np.nonzero(m)
+        return dict(bbox=[int(v) for v in bbox], kind="object", style=None, shape="steps",
+                    streak=None, top=family(pic[ys, xs]), front=family(pic[ys, xs]),
+                    band=None, front_h=0, over_h=0, px=int(m.sum()), door=False)
     w, h = x1 - x0, y1 - y0
     px = pic[m]
     lum = RG.luminance(pic)
@@ -237,8 +259,8 @@ def label(m, bbox, pic, door_px, is_building=False):
 def _merge(objs, pic):
     """One building where the finder reported several over one house:
     buildings with the same top material whose boxes overlap."""
-    blds = [o for o in objs if o[2]]
-    rest = [o for o in objs if not o[2]]
+    blds = [o for o in objs if o[2] is True]
+    rest = [o for o in objs if o[2] is not True]
     tops = []
     for m, _bb, _ in blds:
         ys, xs = np.nonzero(m)
@@ -263,10 +285,41 @@ def _merge(objs, pic):
     return blds + rest
 
 
+AWNING_SIDE = 8         # px: an awning's box ends this near its building's
+AWNING_MIN = 12         # px: an awning is at least this wide and deep
+
+
+def awnings(objs, labels):
+    """Mark awnings: an object beside a building, of its roof's material,
+    whose box overlaps the building's rows -- a canopy hung off its wall
+    (the mushroom shop's, over its stall). Sets shape "awning" and
+    "attached" (the building's index); returns their indices."""
+    out = []
+    for i, L in enumerate(labels):
+        if L["kind"] != "object" or L["shape"] == "steps":
+            continue
+        a = L["bbox"]
+        if a[2] - a[0] < AWNING_MIN or a[3] - a[1] < AWNING_MIN:
+            continue
+        for j, B in enumerate(labels):
+            if B["kind"] != "building" or B["top"] != L["top"]:
+                continue
+            b = B["bbox"]
+            beside = abs(a[2] - b[0]) <= AWNING_SIDE or abs(a[0] - b[2]) <= AWNING_SIDE
+            rows = min(a[3], b[3]) > max(a[1], b[1])
+            if beside and rows and a[3] < b[3]:
+                L["shape"], L["attached"] = "awning", j
+                out.append(i)
+                break
+    return out
+
+
 def classify(rm, box, pic, overhead_mask):
     objs, door_px = objects(rm, box, pic, overhead_mask)
     objs = _merge(objs, pic)
-    return [label(m, bb, pic, door_px, isb) for m, bb, isb in objs]
+    labels = [label(m, bb, pic, door_px, isb) for m, bb, isb in objs]
+    awnings(objs, labels)
+    return labels
 
 
 def sheet(pic, labels, path, zoom=3):

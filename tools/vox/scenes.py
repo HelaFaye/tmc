@@ -59,6 +59,41 @@ def sheet(panels, labels, path):
 
 
 TALL = 64
+RIM_MAX = 8             # px: an awning's front rim is at most this many rows
+
+
+def hang_awning(m, pic, top_mat, gnd, yb, s, eave=None):
+    """An awning's heights, in place (classify.awnings). It hangs from its
+    building at the top of the building's wall (eave); without one, its
+    front's underside stands over the first ground below it (the
+    45-degree rule). Its rim (the rows at its bottom not of its top's
+    material) is upright; above that its top is level. Heights agree
+    across it, so it is one flat sheet."""
+    h, w = m.shape
+    cols = {}
+    for x in np.nonzero(m.any(axis=0))[0]:
+        col = np.nonzero(m[:, x])[0]
+        rb = col.max()
+        f = rb + 1
+        while f < h and not gnd[f, x]:
+            f += 1
+        if f < h:
+            # the underside's front edge, drawn on row rb, over ground at f
+            cols[x] = (col.min(), rb, f + (yb[f, x] + s[f, x]) - rb - 1)
+    if not cols:
+        return
+    hu = eave if eave is not None else float(np.median([c[2] for c in cols.values()]))
+    for x, (rt, rb, _hu) in cols.items():
+        t = 0
+        while t < RIM_MAX and rb - t >= rt and \
+                CL.family(pic[rb - t:rb - t + 1, x], saturated_first=True) != top_mat:
+            t += 1
+        for r in range(rb, rt - 1, -1):
+            k = rb - r
+            if k < t:
+                yb[r, x], s[r, x] = hu + k, 1.0
+            else:
+                yb[r, x], s[r, x] = hu + t, 0.0
 
 
 def render(V, F, UV, pic, yaw, pitch, game, size=None):
@@ -112,13 +147,16 @@ def main():
             Hh = pic.shape[0]
             # buildings by their style, from the full picture
             bmask = np.zeros(pic.shape[:2], bool)
+            amask = np.zeros(pic.shape[:2], bool)
             bparts = []
             if a.styles:
                 objs, _dp = CL.objects(rm, box, pic, om)
-                for m, bb, isb in CL._merge(objs, pic):
-                    if not isb:
+                objs = CL._merge(objs, pic)
+                labs = [CL.label(m, bb, pic, [], isb) for m, bb, isb in objs]
+                eave = {}               # building index -> its wall's top
+                for j, ((m, bb, isb), L) in enumerate(zip(objs, labs)):
+                    if isb is not True:
                         continue
-                    L = CL.label(m, bb, pic, [], True)
                     if L["kind"] != "building" or L["style"] not in BD.BUILT:
                         continue
                     gat = lambda r, x: float(top[min(r + 1, Hh - 1), x]) if gnd[min(r + 1, Hh - 1), x] else 0.0
@@ -126,8 +164,16 @@ def main():
                     m = m & ~np.isnan(byb)
                     bparts.append((m, byb, bs))
                     bmask |= m
+                    wall = (bs >= 0.75) & m
+                    if wall.any():
+                        eave[j] = float(np.median([(byb[:, x][wall[:, x]] + 1).max()
+                                                   for x in np.nonzero(wall.any(axis=0))[0]]))
+                for i in CL.awnings(objs, labs):
+                    hang_awning(objs[i][0], pic, labs[i]["top"], gnd, yb, sl,
+                                eave.get(labs[i]["attached"]))
+                    amask |= objs[i][0]
             yb_g = np.where(bmask, -1e6, yb)
-            V, F, UV = MS.build(yb_g, sl, gnd | bmask)
+            V, F, UV = MS.build(yb_g, sl, gnd | bmask, open_=amask)
             keep = [i for i, f in enumerate(F) if V[f].min(axis=0)[1] > -1e5]
             F = [F[i] for i in keep]
             UV = [UV[i] for i in keep]
@@ -139,7 +185,7 @@ def main():
                 F += [[i + len(V) for i in f2[k]] for k in kp]
                 UV += [(uv2[k][0], uv2[k][1] + Hh) for k in kp]
                 V += list(map(tuple, v2))
-            om = om & ~bmask
+            om = om & ~bmask & ~amask
             pic_p = PO.posterize(pic)[0] if a.poster else pic
             for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
                 if zp == "roof":

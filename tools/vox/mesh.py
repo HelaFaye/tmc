@@ -10,10 +10,11 @@ wears its own pixel: the room's picture is the texture.
 import numpy as np
 
 
-def build(yb, s, ground, ox=0, oz=0, px0=0, py0=0):
+def build(yb, s, ground, ox=0, oz=0, px0=0, py0=0, open_=None):
     """(V, F, UV): vertices, quads (index lists), per-quad pixel (u, v)
     in the picture's pixels. ox, oz place the crop in the world; px0, py0
-    are its origin in the picture."""
+    are its origin in the picture. open_: pixels that close nothing down
+    to lower neighbours (an awning: a sheet, open under it)."""
     h, w = yb.shape
     V, F, UV = [], [], []
 
@@ -31,6 +32,8 @@ def build(yb, s, ground, ox=0, oz=0, px0=0, py0=0):
             quad([(ox + x0, y1, oz + z1), (ox + x1, y1, oz + z1),
                   (ox + x1, y0, oz + z0), (ox + x0, y0, oz + z0)], X, R)
             # back: the pixel above is lower at their shared edge
+            if open_ is not None and open_[R, X]:
+                continue
             if R > 0:
                 ya = yb[R - 1, X]
                 if ya < y1 - 1e-6:
