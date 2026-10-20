@@ -62,6 +62,13 @@ SHA1_TO_VERSION = {
 W = 64
 USE_UNICODE_UI = PLATFORM != "Windows"
 
+# Messages also carry Unicode (e.g. "→" in paths). With stdout redirected on
+# Windows, Python encodes with the locale code page (cp1252) and the print
+# raises mid-build. Degrade to "?" instead.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
 def _ui_char(unicode_ch: str, ascii_ch: str) -> str:
     return unicode_ch if USE_UNICODE_UI else ascii_ch
 
@@ -484,6 +491,37 @@ def stage_rando_logic(dist_dir: Path) -> None:
     shutil.copy2(source, target)
     ok(f"default.logic → {target.relative_to(REPO_ROOT)}")
 
+def _assets_fingerprint(version: str) -> str:
+    """Hash of everything the xmake extract/convert/build_assets tasks read:
+    the verified ROM (identified by its expected SHA1), the asset JSON
+    descriptions, extractor/index/pipeline, and asset_processor plus its
+    converters. Game code is not an input, so code-only rebuilds can reuse
+    build/<version>/assets."""
+    h = hashlib.sha1()
+    h.update(f"{version}:{VERSIONS[version]['sha1']}\n".encode())
+    inputs = sorted((REPO_ROOT / "assets").glob("*.json"))
+    for tool in ("asset_processor", "assets_extractor", "gbagfx", "aif2pcm", "mid2agb", "agb2mid", "util"):
+        inputs += sorted(p for p in (REPO_ROOT / "tools" / "src" / tool).rglob("*") if p.is_file())
+    for stem in ("port_asset_index", "port_asset_pipeline", "port_asset_pak", "port_asset_log"):
+        inputs += sorted((REPO_ROOT / "port").glob(stem + ".*"))
+    for p in inputs:
+        h.update(p.relative_to(REPO_ROOT).as_posix().encode() + b"\0")
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+def _invalidate_region_caches(dist_dir: Path, fingerprint: str) -> None:
+    """Keep regional extraction caches only for the pipeline that produced them."""
+    stamp = dist_dir / ".assets_fingerprint"
+    if stamp.is_file() and stamp.read_text().strip() == fingerprint:
+        return
+    for tree in ("assets", "assets_src"):
+        for region in ("usa", "eu", "jp"):
+            cache = dist_dir / tree / region
+            if cache.is_symlink():
+                cache.unlink()
+            elif cache.is_dir():
+                shutil.rmtree(cache)
+
 def stage_voxel_shapes(dist_dir: Path) -> None:
     """Ship the 3D view's default tile shapes, merged under a local copy.
 
@@ -593,8 +631,10 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
     configure_cmd.append("--repro_harness=y")
 
     assets_dir = REPO_ROOT / "build" / version / "assets"
-    assets_src_dir = REPO_ROOT / "build" / version / "assets_src"
-    assets_ready = assets_dir.exists() and assets_src_dir.exists()
+    assets_stamp = REPO_ROOT / "build" / version / ".assets_fingerprint"
+    assets_fingerprint = _assets_fingerprint(version)
+    assets_ready = (assets_dir.exists() and assets_stamp.exists()
+                    and assets_stamp.read_text().strip() == assets_fingerprint)
 
     steps = [
         (f"Configure ({version})", configure_cmd),
@@ -607,8 +647,14 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
     if slim:
         info("Slim build — skipping xmake extract_assets/convert_assets/build_assets.")
     elif assets_ready:
-        info("Assets already exist in build/<version>/assets and build/<version>/assets_src — skipping extract/convert/build_assets.")
+        info("Assets up to date (same ROM, asset JSON and asset tool sources) — skipping extract/convert/build_assets.")
     else:
+        if assets_stamp.exists():
+            assets_stamp.unlink()
+        # Re-extract every file: extraction skips files that already exist, so a
+        # stale or corrupted one (e.g. a dungeon map from the old text-mode write)
+        # would otherwise survive the input change.
+        env = dict(env, TMC_ASSET_FORCE_EXTRACT="1")
         steps.extend([
             ("Extract assets",              ["xmake", "extract_assets"]),
             ("Convert assets",              ["xmake", "convert_assets"]),
@@ -625,6 +671,8 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
         except RuntimeError as exc:
             err(str(exc))
             return None
+        if label == "Build assets":
+            assets_stamp.write_text(assets_fingerprint + "\n")
 
     if not slim:
         # Copy ROM so the standalone asset_extractor can find it next
@@ -648,7 +696,7 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
                 # --loose-assets triggers pak mode), so a subsequent
                 # warm-launch of build/pc/tmc_pc skips re-extraction
                 # via the ROM-fingerprint fast path.
-                run_cmd([extractor, "--pak"], cwd=REPO_ROOT)
+                run_cmd([extractor, "--pak"] + ([] if assets_ready else ["--force"]), cwd=REPO_ROOT)
             except RuntimeError:
                 warn("asset_extractor failed — runtime assets may be incomplete")
         else:
@@ -706,6 +754,8 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
                 shutil.copy2(src_lib, dst_lib)
                 ok(f"{src_lib.name} →  dist/{version}/")
 
+    _invalidate_region_caches(dist_dir, assets_fingerprint)
+
     if slim:
         # In slim mode only the small editable logic file is staged.
         # tmc_pc's embedded extractor will create ROM assets/ on first run, and
@@ -715,16 +765,23 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
         stage_voxel_shapes(dist_dir)
         info("Slim mode — ROM assets/, assets_src/, and sounds.json are NOT copied.")
         info("tmc_pc will self-extract assets on first launch using the embedded extractor.")
+        (dist_dir / ".assets_fingerprint").write_text(assets_fingerprint + "\n")
         return dst_bin
 
     # Runtime assets (build/<version>/assets/) and editable assets (build/<version>/assets_src/)
     # A previous dist may contain a user-edited logic file or additional
     # randomizer files. Keep that directory across the ROM asset refresh.
-    rando_dst = dist_dir / "assets" / "rando"
-    with tempfile.TemporaryDirectory(prefix="tmc-rando-assets-") as backup_dir:
-        rando_backup = Path(backup_dir) / "rando"
-        if rando_dst.is_dir():
-            shutil.copytree(rando_dst, rando_backup)
+    # Also keep tmc_pc's per-region runtime caches (assets/<region>/ and
+    # assets_src/<region>/): wiping them made the first launch after every
+    # full build re-extract. Changed pipeline inputs invalidate these above;
+    # tmc_pc also checks ROM size/mtime and the extractor output version.
+    kept = [Path("assets") / "rando"] + [
+        Path(tree) / region for tree in ("assets", "assets_src") for region in ("usa", "eu", "jp")
+    ]
+    with tempfile.TemporaryDirectory(prefix="tmc-dist-keep-") as backup_dir:
+        for rel in kept:
+            if (dist_dir / rel).is_dir():
+                shutil.copytree(dist_dir / rel, Path(backup_dir) / rel)
         for src_name in ("assets", "assets_src"):
             src = REPO_ROOT / "build" / version / src_name
             dst = dist_dir / src_name
@@ -735,8 +792,9 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
                 ok(f"{src_name}/  →  dist/{version}/{src_name}/")
             else:
                 warn(f"build/{version}/{src_name}/ not found — skipping")
-        if rando_backup.is_dir():
-            shutil.copytree(rando_backup, rando_dst, dirs_exist_ok=True)
+        for rel in kept:
+            if (Path(backup_dir) / rel).is_dir():
+                shutil.copytree(Path(backup_dir) / rel, dist_dir / rel, dirs_exist_ok=True)
     stage_rando_logic(dist_dir)
     stage_voxel_shapes(dist_dir)
 
@@ -750,6 +808,7 @@ def build_version(version: str, env: dict, non_interactive: bool = False,
         # lets users tweak song metadata without rebuilding.
         warn("assets/sounds.json not found — using the embedded fallback baked into tmc_pc")
 
+    (dist_dir / ".assets_fingerprint").write_text(assets_fingerprint + "\n")
     return dst_bin
 
 # ── Main ──────────────────────────────────────────────────────────────────────

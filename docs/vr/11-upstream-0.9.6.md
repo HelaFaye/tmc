@@ -32,8 +32,15 @@ Take upstream's side, then:
   resume after a failed view with `TMC_ROOMCAP_TOUR_START` rather than
   expect a skip line.
 
-The merge was not completed in this session: the session's permissions
-refused bringing upstream code into the branch. It needs the owner's go-ahead.
+Merged into `vr` on 2026-10-20, resolved as above. Checks run:
+- upstream's `tools/roomcap_regression_test.py` and
+  `tools/voxel_regression_test.py` pass against the merged file, with the
+  TMC_VR block reinstalled by `tools/apply_roomcap_hook.py`;
+- `port/port_repro_roomcap.c` compiles with and without `TMC_VR`
+  (`gcc -fsyntax-only`, the build's defines).
+
+`tools/room_capture.py` now reads `failed` (formerly `skip`) and `capture
+failed`, and resumes after either.
 
 ## Cues the VR work can use
 

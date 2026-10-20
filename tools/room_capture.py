@@ -148,11 +148,16 @@ def tour(game, views, outdir, settle=SETTLE):
             if m.group(6) == "1":
                 got[i] = (outdir / f"{i:05d}.png", (int(m.group(4)), int(m.group(5))),
                           (int(m.group(2), 16), int(m.group(3), 16)))
-        for m in re.finditer(r"\[roomcap\] tour (\d+) (skip|stuck) room=0x([0-9a-f]+)/0x([0-9a-f]+)", err):
+        # a view that never arrives ends the run ("failed", formerly "skip");
+        # the next run starts after it
+        for m in re.finditer(r"\[roomcap\] tour (\d+) (skip|stuck|failed) room=0x([0-9a-f]+)/0x([0-9a-f]+)", err):
             last = max(last, int(m.group(1)))
             print(f"[capture] {int(m.group(3), 16):02d}_{int(m.group(4), 16):02d}: "
-                  f"view {m.group(1)} {'never arrived' if m.group(2) == 'skip' else 'stuck'}",
+                  f"view {m.group(1)} {'stuck' if m.group(2) == 'stuck' else 'never arrived'}",
                   file=sys.stderr)
+        for m in re.finditer(r"\[roomcap\] tour (\d+) capture failed", err):
+            last = max(last, int(m.group(1)))
+            print(f"[capture] view {m.group(1)}: capture failed", file=sys.stderr)
         if "[roomcap] tour done" in err:
             break
         start = last + 1 if last >= start else start + 1
