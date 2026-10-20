@@ -19,6 +19,7 @@ from . import heights as HT
 from . import mesh as MS
 from . import overhead as OV
 from . import poster as PO
+from . import classify as CL
 from . import regions as RG
 from . import room as RM
 from .room import HERE  # noqa: F401  (tools/ on the path)
@@ -126,6 +127,11 @@ def main():
                 panels.append(render(V, F, UV, tex, yaw, pitch, game, pic.shape[:2]))
                 labels.append("built, game camera" if game else f"yaw {yaw} pitch {pitch}")
             sheet(panels, labels, out / f"{name}_build{a.tag}.png")
+        elif a.what == "classes":
+            _base, om = OV.under(rm, box)
+            L = CL.classify(rm, box, pic, om)
+            CL.sheet(pic, L, out / f"{name}_classes.png")
+            CL.write(L, out / f"{name}_classes.json")
         print(name)
 
 
