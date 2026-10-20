@@ -27,6 +27,7 @@ import numpy as np
 from PIL import Image
 
 from . import classify as CL
+from . import glrender as GL
 from . import overhead as OV
 from . import room as RM
 from . import scenes as SC
@@ -61,10 +62,9 @@ def do_room(dump, out, vox=True):
            "img": f"img/{rm.rid}.png", "objects": objs}
     if vox:
         V, F, UV, tex = SC.build_scene(rm, box, pic, styles=True)
-        g = SC.render(V, F, UV, tex, 0, 45, True, pic.shape[:2])
-        Image.fromarray(np.ascontiguousarray(g[:, :, :3])).save(out / "vox" / f"{rm.rid}_game.png")
-        views = [Image.fromarray(np.ascontiguousarray(SC.render(V, F, UV, tex, y, 30, False, pic.shape[:2])[:, :, :3]))
-                 for y in (35, -35)]
+        g, *turned = GL.render_views(V, F, UV, tex, pic.shape[:2], [("game",), (35, 30), (-35, 30)])
+        Image.fromarray(g).save(out / "vox" / f"{rm.rid}_game.png")
+        views = [Image.fromarray(v) for v in turned]
         views = [v.resize((max(1, int(v.width * TURN_SCALE)), max(1, int(v.height * TURN_SCALE))), Image.NEAREST)
                  for v in views]
         sheet = Image.new("RGB", (sum(v.width for v in views) + 8, max(v.height for v in views)), (22, 24, 30))

@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 
 import math
 
+from . import glrender as GL
 from . import heights as HT
 from . import mesh as MS
 from . import overhead as OV
@@ -100,7 +101,9 @@ def render(V, F, UV, pic, yaw, pitch, game, size=None):
     """The surface from a camera, textured with the picture (size: the
     crop's own height and width, when the texture is taller)."""
     TH, W = pic.shape[:2]
-    T = np.array([(u / W, 1.0 - v / TH) for u, v in UV for _ in range(4)])
+    UV = np.asarray(UV, float)
+    T = np.repeat(np.stack([UV[:, 0] / W, 1.0 - UV[:, 1] / TH], axis=1), 4, axis=0)
+    F = np.asarray(F).tolist()
     H = size[0] if size else TH
     FT = [[4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3] for i in range(len(F))]
     C = np.full((len(V), 3), 0.6)
@@ -111,6 +114,24 @@ def render(V, F, UV, pic, yaw, pitch, game, size=None):
         return np.asarray(img)[TALL:TALL + H, :W]
     return np.asarray(RC.render(V, C, F, RC.camera(yaw, pitch), box, tall=TALL,
                                 tex=(pic, T, FT)))
+
+
+def _kept(V, F, UV):
+    """Drop the quads of masked pixels (built at -1e6)."""
+    keep = V[F].min(axis=1)[:, 1] > -1e5 if len(F) else np.zeros(0, bool)
+    return V, F[keep], UV[keep]
+
+
+def _join(parts):
+    """One mesh from several (V, F, UV)."""
+    Vs, Fs, UVs, n = [], [], [], 0
+    for v, f, uv in parts:
+        v = np.asarray(v, float).reshape(-1, 3)
+        Vs.append(v)
+        Fs.append(np.asarray(f, int).reshape(-1, 4) + n)
+        UVs.append(np.asarray(uv, float).reshape(-1, 2))
+        n += len(v)
+    return np.concatenate(Vs), np.concatenate(Fs), np.concatenate(UVs)
 
 
 def build_scene(rm, box, pic, poster=False, styles=False):
@@ -151,31 +172,23 @@ def build_scene(rm, box, pic, poster=False, styles=False):
                         eave.get(labs[i]["attached"]))
             amask |= objs[i][0]
     yb_g = np.where(bmask, -1e6, yb)
-    V, F, UV = MS.build(yb_g, sl, gnd | bmask, open_=amask)
-    keep = [i for i, f in enumerate(F) if V[f].min(axis=0)[1] > -1e5]
-    F = [F[i] for i in keep]
-    UV = [UV[i] for i in keep]
-    V, F = list(map(tuple, V)), list(F)
+    parts = [_kept(*MS.build(yb_g, sl, gnd | bmask, open_=amask))]
     for m, byb, bs in bparts:
         yy = np.where(m, byb, -1e6)
-        v2, f2, uv2 = MS.build(np.nan_to_num(yy, nan=-1e6), np.where(m, bs, 0), ~m)
-        kp = [i for i, f in enumerate(f2) if v2[f].min(axis=0)[1] > -1e5]
-        F += [[i + len(V) for i in f2[k]] for k in kp]
-        UV += [(uv2[k][0], uv2[k][1] + Hh) for k in kp]
-        V += list(map(tuple, v2))
+        v2, f2, uv2 = _kept(*MS.build(np.nan_to_num(yy, nan=-1e6), np.where(m, bs, 0), ~m))
+        parts.append((v2, f2, uv2 + np.array([0.0, Hh])))
     om = om & ~bmask & ~amask
     pic_p = PO.posterize(pic)[0] if poster else pic
     for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
         if zp == "roof":
-            v2, f2, uv2 = OV.roof(P, pic_p, top, ~gnd, Hh)
+            part = OV.roof(P, pic_p, top, ~gnd, Hh)
         elif zp is not None:
-            v2, f2, uv2 = OV.slab(P, zp, T, Hh)
+            part = OV.slab(P, zp, T, Hh)
         else:
-            v2, f2, uv2 = OV.sheet(P, top, Hh)
-        F += [[i + len(V) for i in f] for f in f2]
-        V += v2
-        UV += uv2
-    V = np.asarray(V, float)
+            part = OV.sheet(P, top, Hh)
+        if len(part[1]):
+            parts.append(tuple(np.asarray(a) for a in part))
+    V, F, UV = _join(parts)
     tex = np.vstack([base, pic])
     return V, F, UV, tex
 
@@ -190,6 +203,7 @@ def main():
     ap.add_argument("--poster", action="store_true", help="read shapes from a posterized picture")
     ap.add_argument("--tag", default="", help="suffix for the sheets")
     ap.add_argument("--styles", action="store_true", help="build buildings by their style")
+    ap.add_argument("--slow", action="store_true", help="render with refcheck (Python) instead of WebGL")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -208,8 +222,14 @@ def main():
         elif a.what == "build":
             V, F, UV, tex = build_scene(rm, box, pic, a.poster, a.styles)
             panels, labels = [pic], ["the game"]
-            for yaw, pitch, game in ((0, 45, True), (35, 30, False), (-35, 30, False)):
-                panels.append(render(V, F, UV, tex, yaw, pitch, game, pic.shape[:2]))
+            views = ((0, 45, True), (35, 30, False), (-35, 30, False))
+            if a.slow:
+                imgs = [render(V, F, UV, tex, y, p, g, pic.shape[:2]) for y, p, g in views]
+            else:
+                imgs = GL.render_views(V, F, UV, tex, pic.shape[:2],
+                                       [("game",) if g else (y, p) for y, p, g in views], tall=TALL)
+            for (yaw, pitch, game), im in zip(views, imgs):
+                panels.append(np.ascontiguousarray(im[:, :, :3]))
                 labels.append("built, game camera" if game else f"yaw {yaw} pitch {pitch}")
             sheet(panels, labels, out / f"{name}_build{a.tag}.png")
         elif a.what == "classes":

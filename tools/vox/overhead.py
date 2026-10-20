@@ -226,5 +226,5 @@ def roof(P, pic, base_top, base_obj, voff):
             yb[r, X] = top0 + ys[i]
             s[r, X] = ys[i + 1] - ys[i]
     V, F, UV = MS.build(yb, s, ~m)
-    keep = [i for i, f in enumerate(F) if V[f].min(axis=0)[1] > -1e5]
-    return [tuple(v) for v in V], [F[i] for i in keep], [(UV[i][0], UV[i][1] + voff) for i in keep]
+    keep = V[F].min(axis=1)[:, 1] > -1e5
+    return V, F[keep], UV[keep] + np.array([0.0, voff])
