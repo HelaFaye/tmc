@@ -28,6 +28,9 @@ BUILDING_PX = 48 * 48   # px: a footprint drawn this large is a building
 SAT_SHARE = 0.3         # of a top's pixels coloured: its colour, not its grey
 STRAW_STEP = 10         # luminance: a straw is this much darker than either side
 STRAW_SHARE = 0.04      # of a top's pixels on straws: thatch
+GROW_SIDE = 8           # px: a piece joins a building only within its columns, this much over
+FRONT_ROWS = 6          # px: a front's material from its bottom rows
+GROW_MIN = 20           # px: a piece a building overlaps this much may join it
 MIN_PX = 40             # px: smaller is detail
 
 
@@ -72,6 +75,9 @@ def objects(rm, box, pic, overhead_mask):
     solid = np.kron(cells, np.ones((16, 16), bool))[:h, :w] | overhead_mask
     body = solid & (RG.luminance(pic) >= RG.OUTLINE)
     out = []
+    lab0, n0 = RE._label(body)
+    fam0 = {}
+    claimed = np.zeros((h, w), bool)
     # buildings first, as the old stage finds them (anchored on their
     # doors, which it does reliably): their roof cells and their front
     # down to the foot, in their own columns
@@ -84,6 +90,24 @@ def objects(rm, box, pic, overhead_mask):
         m = m & solid & (RG.luminance(pic) >= RG.OUTLINE)
         if m.sum() < MIN_PX:
             continue
+        # the rest of the building where the finder took only part of it:
+        # outline-bounded pieces it overlaps with the same top material
+        bys, bxs = np.nonzero(m)
+        bmid = np.percentile(bys, 60)
+        btop = family(pic[bys[bys < bmid], bxs[bys < bmid]], saturated_first=True)
+        ids, cnt = np.unique(lab0[m], return_counts=True)
+        for j, c in zip(ids, cnt):
+            if j == 0 or c < GROW_MIN:
+                continue
+            if j not in fam0:
+                jy, jx = np.nonzero(lab0 == j)
+                jmid = np.percentile(jy, 60)
+                fam0[j] = family(pic[jy[jy < jmid], jx[jy < jmid]], saturated_first=True)
+            jx = np.nonzero((lab0 == j).any(axis=0))[0]
+            if fam0[j] == btop and jx.min() >= bxs.min() - GROW_SIDE and jx.max() <= bxs.max() + GROW_SIDE:
+                m = m | (lab0 == j)
+        m = m & ~claimed
+        claimed |= m
         ys, xs = np.nonzero(m)
         out.append((m, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1), True))
         body = body & ~m
@@ -135,7 +159,24 @@ def label(m, bbox, pic, door_px, is_building=False):
     ys, xs = np.nonzero(m)
     mid = np.percentile(ys, 60)
     top_mat = family(pic[ys[ys < mid], xs[ys < mid]], saturated_first=True)
-    front_mat = family(pic[ys[ys >= mid], xs[ys >= mid]])
+    # the front: each column's bottom FRONT_ROWS rows (a cap's pale rim)
+    fy, fx = [], []
+    for x in np.unique(xs):
+        col = ys[xs == x]
+        sel = col[col > col.max() - FRONT_ROWS]
+        fy.extend(sel.tolist())
+        fx.extend([x] * len(sel))
+    front_mat = family(pic[np.array(fy, int), np.array(fx, int)])
+    # the band between top and front (a thatch's fringe, over its stone)
+    bsel = (ys >= mid) & ~np.isin(np.arange(len(ys)), [])
+    band_px = []
+    for x in np.unique(xs):
+        col = ys[xs == x]
+        lo = col.max() - FRONT_ROWS
+        sel = col[(col >= mid) & (col <= lo)]
+        band_px.extend([(y_, x) for y_ in sel])
+    band_mat = family(pic[tuple(np.array(band_px).T)]) if band_px else front_mat
+    lower_mat = family(pic[ys[ys >= mid], xs[ys >= mid]])
     fill = m.sum() / float(max(1, w * h))
     has_door = any(x0 <= dx < x1 and y0 <= dy < y1 for dx, dy in door_px)
     big = m.sum() >= BUILDING_PX
@@ -178,7 +219,7 @@ def label(m, bbox, pic, door_px, is_building=False):
         # thatch is yellow over a fringe of another colour; a yellow
         # mushroom cap is yellow over yellow (texture did not separate
         # them: see straw, recorded for review)
-        if top_mat == "yellow" and front_mat not in ("yellow", "white", "grey"):
+        if top_mat == "yellow" and ({band_mat, lower_mat} & {"orange", "brown", "red"}):
             style = "thatch"
         elif top_mat in ("blue", "purple", "cyan"):
             style = "slate"
@@ -189,12 +230,42 @@ def label(m, bbox, pic, door_px, is_building=False):
     if kind != "building":
         streak = None
     return dict(bbox=[int(v) for v in bbox], kind=kind, style=style, shape=shape, streak=locals().get("streak"),
-                top=top_mat, front=front_mat, front_h=hf, over_h=ht,
+                top=top_mat, front=front_mat, band=band_mat, front_h=hf, over_h=ht,
                 px=int(m.sum()), door=bool(has_door))
+
+
+def _merge(objs, pic):
+    """One building where the finder reported several over one house:
+    buildings with the same top material whose boxes overlap."""
+    blds = [o for o in objs if o[2]]
+    rest = [o for o in objs if not o[2]]
+    tops = []
+    for m, _bb, _ in blds:
+        ys, xs = np.nonzero(m)
+        mid = np.percentile(ys, 60)
+        tops.append(family(pic[ys[ys < mid], xs[ys < mid]], saturated_first=True))
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(blds)):
+            for j in range(i + 1, len(blds)):
+                a, b = blds[i][1], blds[j][1]
+                over = min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
+                if over and tops[i] == tops[j]:
+                    m = blds[i][0] | blds[j][0]
+                    ys, xs = np.nonzero(m)
+                    blds[i] = (m, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1), True)
+                    del blds[j], tops[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return blds + rest
 
 
 def classify(rm, box, pic, overhead_mask):
     objs, door_px = objects(rm, box, pic, overhead_mask)
+    objs = _merge(objs, pic)
     return [label(m, bb, pic, door_px, isb) for m, bb, isb in objs]
 
 
