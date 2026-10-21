@@ -34,7 +34,7 @@ from . import scenes as SC
 
 STORY = [3, 21, 2, 7, 128, 0, 1, 72, 5, 6]   # areas, the early game first
 KEEP = ("kind", "style", "shape", "top", "front", "front_h", "over_h", "attached")
-TURN_SCALE = 0.5        # turned views are shown at this scale (they are large)
+TURN_SCALE = 1.0        # turned views are stored at this scale
 
 
 def area_title(rm):
