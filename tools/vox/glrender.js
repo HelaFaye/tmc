@@ -11,6 +11,7 @@
 // Called by glrender.py, which does the projection exactly as refcheck.py.
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const { chromium } = require('playwright');
 
 const PAGE = `<!doctype html><canvas id=c></canvas><script>
@@ -52,18 +53,23 @@ async function draw(w, h, tw, th, bg) {
   const jobs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const b = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const page = await b.newPage();
+  // buffers for a whole room run to hundreds of MB: a local server streams
+  // them (Playwright's request routing turns a body into one string, which
+  // is too long for a town)
   let dir = null;
-  await page.route('http://glrender.local/**', r => {
-    const u = new URL(r.request().url());
-    if (u.pathname === '/') return r.fulfill({ status: 200, contentType: 'text/html', body: PAGE });
-    return r.fulfill({ status: 200, contentType: 'application/octet-stream',
-                       body: fs.readFileSync(path.join(dir, path.basename(u.pathname))) });
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    if (u.pathname === '/') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(PAGE); }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    fs.createReadStream(path.join(dir, path.basename(u.pathname))).pipe(res);
   });
-  await page.goto('http://glrender.local/');
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  await page.goto('http://127.0.0.1:' + srv.address().port + '/');
   for (const j of jobs) {
     dir = j.dir;
     const url = await page.evaluate(a => draw(...a), [j.w, j.h, j.tw, j.th, j.bg]);
     fs.writeFileSync(j.out, Buffer.from(url.split(',')[1], 'base64'));
   }
+  srv.close();
   await b.close();
 })().catch(e => { console.error(String(e)); process.exit(1); });
