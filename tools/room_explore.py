@@ -1278,7 +1278,63 @@ BUMP_BLUR = 5               # px: shading is measured against this local mean
 
 
 def _label(mask):
-    """4-connected components of a boolean image -> (labels, count)."""
+    """4-connected components of a boolean image -> (labels, count).
+
+    Labels are numbered in the order their first pixel is met scanning row
+    by row (as a flood fill from each new pixel would number them). Works
+    on runs: each row's runs of set pixels, joined to the runs they touch
+    in the row above (union-find), so a whole room labels in a fraction of
+    a second."""
+    m = np.asarray(mask, bool)
+    if m.ndim != 2 or not m.any():
+        return np.zeros(m.shape, np.int32), 0
+    H, W = m.shape
+    pad = np.zeros((H, W + 2), np.int8)
+    pad[:, 1:-1] = m
+    d = np.diff(pad, axis=1)
+    ry, rs = np.nonzero(d == 1)             # run starts (row, col)
+    _ey, re_ = np.nonzero(d == -1)          # run ends (exclusive), same order
+    nr = len(rs)
+    parent = np.arange(nr)
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    row_first = np.searchsorted(ry, np.arange(H + 1))
+    for y in range(1, H):
+        a0, a1 = row_first[y - 1], row_first[y]
+        b0, b1 = row_first[y], row_first[y + 1]
+        i, j = a0, b0
+        while i < a1 and j < b1:
+            if rs[i] < re_[j] and rs[j] < re_[i]:      # columns overlap
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    if ri < rj:
+                        parent[rj] = ri
+                    else:
+                        parent[ri] = rj
+            if re_[i] <= re_[j]:
+                i += 1
+            else:
+                j += 1
+    roots = np.array([find(i) for i in range(nr)])
+    # roots are each component's first run in raster order: number them so
+    _u, first = np.unique(roots, return_index=True)
+    order = np.argsort(first)
+    num = np.zeros(nr, np.int32)
+    num[_u[order]] = np.arange(1, len(_u) + 1)
+    lab = np.zeros((H, W), np.int32)
+    ids = num[roots]
+    for k in range(nr):
+        lab[ry[k], rs[k]:re_[k]] = ids[k]
+    return lab, len(_u)
+
+
+def _label_flood(mask):
+    """The flood-fill _label replaced; kept to check it against."""
     lab = np.zeros(mask.shape, np.int32)
     n = 0
     H, W = mask.shape

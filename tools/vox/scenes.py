@@ -179,9 +179,12 @@ def build_scene(rm, box, pic, poster=False, styles=False):
         parts.append((v2, f2, uv2 + np.array([0.0, Hh])))
     om = om & ~bmask & ~amask
     pic_p = PO.posterize(pic)[0] if poster else pic
+    p_shade = p_sat = None
     for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
         if zp == "roof":
-            part = OV.roof(P, pic_p, top, ~gnd, Hh)
+            if p_shade is None:
+                p_shade, p_sat = RG.split(pic_p)[2], RG.hsv(pic_p)[1]
+            part = OV.roof(P, pic_p, top, ~gnd, Hh, p_shade, p_sat)
         elif zp is not None:
             part = OV.slab(P, zp, T, Hh)
         else:

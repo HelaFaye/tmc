@@ -162,7 +162,7 @@ def _cap_rows(n, steps=400):
     return np.interp(np.arange(n + 1), rr, yy)
 
 
-def roof(P, pic, base_top, base_obj, voff):
+def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None):
     """A shape resting along its width (a roof, a mushroom's cap). In each
     column, each run of its drawn rows is a rim -- its shaded rows from the
     bottom, upright -- then a rounded top over it, rising to a ridge and
@@ -170,14 +170,17 @@ def roof(P, pic, base_top, base_obj, voff):
     across the shape, so it is one shape."""
     from . import mesh as MS
     h, w = pic.shape[:2]
-    lab, _n, sh = RG.split(pic)
+    # shade and sat of the whole picture: the caller passes them when it
+    # builds many shapes from one picture (each would split it again)
+    sh = shade if shade is not None else RG.split(pic)[2]
     m = np.zeros((h, w), bool)
     for R, X in P:
         m[R, X] = True
     shaded = sh == RG.SHADED
     # rim rows: low-colour pixels across most of the shape's width there
     # (the white band under each cap of a stack); a cap's spots do not
-    _hue, sat = RG.hsv(pic)
+    if sat is None:
+        _hue, sat = RG.hsv(pic)
     pale = (sat < RIM_SAT) & m
     width = m.sum(axis=1)
     rim = (width > 0) & (pale.sum(axis=1) >= RIM_SHARE * np.maximum(width, 1))
@@ -225,6 +228,11 @@ def roof(P, pic, base_top, base_obj, voff):
             r = rb - hf - i
             yb[r, X] = top0 + ys[i]
             s[r, X] = ys[i + 1] - ys[i]
-    V, F, UV = MS.build(yb, s, ~m)
+    # mesh only the shape's own box (plus a pixel round it), placed back
+    ys_, xs_ = np.nonzero(m)
+    y0, y1 = max(0, ys_.min() - 1), min(h, ys_.max() + 2)
+    x0, x1 = max(0, xs_.min() - 1), min(w, xs_.max() + 2)
+    V, F, UV = MS.build(yb[y0:y1, x0:x1], s[y0:y1, x0:x1], ~m[y0:y1, x0:x1],
+                        ox=x0, oz=y0, px0=x0, py0=y0)
     keep = V[F].min(axis=1)[:, 1] > -1e5
     return V, F[keep], UV[keep] + np.array([0.0, voff])
