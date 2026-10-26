@@ -87,3 +87,36 @@ overhead tiles is a roof or a prop, is for the group's shape to say
 The review page's Tiles mode shows every tile in its context, most used
 first, with its kind, how often it is used and where. Right or wrong,
 then notes; the review is keyed by the tile, so it applies everywhere.
+
+**2. Things, one label each** (`tools/vox/objects.py`). A room's trees,
+houses, hedges and pillars are found from two sources, each strong where
+the other is weak:
+- *Binding:* two neighbouring tiles belong to one thing when, across every
+  dumped room, each is found beside the other there at least half the time.
+  A house's tiles travel together; two houses in a stack do not, so they
+  part. The statistics are tile indices only (`<dumps>/binding.json`).
+- *The art:* trees overlap and share edge tiles, so binding cannot part
+  them. A watershed of the picture can. Its seeds are the deepest points
+  away from the long dark outlines, grown over what is not floor.
+
+Pieces mostly in one bound group join, unless the group is mostly leaf
+green; there they join only across boundaries that are not drawn outlines.
+
+Checked by eye on the 18 early rooms:
+- every house in Hyrule Town is one thing, and stacked mushroom houses
+  are separate;
+- each tree in the fields and along the room edges is its own thing;
+- the garden's hedges are one thing per run;
+- shallow water, carpets and paths are left out.
+
+Castle rooms split into pillars, windows and rim pieces rather than whole
+walls: their tiles are mostly used once or mirrored, so binding has little
+to go on. Those pieces get their heights from collision levels anyway.
+
+What was tried and dropped:
+- merging by how dark a boundary is: tree-to-tree and roof-piece
+  boundaries overlap in darkness;
+- grouping by collision value or tile type: whole tree rows and stacked
+  houses share both;
+- mining fixed multi-tile templates: forests are drawn as overlapping
+  crowns, so the templates come out as fragments.
