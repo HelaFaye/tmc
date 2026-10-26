@@ -23,6 +23,11 @@ FOOT_ROWS = 3           # px: an overhead shape's feet are its lowest rows
 T_MIN, T_MAX = 3, 20    # px: a standing shape's thickness, from its lit band
 ARCH_GAP = 0.2          # of its width open underneath between its feet: an arch
 ROOF_FEET = 0.6         # of its columns resting on something: a roof, not an arch
+ARCH_MAX_W, ARCH_MAX_H = 192, 128   # px: an arch is no bigger than this
+DECK_MIN_PX = 20000     # px: an overhead shape this big may be a floor
+DECK_WALK = 0.6         # of its pixels over walkable cells: it is one
+FLAT_LUM_STD = 4.0      # luminance: a shape this even is a plain fill
+SLAB_MAX_H = 64         # px: a shape drawn taller than this (not an arch) is never one upright plane
 LIT_STEP = 40           # luminance: its lit band is this much over its median
 
 
@@ -39,7 +44,7 @@ def under(rm, box):
     return pic, m
 
 
-def shapes(mask, pic, base_top, base_obj):
+def shapes(mask, pic, base_top, base_obj, walk=None):
     """[(pixels {(R, X)}, zp or None, thickness)] for the overhead shapes;
     zp None is a canopy. base_top is the ground pass's top height per
     pixel, base_obj where it built an object (not ground)."""
@@ -66,6 +71,15 @@ def shapes(mask, pic, base_top, base_obj):
         if len(ys) < 8:
             continue
         P = set(zip(ys.tolist(), xs.tolist()))
+        # one flat colour, no texture (the plain fill a castle hall draws
+        # round its walls), or a large shape over walkable cells (a hall's
+        # upper floor drawn on the top layer, a bridge): a level deck.
+        # Tree canopies and hedges lie over blocked cells and stay roofs
+        floor = (walk is not None and len(ys) > DECK_MIN_PX
+                 and float(walk[ys, xs].mean()) >= DECK_WALK)
+        if float(np.std(lum[ys, xs])) < FLAT_LUM_STD or floor:
+            out.append((P, None, 0))
+            continue
         feet = []
         low = int(ys.max())
         gap = run = 0
@@ -80,8 +94,16 @@ def shapes(mask, pic, base_top, base_obj):
             if R + 1 < h and base_obj[R + 1, X]:
                 feet.append(R + 1 + base_top[R + 1, X])
         width = len(np.unique(xs))
-        arch = gap >= ARCH_GAP * width
-        if not arch and len(feet) >= FOOT_ROWS and len(feet) >= ROOF_FEET * width:
+        # an arch is gate-sized (tilevox.standing_arches' limits): a hedge
+        # maze is open underneath in places too, but is no arch
+        small = (int(xs.max() - xs.min()) + 1 <= ARCH_MAX_W
+                 and int(ys.max() - ys.min()) + 1 <= ARCH_MAX_H)
+        arch = gap >= ARCH_GAP * width and small
+        # only an arch, or a shape no taller than one, stands upright in one
+        # plane: a hedge maze or a hall's balcony drawn over the floor is
+        # something resting along its width, not a wall as tall as drawn
+        tall = int(ys.max() - ys.min()) + 1 > SLAB_MAX_H
+        if not arch and len(feet) >= FOOT_ROWS and (len(feet) >= ROOF_FEET * width or tall):
             out.append((P, "roof", 0))
             continue
         if len(feet) >= FOOT_ROWS:
@@ -147,19 +169,33 @@ RIM_SAT = 0.2           # saturation: below, a rim's pale stone or plaster
 RIM_SHARE = 0.6         # of a row's width pale: a rim row
 RIM_AFTER = 12          # px: a rim ends a cap only after this much of it
 ROOF_SMOOTH = 4         # px
+CAP_WIDTH_SHARE = 1.0   # a rounded top rises at most this share of its drawn width
 
 
-def _cap_rows(n, steps=400):
+def _cap_rows(n, steps=400, peak=None):
     """A rounded cap's front half, as seen: for a top drawn n rows tall,
-    depth D = n and peak P = n / 2 (a cap as high as half its depth shows
-    exactly its front half), each drawn row i's height above the rim.
-    A point t of the way to the ridge is at depth t D / 2 and height
-    P (1 - (1 - t)^2), drawn t D / 2 + height rows up."""
-    D, P = float(n), n / 2.0
+    peak P = n / 2 (a cap as high as half its depth shows exactly its front
+    half), or lower when peak says so; each drawn row i's height above the
+    rim. A point t of the way to the ridge is at depth t (n - P) and height
+    P (1 - (1 - t)^2), drawn depth + height rows up, so the cap still shows
+    exactly its n rows."""
+    P = n / 2.0 if peak is None else max(0.0, min(n / 2.0, float(peak)))
     t = np.linspace(0, 1, steps)
     yy = P * (1 - (1 - t) ** 2)
-    rr = t * D / 2 + yy
+    rr = t * (n - P) + yy
     return np.interp(np.arange(n + 1), rr, yy)
+
+
+def _row_widths(m):
+    """Per pixel of mask m, the length of its row's run of m through it."""
+    h, w = m.shape
+    out = np.zeros((h, w), np.int32)
+    pad = np.zeros((h, w + 2), np.int8)
+    pad[:, 1:-1] = m
+    d = np.diff(pad, axis=1)
+    for (y, a), (_y, b) in zip(zip(*np.nonzero(d == 1)), zip(*np.nonzero(d == -1))):
+        out[y, a:b] = b - a
+    return out
 
 
 def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None):
@@ -177,6 +213,7 @@ def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None):
     for R, X in P:
         m[R, X] = True
     shaded = sh == RG.SHADED
+    wid = _row_widths(m)
     # rim rows: low-colour pixels across most of the shape's width there
     # (the white band under each cap of a stack); a cap's spots do not
     if sat is None:
@@ -222,7 +259,10 @@ def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None):
         n = (rb - hf) - rt + 1
         if n <= 0:
             continue
-        ys = _cap_rows(n)
+        # a cap rises at most half as high as it is wide: a mushroom cap
+        # as drawn, a long hedge (drawn down its length) a low box
+        run = wid[rt:rb + 1, X][m[rt:rb + 1, X]]
+        ys = _cap_rows(n, peak=CAP_WIDTH_SHARE * float(np.median(run)) if len(run) else None)
         top0 = g + hf
         for i in range(n):
             r = rb - hf - i

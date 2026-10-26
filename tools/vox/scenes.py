@@ -141,7 +141,7 @@ def build_scene(rm, box, pic, poster=False, styles=False):
     base, om = OV.under(rm, box)
     post, _idx = PO.posterize(base) if poster else (base, None)
     lab, _n, sh = RG.split(post)
-    yb, sl, gnd = HT.solve(rm, lab, sh, box, post)
+    yb, sl, gnd = HT.solve(rm, lab, sh, box, post, hidden=om)
     top = yb + sl
     Hh = pic.shape[0]
     # buildings by their style, from the full picture
@@ -180,7 +180,10 @@ def build_scene(rm, box, pic, poster=False, styles=False):
     om = om & ~bmask & ~amask
     pic_p = PO.posterize(pic)[0] if poster else pic
     p_shade = p_sat = None
-    for P, zp, T in OV.shapes(om, pic_p, top, ~gnd):
+    from .room import RE
+    cells = np.kron(rm.cls[box[1]:box[3], box[0]:box[2]] == RE.CLASS_GROUND,
+                    np.ones((16, 16), bool))[:pic.shape[0], :pic.shape[1]]
+    for P, zp, T in OV.shapes(om, pic_p, top, ~gnd, walk=cells):
         if zp == "roof":
             if p_shade is None:
                 p_shade, p_sat = RG.split(pic_p)[2], RG.hsv(pic_p)[1]

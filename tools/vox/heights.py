@@ -26,6 +26,10 @@ RUN_STEP = 20           # luminance: a front is this much darker than the top ab
 SMOOTH_R = 4            # px: the smoothing window's reach
 RUN_MIN = 3             # px: a shorter run is texture
 GROUND_SHARE = 0.6      # of a region's pixels on ground cells, for it to be ground
+# cells that lie flat at their level: ground, and water, holes and the
+# undrawn void (each at its class height). Built as objects they stood up
+# as walls (a river, the void round a castle hall)
+FLAT = (RE.CLASS_GROUND, RE.CLASS_WATER, RE.CLASS_HOLE, RE.CLASS_VOID)
 
 
 def ground_levels(rm):
@@ -38,7 +42,7 @@ def ground_levels(rm):
     return cls, np.asarray(H, float)
 
 
-def solve(rm, labels, shade, box=None, pic=None):
+def solve(rm, labels, shade, box=None, pic=None, hidden=None):
     """(yb, s, ground): per pixel the height at its lower edge, its rise,
     and whether it is ground. box (x0, y0, x1, y1) in cells limits the
     work to a crop of the room (labels and shade are of that crop).
@@ -51,7 +55,7 @@ def solve(rm, labels, shade, box=None, pic=None):
     cx = (np.arange(w) // 16 + x0c)[None, :].repeat(h, 0)
     cy = np.clip(cy, 0, cls.shape[0] - 1)
     cx = np.clip(cx, 0, cls.shape[1] - 1)
-    on_ground = cls[cy, cx] == RE.CLASS_GROUND
+    on_ground = np.isin(cls[cy, cx], FLAT)
     lvl = H[cy, cx]
     # a region is ground when it lies mostly on ground cells
     n = labels.max() + 1
@@ -61,6 +65,11 @@ def solve(rm, labels, shade, box=None, pic=None):
     ground = on_ground & region_ground[labels]
     st_m, st_yb, st_s = ST.fixed(rm, labels, box)
     ground = ground | st_m
+    # what the overhead layer draws over is never seen: lie it flat and let
+    # the overhead shape build the thing (a hedge's shadow under it read as
+    # a front and stood up as a wall as long as the hedge)
+    if hidden is not None:
+        ground = ground | hidden
     rise =np.vectorize(lambda v: RISE.get(int(v), np.nan))(shade).astype(float)
     # a front or a top runs level across its width: each row of a region
     # rises as most of its pixels in that row do
@@ -187,7 +196,7 @@ def footprint_heights(labels, rise, ground, lvl, cls, cy, cx, yb, s):
                 y -= 1
             rt0 = y + 1
             cn = cy[rb0, x]
-            while cn - 1 >= 0 and cls[cn - 1, cx[rb0, x]] != RE.CLASS_GROUND:
+            while cn - 1 >= 0 and cls[cn - 1, cx[rb0, x]] not in FLAT:
                 cn -= 1
             zn_all = max((cn - cy[0, 0]) * 16, rt0)
             g = lvl[min(rb0 + 1, h - 1), x]
