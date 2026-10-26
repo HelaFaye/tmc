@@ -67,3 +67,23 @@ These hold whatever the unit is, and are in the code now:
 - an arch is gate-sized (192 x 128 px at most);
 - a large overhead shape over walkable cells (an upper floor) is a deck;
 - a rounded top rises at most as high as it is wide.
+
+## Progress
+
+**1. The tile catalogue** (`tools/vox/tiles.py`). A tile's key is
+`<tileset>:<layer>:<metatile>`; `<tileset>` fingerprints the area's
+metatile tables, so areas sharing a tileset share tiles. The 18
+early-game rooms use 4,094 tiles (2,919 ground, 1,175 overhead) over
+34,084 cell layers; the top 500 cover 71% and the top 1,000 82%.
+
+Each tile gets a first-guess kind: floor, water, face, top, foliage,
+trunk, prop, deck or void. The guess uses the tile's art (leaf green and
+how even it is, bark with vertical grain, banding, a plain fill), the
+collision under it, and what lies below it wherever it is used. Whether
+foliage is a tree, a bush or a hedge, and whether a group of busy
+overhead tiles is a roof or a prop, is for the group's shape to say
+(templates), not one tile.
+
+The review page's Tiles mode shows every tile in its context, most used
+first, with its kind, how often it is used and where. Right or wrong,
+then notes; the review is keyed by the tile, so it applies everywhere.
