@@ -1,7 +1,7 @@
 """The review page's data: whole rooms, area by area, in story order.
 
   python3 -u -m vox.review DUMPS OUT [--areas 3,21,2,7,128] [--rooms 03_01,...]
-                                     [--no-vox] [--force]
+                                     [--no-vox] [--force] [--tiles CATALOGUE]
 
 For each room it writes, under OUT:
   img/<rid>.png         the room as the game shows it
@@ -9,6 +9,11 @@ For each room it writes, under OUT:
   vox/<rid>_game.png    the room built, seen from the game's camera
   vox/<rid>_turned.png  the build from yaw 35 and -35 (pitch 30), side by side
 and then OUT/rooms.js, the index of every room done so far.
+
+The build is assemble.py's (doc 12): tile kinds (the catalogue's first
+guesses, --tiles, under the reviewed vr/tiles/kinds.json) and one shape
+per thing. Each room's record carries the build's date and check()'s
+numbers, so the page says what was built and how it measured.
 
 A room already written is skipped (--force redoes it). The pictures are
 the player's own ROM art: OUT must be outside the repository (or
@@ -26,6 +31,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from . import assemble as AS
 from . import classify as CL
 from . import glrender as GL
 from . import overhead as OV
@@ -44,7 +50,10 @@ def area_title(rm):
     return n.replace("AREA_", "").replace("_", " ").title()
 
 
-def do_room(dump, out, vox=True):
+BUILD = "tiles and things (doc 12)"
+
+
+def do_room(dump, out, vox=True, kinds=None):
     rm = RM.load(dump)
     r = rm.raw
     box = (0, 0, r.cells_w, r.cells_h)
@@ -61,8 +70,9 @@ def do_room(dump, out, vox=True):
            "title": rm.rid.replace("_", "/"), "w": int(pic.shape[1]), "h": int(pic.shape[0]),
            "img": f"img/{rm.rid}.png", "objects": objs}
     if vox:
-        V, F, UV, tex = SC.build_scene(rm, box, pic, styles=True)
-        g, *turned = GL.render_views(V, F, UV, tex, pic.shape[:2], [("game",), (35, 30), (-35, 30)])
+        V, F, UV, tex, report = AS.build(rm, kinds)
+        g, *turned = GL.render_views(np.asarray(V, float), np.asarray(F), np.asarray(UV, float),
+                                     tex, pic.shape[:2], [("game",), (35, 30), (-35, 30)])
         Image.fromarray(g).save(out / "vox" / f"{rm.rid}_game.png")
         views = [Image.fromarray(v) for v in turned]
         views = [v.resize((max(1, int(v.width * TURN_SCALE)), max(1, int(v.height * TURN_SCALE))), Image.NEAREST)
@@ -74,7 +84,8 @@ def do_room(dump, out, vox=True):
             x += v.width + 8
         sheet.save(out / "vox" / f"{rm.rid}_turned.png")
         rec.update(vox_game=f"vox/{rm.rid}_game.png", vox_turned=f"vox/{rm.rid}_turned.png",
-                   turned_w=sheet.width, turned_h=sheet.height)
+                   turned_w=sheet.width, turned_h=sheet.height, vox_build=BUILD,
+                   vox_date=time.strftime("%Y-%m-%d"), vox_check=report)
     (out / "data" / f"{rm.rid}.json").write_text(json.dumps(rec))
     return rec
 
@@ -96,12 +107,25 @@ def main():
     ap.add_argument("--rooms", default="", help="AA_RR, comma separated")
     ap.add_argument("--no-vox", action="store_true", help="labels only")
     ap.add_argument("--force", action="store_true", help="redo rooms already written")
+    ap.add_argument("--revox", action="store_true", help="redo the voxel builds only")
+    ap.add_argument("--tiles", default="", help="the tile catalogue with first-guess kinds (tiles.py --out)")
     a = ap.parse_args()
     out = Path(a.out)
     for d in ("img", "data", "vox"):
         (out / d).mkdir(parents=True, exist_ok=True)
     dumps = sorted(Path(a.dumps).glob("room_*.tmcr"),
                    key=lambda p: [int(v) for v in p.stem[5:].split("_")])
+    kinds = None
+    if not a.no_vox:
+        if a.tiles:
+            cat = json.loads(Path(a.tiles).read_text())
+        else:
+            from . import tiles as TL
+            cat = TL.catalogue(a.dumps)
+            TL.features(a.dumps, cat)
+            for e in cat.values():
+                e["kind"] = TL.guess_kind(e)
+        kinds = AS.load_kinds(cat)
     want_a = {int(v) for v in a.areas.split(",") if v}
     want_r = {v for v in a.rooms.split(",") if v}
     for p in dumps:
@@ -111,11 +135,11 @@ def main():
         done = out / "data" / f"{rid}.json"
         if done.exists() and not a.force:
             rec = json.loads(done.read_text())
-            if a.no_vox or "vox_game" in rec:
+            if a.no_vox or (rec.get("vox_build") == BUILD and not a.revox):
                 continue
         t = time.time()
         try:
-            rec = do_room(p, out, vox=not a.no_vox)
+            rec = do_room(p, out, vox=not a.no_vox, kinds=kinds)
             print(f"{rid}: {len(rec['objects'])} labels, {time.time() - t:.0f}s", flush=True)
         except Exception as e:      # one room's failure does not stop the batch
             print(f"{rid}: failed: {e!r}", flush=True)
