@@ -160,6 +160,24 @@ solved apart, which is what made fins and sheets.
   climbs are drawn on the ground layer, and a castle's wall tops had been
   read as treads.
 
+- *Plateaus are raised.* The collision levels often put a raised
+  plateau at the same height as the ground below its cliff. Each cliff
+  then stood alone as a wall, with the floor behind it back at the
+  bottom: the striped sheets by the river in 03_06. Now a floor area,
+  or a stretch of water above a waterfall, is lifted to the top of the
+  faces along its south edge, when those are at least a quarter of that
+  edge (steps and edge tiles make up the rest). This is repeated three
+  times, so a plateau above another rises from the one below.
+  - A floor walled in on every side is left at its level: a room's front
+    wall has the floor behind it at the door's level (the castle hall).
+    This is a weak rule. Outdoors a plateau also meets water or walkable
+    ground; neither collision classes, tile types, ledges nor doorways
+    told cliffs from walls in these rooms.
+- *House bodies have wall colours.* A body is hidden under its roof from
+  the game's camera. Seen turned, its sides had taken the roof's dark
+  outline pixels. They are now textured from a copy of the picture below
+  it, each body in one colour: the median of its front wall.
+
 check() now measures in the world, not from the game's camera, so it can
 fail:
 - things resting on nothing;

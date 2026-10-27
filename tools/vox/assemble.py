@@ -49,6 +49,11 @@ HEDGE_MIN_LEN = 64      # px: ... and at least this long is a hedge
 HEDGE_FRONT_MAX = 16    # px: a hedge's front is at most this tall
 CROWN_SHARE = 0.5       # a crown rises at most this share of its group's width
 CROWN_MAX = 48          # px: and no higher than a tree
+PLATEAU_SHARE = 0.25    # a floor this much bounded by faces on its south (steps and edges are the rest) is raised
+PLATEAU_MIN = 4         # px: and only if that lifts it this much
+PLATEAU_PASSES = 3
+WALL_PAINT_ROW = 4      # px below a body: the front wall's colour is taken there
+ENCLOSE_REACH = 2       # cells: what lies this near a floor says whether it is walled in
 FACE_MAX = 48           # px: a face rises from a floor at most this far (3 cells)
 FOLIAGE_MIN_PX = 64     # px: a thing with less leaf than this is not a crown
 LEAF_REACH = 6          # px: leaves this near a crown are part of it
@@ -102,6 +107,67 @@ def ground(rm, K0, K1, overhead_alpha, covered=None):
     # steps are climbed on the ground layer: none where the overhead
     # layer draws over (a wall's top read as treads)
     st_m = st_m & ~covered & ~hidden
+    yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s)
+    # a floor (or water) whose south edge is mostly a face rising to it is raised to
+    # that face's top: the collision levels do not always know a plateau
+    # is raised, and then each cliff stood alone as a wall with the floor
+    # behind it back at the bottom. Repeated, so a plateau above another
+    # rises from the one below.
+    # floors and water apart: a river above a waterfall is raised as well
+    lab_f, n_f = RE._label((K0 == "floor") & (cls == RE.CLASS_GROUND))
+    lab_w, n_w = RE._label((K0 == "water") & (cls == RE.CLASS_WATER))
+    lab = np.where(lab_w > 0, lab_w + n_f, lab_f)
+    n = n_f + n_w
+    # a room's floor, walled in all round, is not a plateau: its front wall
+    # has the floor behind at the door's level (a castle hall). Outdoors a
+    # plateau also meets water or walkable ground (paths, steps).
+    enclosed = np.zeros(n + 1, bool)
+    for j in range(1, n + 1):
+        region = lab == j
+        ring = np.zeros_like(region)
+        P = np.pad(region, ENCLOSE_REACH)
+        rh, rw = region.shape
+        for dy in range(-ENCLOSE_REACH, ENCLOSE_REACH + 1):
+            for dx in range(-ENCLOSE_REACH, ENCLOSE_REACH + 1):
+                ring |= P[ENCLOSE_REACH + dy:ENCLOSE_REACH + dy + rh, ENCLOSE_REACH + dx:ENCLOSE_REACH + dx + rw]
+        ring &= ~region
+        enclosed[j] = bool(ring.any()) and bool(np.all(cls[ring] == RE.CLASS_WALL))
+    for _ in range(PLATEAU_PASSES):
+        top = yb + s
+        raised = False
+        Hc = H.astype(float).copy()
+        for j in range(1, n + 1):
+            region = lab == j
+            if enclosed[j]:
+                continue
+            south = region & ~np.vstack([region[1:], np.zeros((1, region.shape[1]), bool)])
+            tops, faces = [], 0
+            for ry, rx in zip(*np.nonzero(south)):
+                y0 = (ry + 1) * 16
+                if y0 >= h:
+                    continue
+                for x in range(rx * 16, min(rx * 16 + 16, w)):
+                    tops.append(top[y0, x])
+                    faces += s[y0, x] > 0
+            if not tops or faces < PLATEAU_SHARE * len(tops):
+                continue
+            g = float(np.median([t for t in tops]))
+            cur = float(np.median(H[region]))
+            if g > cur + PLATEAU_MIN and abs(float(np.median(Hc[region])) - g) > 0.5:
+                Hc[region] = g
+                raised = True
+        if not raised:
+            break
+        H = Hc
+        lvl = H[cy][:, cx]
+        yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s)
+    return yb, s, flat | st_m
+
+
+def _walk(lvl, flat, under, upright, st_m, st_yb, st_s):
+    """Each pixel column walked from the camera's side north: floors flat
+    at their level, faces rising from what is in front of them."""
+    h, w = lvl.shape
     yb = np.zeros((h, w))
     s = np.zeros((h, w))
     for x in range(w):
@@ -130,7 +196,7 @@ def ground(rm, K0, K1, overhead_alpha, covered=None):
             r_ = 1.0 if upright[y, x] and run <= FACE_MAX else 0.0
             yb[y, x], s[y, x] = base, r_
             below = base + r_
-    return yb, s, flat | st_m
+    return yb, s
 
 
 def _groups(mask):
@@ -181,6 +247,23 @@ def crown(m, top):
             r = rb - i
             yb[r, x], s[r, x] = g + ys[i], ys[i + 1] - ys[i]
     return yb, s
+
+
+def _wall_paint(pic, bodies, top):
+    """The picture, with each house body in one colour: the median of its
+    front wall (the row WALL_PAINT_ROW under the body's lowest row in each
+    column), so its walls are not striped with windows and doors."""
+    paint = pic.copy()
+    h = pic.shape[0]
+    lab, n = RE._label(bodies)
+    for j in range(1, n + 1):
+        m = lab == j
+        src = []
+        for x in np.nonzero(m.any(axis=0))[0]:
+            b = int(np.nonzero(m[:, x])[0].max())
+            src.append(pic[min(b + WALL_PAINT_ROW, h - 1), x])
+        paint[m] = np.median(np.array(src), axis=0).astype(pic.dtype)
+    return paint
 
 
 def foot_level(m, top):
@@ -311,8 +394,9 @@ def flat_on(m, top, level=None, g=None):
 
 
 def build(rm, kinds, things=None):
-    """(V, F, UV, tex, report): the room's mesh, its texture (ground
-    layer's picture over the shown one) and check()'s report."""
+    """(V, F, UV, tex, report): the room's mesh, its texture (the shown
+    picture, and under it a copy with house bodies in their walls'
+    colours; tex is twice the picture's height) and check()'s report."""
     import extract_art
     from .scenes import _kept, _join
     from . import regions as RG
@@ -409,7 +493,18 @@ def build(rm, kinds, things=None):
             # stood upright, and one level (not a level per column)
             groups["top"].append((m, flat_on(m, top, g="follow" if is_hedge(m) else g)))
     top = yb + s
-    parts = [_kept(*MS.build(yb, s, flat))]
+    gV, gF, gUV = _kept(*MS.build(yb, s, flat))
+    # a house's body is hidden under its roof from the game's camera; seen
+    # turned, its walls would take the roof's own pixels (its dark
+    # outline). They are textured from a copy of the picture below it, in
+    # which each body pixel has the colour of its column's front wall.
+    paint = _wall_paint(pic, bodies, yb + s)
+    if bodies.any():
+        u = np.clip(gUV[:, 0].astype(int), 0, w - 1)
+        v = np.clip(gUV[:, 1].astype(int), 0, h - 1)
+        gUV = gUV.copy()
+        gUV[bodies[v, u], 1] += h
+    parts = [(gV, gF, gUV)]
     for m in _groups(_cells(K1 == "deck", (h, w)) & alpha):
         groups["deck"].append((m, flat_on(m, top, level=lvl)))
     for kind, gs in groups.items():
@@ -428,7 +523,7 @@ def build(rm, kinds, things=None):
     stood, fronts = upright_overhead(groups, s, alpha)
     report["overhead pixels stood upright"] = stood
     report["share of crown, roof and hedge pixels in a steep front"] = fronts
-    return V, F, UV, pic, report
+    return V, F, UV, np.ascontiguousarray(np.vstack([pic, paint])), report
 
 
 UPRIGHT_S = 0.9         # rising this much per drawn row: the pixel stands upright
