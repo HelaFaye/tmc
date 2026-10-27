@@ -85,7 +85,7 @@ def do_room(dump, out, vox=True, kinds=None):
         sheet.save(out / "vox" / f"{rm.rid}_turned.png")
         rec.update(vox_game=f"vox/{rm.rid}_game.png", vox_turned=f"vox/{rm.rid}_turned.png",
                    turned_w=sheet.width, turned_h=sheet.height, vox_build=BUILD,
-                   vox_date=time.strftime("%Y-%m-%d"), vox_check=report)
+                   vox_date=time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()), vox_check=report)
     (out / "data" / f"{rm.rid}.json").write_text(json.dumps(rec))
     return rec
 
