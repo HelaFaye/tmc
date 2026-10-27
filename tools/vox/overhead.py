@@ -198,12 +198,13 @@ def _row_widths(m):
     return out
 
 
-def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None):
+def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None, upright_rim=True):
     """A shape resting along its width (a roof, a mushroom's cap). In each
     column, each run of its drawn rows is a rim -- its shaded rows from the
     bottom, upright -- then a rounded top over it, rising to a ridge and
     rounding back out of sight (_cap_rows). Rim heights are smoothed
-    across the shape, so it is one shape."""
+    across the shape, so it is one shape. upright_rim=False: no rim, the
+    cap rises from its lowest row (the overhead layer is seen from above)."""
     from . import mesh as MS
     h, w = pic.shape[:2]
     # shade and sat of the whole picture: the caller passes them when it
@@ -239,7 +240,7 @@ def roof(P, pic, base_top, base_obj, voff, shade=None, sat=None):
                 R -= 1
             rt = R + 1
             f = rb
-            while f >= rt and shaded[f, X]:
+            while upright_rim and f >= rt and shaded[f, X]:
                 f -= 1
             g = base_top[rb + 1, X] if rb + 1 < h else 0.0
             runs.append([X, rt, rb, rb - f, g])

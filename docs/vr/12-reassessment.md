@@ -120,3 +120,50 @@ What was tried and dropped:
   houses share both;
 - mining fixed multi-tile templates: forests are drawn as overlapping
   crowns, so the templates come out as fragments.
+
+**3. Building things whole** (`tools/vox/assemble.py`). Each thing from
+step 2 is built as one shape at one height. Before, each pixel column was
+solved apart, which is what made fins and sheets.
+- *Crowns and bushes* are one ellipsoid each. It is as wide as drawn, and
+  its drawn rows are shared evenly between height and depth. It rests at
+  one level: the median of what is under the centre third of its foot.
+  Leaf pixels in the floor's colours join the crown they lie in. A crown
+  claims all its leaves whatever their tiles' kinds say; nothing else
+  (steps, faces) builds them.
+- *Hedges* are things thin everywhere (most pixels in a run no wider than
+  40 px across or down) and at least 64 px long, whatever turns they take.
+  Each run of drawn rows gets a front of one height along the whole hedge
+  and a level top behind it, so they lie along the ground.
+- *The overhead layer is never stood upright.* It is drawn over the
+  actors (roof tops, wall tops, canopy) and is seen from above. A thing's
+  overhead part is built one connected patch at a time. A big patch is a
+  roof, one rounded cap like a crown; a small one is level at one height.
+  A stack of houses is one thing to the statistics (the game never draws
+  them apart); the wall between their roofs parts them.
+- *Ground hidden under a thing* carries on from the last real floor in
+  front of it. It is not raised to its cell's blocked level, and it never
+  carries a trunk's or another thing's top. Under each thing it is one
+  level, set front to back so a thing behind rests on settled ground.
+- *Binding statistics* count a tile at a place once across versions of
+  one map (the town on festival day). Copies made the town's stacks look
+  bound.
+
+check() now measures in the world, not from the game's camera, so it can
+fail:
+- things resting on nothing;
+- things buried over a quarter of their width;
+- buried edge columns;
+- overhead pixels stood upright (camera-facing vertical quads);
+- crowns taller than wide;
+- uneven floors.
+
+| room | resting on nothing | buried > 1/4 | overhead upright px |
+|---|---|---|---|
+| 03_01 field | 3 | 14 | 646 |
+| 07_00 garden | 0 | 0 | 2 |
+| 02_00 town | 2 | 23 | 447 |
+| 128_00 castle hall | 0 | 2 | 56 |
+
+Most of the upright overhead pixels are the one-pixel fringe along the
+bottom of each crown, where an ellipsoid's underside turns vertical. The
+buried things are mostly crowns whose sides overhang a raised bank.

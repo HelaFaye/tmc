@@ -86,6 +86,10 @@ def statistics(dumps, cache=None):
         return Counter(d["uses"]), Counter({tuple(k.split("\t")[:2]) + tuple(int(v) for v in k.split("\t")[2:]): c
                                             for k, c in d["pairs"].items()})
     uses, pairs = Counter(), Counter()
+    # a map the game keeps in several versions (a town on festival day)
+    # repeats its tiles in the same places: a tile at a place counts once,
+    # or a stack of houses would look bound by being copied
+    seen = set()
     for p in sorted(Path(dumps).glob("room_*.tmcr")):
         r = RE.load_room(p)
         if not r.cells_w:
@@ -94,6 +98,10 @@ def statistics(dumps, cache=None):
         h, w = K.shape
         for y, x in zip(*np.nonzero(K != "")):
             a = K[y, x]
+            place = (h, w, int(y), int(x), a)
+            if place in seen:
+                continue
+            seen.add(place)
             uses[a] += 1
             for dy, dx in OFFS:
                 yy, xx = y + dy, x + dx
