@@ -148,22 +148,46 @@ solved apart, which is what made fins and sheets.
   one map (the town on festival day). Copies made the town's stacks look
   bound.
 
+- *Houses* have a body: under a roof the hidden ground is raised to
+  where the roof rests (the top of its front wall). Every roof's level is
+  taken from the ground before any body is raised, so a house behind
+  another rests on the street, not on its neighbour.
+- *Only compact, textured roofs are caps* (mushroom caps measure 50-60 in
+  luminance spread). A thin overhead patch (a wall's top) follows its wall,
+  each column at the median of its neighbours' feet within 16 px. A plain
+  even one (a flat roof, spread 27-29) is level at one height.
+- *Steps are not found under the overhead layer*: the steps a player
+  climbs are drawn on the ground layer, and a castle's wall tops had been
+  read as treads.
+
 check() now measures in the world, not from the game's camera, so it can
 fail:
 - things resting on nothing;
 - things buried over a quarter of their width;
 - buried edge columns;
-- overhead pixels stood upright (camera-facing vertical quads);
+- overhead pixels stood upright: a pixel's own surface rising one pixel of
+  height per drawn row, for anything built level or by the ground pass;
+- the share of crown, roof and hedge pixels in a steep front, for scale (a
+  round crown's lower front and a hedge's front band are steep by shape);
 - crowns taller than wide;
-- uneven floors.
+- uneven visible floors.
 
-| room | resting on nothing | buried > 1/4 | overhead upright px |
-|---|---|---|---|
-| 03_01 field | 3 | 14 | 646 |
-| 07_00 garden | 0 | 0 | 2 |
-| 02_00 town | 2 | 23 | 447 |
-| 128_00 castle hall | 0 | 2 | 56 |
+| room | resting on nothing | buried > 1/4 | buried columns | overhead upright px |
+|---|---|---|---|---|
+| 03_01 field | 3 | 26 | 439 | 0 |
+| 07_00 garden | 0 | 0 | 74 | 0 |
+| 02_00 town | 2 | 40 | 960 | 0 |
+| 128_00 castle hall | 0 | 0 | 67 | 0 |
 
-Most of the upright overhead pixels are the one-pixel fringe along the
-bottom of each crown, where an ellipsoid's underside turns vertical. The
-buried things are mostly crowns whose sides overhang a raised bank.
+Known faults:
+- The town's big flat-roofed building rests at street level: the middle
+  of its foot is the entrance recess. Resting every roof on a high
+  percentile of its foot instead buried more things everywhere (the
+  field's buried columns doubled), so it was dropped.
+- Wall tops with towers and battlements step faster than 16 px; the
+  town's walls are most of the town's and field's buried columns.
+- Stacked houses behind the front one show no wall, so they rest on the
+  street with no body.
+- The green mushroom roof's tiles were first guessed foliage: it is built
+  as a crown. A tile-kind review fixes it.
+- The wooden house's pitched roof (spread 38) is built level.

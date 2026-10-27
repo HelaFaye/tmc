@@ -53,6 +53,8 @@ FACE_MAX = 48           # px: a face rises from a floor at most this far (3 cell
 FOLIAGE_MIN_PX = 64     # px: a thing with less leaf than this is not a crown
 LEAF_REACH = 6          # px: leaves this near a crown are part of it
 FOLIAGE_SHARE = 0.5     # share of a thing in leaf for it to be one crown
+FOLLOW_PX = 16          # px: a wall's top follows the wall over this many columns each side
+FLAT_ROOF_STD = 40.0    # luminance spread: a roof more even is flat (caps measure 50-60, flat roofs 27-29)
 ROOF_MIN_CELLS = 4      # a group of busy overhead cells this big is a roof
 KINDS_FILE = Path(__file__).resolve().parents[2] / "vr" / "tiles" / "kinds.json"
 
@@ -90,14 +92,16 @@ def ground(rm, K0, K1, overhead_alpha, covered=None):
     lvl = H[cy][:, cx]
     k0 = K0[cy][:, cx]
     k1 = K1[cy][:, cx]
-    hidden = overhead_alpha & np.isin(k1, ["foliage", "prop", "top", "deck"])
+    hidden = overhead_alpha & np.isin(k1, ["foliage", "prop", "top", "deck", "void"])
     if covered is None:
         covered = np.zeros((h, w), bool)
     flat = np.isin(k0, FLAT) | hidden | (k0 == "foliage") | (k0 == None) | covered  # noqa: E711
     upright = np.isin(k0, UPRIGHT) & ~flat
     under = (hidden | (k0 == "foliage") | covered) & ~np.isin(k0, KEEP_LEVEL)
     st_m, st_yb, st_s = ST.fixed(rm, rm.picture)
-    st_m = st_m & ~covered
+    # steps are climbed on the ground layer: none where the overhead
+    # layer draws over (a wall's top read as treads)
+    st_m = st_m & ~covered & ~hidden
     yb = np.zeros((h, w))
     s = np.zeros((h, w))
     for x in range(w):
@@ -191,7 +195,7 @@ def foot_level(m, top):
     return float(np.median([top[min(cols[x][1] + 1, h - 1), x] for x in xs]))
 
 
-def dome(m, top):
+def dome(m, top, g=None):
     """A crown as one ellipsoid: as wide as the thing is drawn, rising
     CROWN_SHARE of that (at most CROWN_MAX), as deep as the drawn rows then
     allow (a point at height y over depth z is drawn on row z - y, so the
@@ -214,7 +218,8 @@ def dome(m, top):
     # drawn as tall as it is wide is then as deep as it is high)
     c = min(CROWN_SHARE * (x1 - x0), CROWN_MAX, half / np.sqrt(2))
     az = np.sqrt(max(half * half - c * c, 1.0))
-    g = foot_level(m, top)
+    if g is None:
+        g = foot_level(m, top)
     # its front-most lowest point (drawn on its foot row) rests at g; the
     # rest of its underside is hidden behind it
     yc = g + c * c / half
@@ -281,15 +286,26 @@ def hedge(m, top, lum):
     return yb, s
 
 
-def flat_on(m, top, level=None):
+def flat_on(m, top, level=None, g=None):
     """Level at one height, the one it rests at (a wall's top on its face),
     or at the given per-pixel level (a deck)."""
     h, w = m.shape
     yb = np.full((h, w), -1e6)
     s = np.zeros((h, w))
-    g0 = foot_level(m, top) if level is None else None
-    for x, (rt, rb) in _columns(m).items():
-        g = g0 if level is None else float(level[rb, x])
+    cols = _columns(m)
+    g0 = None if g == "follow" else (g if g is not None else foot_level(m, top)) if level is None else None
+    run = {}
+    if level is None and g == "follow":
+        # a long thin top (a wall's) follows its wall: each column at the
+        # median of its neighbours' feet, so it steps with the wall but
+        # columns do not each stand at their own height
+        xs = np.array(sorted(cols))
+        feet_ = np.array([top[min(cols[x][1] + 1, h - 1), x] for x in xs])
+        for i, x in enumerate(xs):
+            near = np.abs(xs - x) <= FOLLOW_PX
+            run[x] = float(np.median(feet_[near]))
+    for x, (rt, rb) in cols.items():
+        g = (run[x] if run else g0) if level is None else float(level[rb, x])
         yb[rt:rb + 1, x] = np.where(m[rt:rb + 1, x], g, -1e6)
     return yb, s
 
@@ -349,7 +365,6 @@ def build(rm, kinds, things=None):
         if u.any():
             yb[u], s[u] = foot_level(m, yb + s), 0.0
     top = yb + s
-    parts = [_kept(*MS.build(yb, s, flat))]
     cls, H = HT.ground_levels(rm)
     lvl = H[np.minimum(np.arange(h) // 16, H.shape[0] - 1)][:, np.minimum(np.arange(w) // 16, H.shape[1] - 1)]
     groups = {"crown": [], "hedge": [], "roof": [], "prop": [], "top": [], "deck": []}
@@ -370,15 +385,31 @@ def build(rm, kinds, things=None):
             # to the tile statistics; the wall between their roofs parts them)
             pieces += _groups(ov & (things == j))
     pieces += _groups(ov & (things == 0))
-    for m in pieces:
+    # every piece's level from the ground as it lies, before any body is
+    # raised: a house behind another rests on the street, not on the
+    # body of the house in front
+    levels = [foot_level(m, top) for m in pieces]
+    bodies = np.zeros((h, w), bool)
+    for m, g in zip(pieces, levels):
         if m.sum() >= ROOF_MIN_CELLS * 256:
+            # a house: under its roof a body, solid up to where the roof
+            # rests (the top of its front wall)
+            u = m & carried
+            yb[u], s[u] = np.maximum(yb[u] + s[u], g), 0.0
+            bodies |= u
+    for m, g in zip(pieces, levels):
+        if m.sum() >= ROOF_MIN_CELLS * 256 and not is_hedge(m) \
+                and float(np.std(lum[m])) >= FLAT_ROOF_STD:
             # a roof is one rounded cap over the whole thing, like a
-            # crown (columns shaped apart stand up as fins)
-            groups["roof"].append((m, dome(m, top)))
+            # crown (columns shaped apart stand up as fins). A thin patch
+            # (a wall's top) or a plain even fill (a flat roof) is level.
+            groups["roof"].append((m, dome(m, top, g)))
         else:
             # seen from above: the top of what stands under it, never
             # stood upright, and one level (not a level per column)
-            groups["top"].append((m, flat_on(m, top)))
+            groups["top"].append((m, flat_on(m, top, g="follow" if is_hedge(m) else g)))
+    top = yb + s
+    parts = [_kept(*MS.build(yb, s, flat))]
     for m in _groups(_cells(K1 == "deck", (h, w)) & alpha):
         groups["deck"].append((m, flat_on(m, top, level=lvl)))
     for kind, gs in groups.items():
@@ -393,27 +424,39 @@ def build(rm, kinds, things=None):
                             ox=x0, oz=y0, px0=x0, py0=y0)
             parts.append(_kept(*part))
     V, F, UV = _join(parts)
-    report = check(groups, top, flat & ~covered, K0, rm)
-    report["overhead pixels stood upright"] = upright_overhead(V, F, UV, alpha)
+    report = check(groups, top, flat & ~covered & ~bodies & ~alpha, K0, rm)
+    stood, fronts = upright_overhead(groups, s, alpha)
+    report["overhead pixels stood upright"] = stood
+    report["share of crown, roof and hedge pixels in a steep front"] = fronts
     return V, F, UV, pic, report
 
 
-UPRIGHT_NZ = 0.95       # a quad facing the camera this squarely stands upright
+UPRIGHT_S = 0.9         # rising this much per drawn row: the pixel stands upright
 
 
-def upright_overhead(V, F, UV, alpha):
-    """How many overhead-layer pixels the mesh stands upright (a quad
-    facing the camera, vertical). The overhead layer is drawn over the
-    actors -- roof tops, wall tops, canopy -- and is seen from above."""
-    if not len(F):
-        return 0
-    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
-    n = np.cross(b - a, c - a)
-    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
-    u = np.clip(UV[:, 0].astype(int), 0, alpha.shape[1] - 1)
-    v = np.clip(UV[:, 1].astype(int), 0, alpha.shape[0] - 1)
-    front = n[:, 2] >= UPRIGHT_NZ      # (a back, facing away, closes a raised pixel)
-    return int(len({(int(x), int(y)) for x, y in zip(u[front & alpha[v, u]], v[front & alpha[v, u]])}))
+def upright_overhead(groups, s_ground, alpha):
+    """(stood, fronts): overhead-layer pixels built standing upright --
+    their own surface rising a pixel of height per drawn row, a vertical
+    face to the camera. The overhead layer is drawn over the actors (roof
+    tops, wall tops, canopy) and is seen from above, so anything built
+    level or by the ground pass should never stand: those are 'stood', a
+    fault. A rounded crown's or roof's lower front, and a hedge's drawn
+    front band, are steep by their shape: 'fronts', a share, for scale.
+    Walls closing a raised shape down to the ground are not drawn pixels
+    and are not counted."""
+    stood = alpha & (s_ground >= UPRIGHT_S)
+    steep = tot = 0
+    for kind, gs in groups.items():
+        for m, hs in gs:
+            if hs is None:
+                continue
+            up = m & alpha & (hs[1] >= UPRIGHT_S)
+            if kind in ("crown", "roof", "hedge"):
+                steep += int(up.sum())
+                tot += int((m & alpha).sum())
+            else:
+                stood |= up
+    return int(stood.sum()), round(steep / max(tot, 1), 2)
 
 
 def surface(top, x, z):
