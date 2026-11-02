@@ -209,3 +209,42 @@ Known faults:
 - The green mushroom roof's tiles were first guessed foliage: it is built
   as a crown. A tile-kind review fixes it.
 - The wooden house's pitched roof (spread 38) is built level.
+
+**4. Levels as a player finds them** (`tools/vox/levels.py`). Everywhere
+Link walks without taking steps is one level. So the walkable cells are
+split into connected areas, cut at flights of steps.
+- Down every column, where one area lies behind another across nothing but
+  cliff (face rows and the lip at its top), the face rows are how much
+  higher the area behind is.
+- Along every row, two areas side by side across a fence, posts or a bush
+  are level: a player sees across.
+- Each pair's measures give a median. The areas are set from the largest,
+  along the best-measured pairs. Areas no cliff joins to it (across a
+  river) form a group whose lowest area sits at the main group's lowest.
+- Water is not measured: a bank's lip is often drawn like a face. It lies
+  just below its lowest bank.
+- Flat cells in no area (a cliff's lip, a bush, a named thing on a blocked
+  cell) take the level of the walkable ground beside them, not the floor
+  in front of them. That kept carrying a lower field's level up across the
+  cliff.
+
+This replaces doc 12's plateau rule, and the tilevox levels wherever an
+area covers a cell.
+
+**5. Object classes from review notes** (`vr/tiles/objects.json`: tile
+key, class and the notes that named it; structure only). A class spreads
+over the tiles bound to it when they are a small group (up to 16 cells).
+- *block* (stump, mushroom, stone, crate, chest, well, hay, potted plant,
+  tiny house), *furniture* (table, bed, throne) and *basin*: a lump
+  standing on the floor in front of it, half its drawn rows its front and
+  half its level top (a thing as deep as it is tall). A basin's rim is at
+  most 8 px.
+- *decal* (dug dirt, hole, pebbles, tall grass, light on the carpet,
+  shallow water, a ladder) and *plank*: flat at the floor.
+- *fence* and *banner*: upright from the floor, at most 16 px.
+- *wall decor* (windows, crests, stained glass, doorways) and *ornament*:
+  stay as they are drawn.
+- *stairs top / foot*: hints for the stairs pass only.
+
+Notes on a common floor tile under a sprite (a mushroom, the whirlwind)
+name a game object, not the tile; those tiles are not classed.

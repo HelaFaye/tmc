@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from . import heights as HT
+from . import levels as LV
 from . import mesh as MS
 from . import objects as OB
 from . import overhead as OV
@@ -49,11 +50,7 @@ HEDGE_MIN_LEN = 64      # px: ... and at least this long is a hedge
 HEDGE_FRONT_MAX = 16    # px: a hedge's front is at most this tall
 CROWN_SHARE = 0.5       # a crown rises at most this share of its group's width
 CROWN_MAX = 48          # px: and no higher than a tree
-PLATEAU_SHARE = 0.25    # a floor this much bounded by faces on its south (steps and edges are the rest) is raised
-PLATEAU_MIN = 4         # px: and only if that lifts it this much
-PLATEAU_PASSES = 3
 WALL_PAINT_ROW = 4      # px below a body: the front wall's colour is taken there
-ENCLOSE_REACH = 2       # cells: what lies this near a floor says whether it is walled in
 FACE_MAX = 48           # px: a face rises from a floor at most this far (3 cells)
 FOLIAGE_MIN_PX = 64     # px: a thing with less leaf than this is not a crown
 LEAF_REACH = 6          # px: leaves this near a crown are part of it
@@ -62,6 +59,16 @@ FOLLOW_PX = 16          # px: a wall's top follows the wall over this many colum
 FLAT_ROOF_STD = 40.0    # luminance spread: a roof more even is flat (caps measure 50-60, flat roofs 27-29)
 ROOF_MIN_CELLS = 4      # a group of busy overhead cells this big is a roof
 KINDS_FILE = Path(__file__).resolve().parents[2] / "vr" / "tiles" / "kinds.json"
+OBJECTS_FILE = Path(__file__).resolve().parents[2] / "vr" / "tiles" / "objects.json"
+# object classes named on the review page (vr/tiles/objects.json: tile key
+# -> class), and how each is built
+DECAL = ("decal", "plank")                                # flat on the floor
+# stairs_top / stairs_foot are hints for the stairs pass, not built here
+BLOCK = ("block", "furniture", "basin")                   # a lump standing on the floor
+FENCE = ("fence", "banner")                               # upright from the floor, low
+FENCE_MAX = 16          # px: a fence or a banner's post is at most this tall
+BASIN_MAX = 8           # px: a basin's rim
+OBJECT_GROUP_MAX = 16   # cells: a class spreads over the tiles bound to it, up to this many
 
 
 def load_kinds(catalogue):
@@ -83,15 +90,98 @@ def kind_grids(rm, kinds):
     return K0, K1
 
 
+def load_objects():
+    """{tile key: class} from vr/tiles/objects.json (keys and classes only)."""
+    if not OBJECTS_FILE.exists():
+        return {}
+    return {k: v["class"] for k, v in json.loads(OBJECTS_FILE.read_text()).items()}
+
+
+def object_grid(rm, objects, things_bound=None):
+    """Each cell's object class (None: none). The overhead tile's class wins.
+    A class spreads to the tiles bound to it (objects.py), when they make a
+    small group: a stump's other three tiles."""
+    r = rm.raw
+    C = np.full((r.cells_h, r.cells_w), None, object)
+    for (li, cy, cx), (key, _tt, _c) in TL.room_tiles(r, rm.cls).items():
+        c = objects.get(key)
+        if c and (li == 1 or C[cy, cx] is None):
+            C[cy, cx] = c
+    if things_bound is not None:
+        B = things_bound
+        for j in np.unique(B[(B > 0) & (C != None)]):  # noqa: E711
+            g = B == j
+            if g.sum() > OBJECT_GROUP_MAX:
+                continue
+            cl = [c for c in C[g] if c is not None]
+            if cl:
+                C[g & (C == None)] = max(set(cl), key=cl.count)  # noqa: E711
+    return C
+
+
+def build_blocks(yb, s, ocls, solid):
+    """Blocks (a stone, a crate, a bed) stand on the floor in front of them:
+    half their drawn rows are their front, upright, the rest their level
+    top (a thing as deep as it is tall shows both equally at 45 degrees).
+    solid: the pixels of things (not the floor showing round them)."""
+    h = yb.shape[0]
+    blk = np.isin(ocls, BLOCK) & solid
+    lab, n = RE._label(blk)
+    for j in range(1, n + 1):
+        m = lab == j
+        ys, xs = np.nonzero(m)
+        if len(ys) < 12:
+            continue
+        rows = ys.max() - ys.min() + 1
+        cols = _columns(m)
+        top = yb + s
+        base = float(np.median([top[min(cols[x][1] + 1, h - 1), x] for x in cols]))
+        hb = rows / 2.0
+        if (ocls[m] == "basin").mean() > 0.5:
+            hb = min(hb, BASIN_MAX)
+        for x in cols:
+            for a, b in _runs(m[:, x]):
+                for i, r in enumerate(range(b, a - 1, -1)):
+                    if i < hb:
+                        yb[r, x], s[r, x] = base + i, 1.0
+                    else:
+                        yb[r, x], s[r, x] = base + hb, 0.0
+    return yb, s
+
+
+def _cell_values(C, shape):
+    """A cell grid's values per pixel."""
+    cy = np.minimum(np.arange(shape[0]) // 16, C.shape[0] - 1)
+    cx = np.minimum(np.arange(shape[1]) // 16, C.shape[1] - 1)
+    return C[cy][:, cx]
+
+
 def _cells(mask_cells, shape):
     return np.kron(mask_cells, np.ones((16, 16), bool))[:shape[0], :shape[1]]
 
 
-def ground(rm, K0, K1, overhead_alpha, covered=None):
+def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None):
     """(yb, s, flat): the ground layer's pixels. covered: pixels another
     shape builds (a crown); the ground lies flat under them."""
     h, w = rm.picture.shape[:2]
     cls, H = HT.ground_levels(rm)
+    # levels as a player finds them: one per walkable area, cliffs between
+    # (levels.py); tilevox's where no cliff says
+    rows, cols = cls.shape
+    a_cells = overhead_alpha[:rows * 16, :cols * 16].reshape(rows, 16, cols, 16).mean((1, 3)) > 0.25
+    H, alab, alevel = LV.solve(rm, K0, a_cells, H, ST.flights(rm))
+    # a named thing on a wall cell sits at the level of the walkable ground
+    # beside it (the posts at the top of steps on the upper field)
+    # and so does any other flat or edge-top cell in no walkable area (a
+    # cliff's lip, a blocked patch of grass)
+    named_c = np.zeros((rows, cols), bool)
+    if ocls is not None:
+        named_c = np.isin(ocls[8::16, 8::16][:rows, :cols], DECAL + BLOCK + FENCE)
+    lip = np.isin(K0, ["top", "floor", "foliage", None]) & (cls != RE.CLASS_WATER)
+    seated = np.zeros((rows, cols), bool)
+    for (ry, rx), v in LV.seat(alab, alevel, (named_c | lip) & (alab == 0)).items():
+        H[ry, rx] = v
+        seated[ry, rx] = True
     cy = np.minimum(np.arange(h) // 16, cls.shape[0] - 1)
     cx = np.minimum(np.arange(w) // 16, cls.shape[1] - 1)
     lvl = H[cy][:, cx]
@@ -100,71 +190,24 @@ def ground(rm, K0, K1, overhead_alpha, covered=None):
     hidden = overhead_alpha & np.isin(k1, ["foliage", "prop", "top", "deck", "void"])
     if covered is None:
         covered = np.zeros((h, w), bool)
-    flat = np.isin(k0, FLAT) | hidden | (k0 == "foliage") | (k0 == None) | covered  # noqa: E711
-    upright = np.isin(k0, UPRIGHT) & ~flat
-    under = (hidden | (k0 == "foliage") | covered) & ~np.isin(k0, KEEP_LEVEL)
+    oc = ocls if ocls is not None else np.full((h, w), None, object)
+    named = np.isin(oc, DECAL + BLOCK)          # flat at the floor, blocks built after
+    fence = np.isin(oc, FENCE)
+    flat = np.isin(k0, FLAT) | hidden | (k0 == "foliage") | (k0 == None) | covered | named  # noqa: E711
+    upright = (np.isin(k0, UPRIGHT) | fence) & ~flat
+    under = (hidden | (k0 == "foliage") | covered | named) & ~np.isin(k0, KEEP_LEVEL)
+    under &= ~seated[cy][:, cx]          # seated cells keep the level beside them
+    cap = np.where(fence, FENCE_MAX, FACE_MAX)
     st_m, st_yb, st_s = ST.fixed(rm, rm.picture)
     # steps are climbed on the ground layer: none where the overhead
     # layer draws over (a wall's top read as treads)
     st_m = st_m & ~covered & ~hidden
-    yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s)
-    # a floor (or water) whose south edge is mostly a face rising to it is raised to
-    # that face's top: the collision levels do not always know a plateau
-    # is raised, and then each cliff stood alone as a wall with the floor
-    # behind it back at the bottom. Repeated, so a plateau above another
-    # rises from the one below.
-    # floors and water apart: a river above a waterfall is raised as well
-    lab_f, n_f = RE._label((K0 == "floor") & (cls == RE.CLASS_GROUND))
-    lab_w, n_w = RE._label((K0 == "water") & (cls == RE.CLASS_WATER))
-    lab = np.where(lab_w > 0, lab_w + n_f, lab_f)
-    n = n_f + n_w
-    # a room's floor, walled in all round, is not a plateau: its front wall
-    # has the floor behind at the door's level (a castle hall). Outdoors a
-    # plateau also meets water or walkable ground (paths, steps).
-    enclosed = np.zeros(n + 1, bool)
-    for j in range(1, n + 1):
-        region = lab == j
-        ring = np.zeros_like(region)
-        P = np.pad(region, ENCLOSE_REACH)
-        rh, rw = region.shape
-        for dy in range(-ENCLOSE_REACH, ENCLOSE_REACH + 1):
-            for dx in range(-ENCLOSE_REACH, ENCLOSE_REACH + 1):
-                ring |= P[ENCLOSE_REACH + dy:ENCLOSE_REACH + dy + rh, ENCLOSE_REACH + dx:ENCLOSE_REACH + dx + rw]
-        ring &= ~region
-        enclosed[j] = bool(ring.any()) and bool(np.all(cls[ring] == RE.CLASS_WALL))
-    for _ in range(PLATEAU_PASSES):
-        top = yb + s
-        raised = False
-        Hc = H.astype(float).copy()
-        for j in range(1, n + 1):
-            region = lab == j
-            if enclosed[j]:
-                continue
-            south = region & ~np.vstack([region[1:], np.zeros((1, region.shape[1]), bool)])
-            tops, faces = [], 0
-            for ry, rx in zip(*np.nonzero(south)):
-                y0 = (ry + 1) * 16
-                if y0 >= h:
-                    continue
-                for x in range(rx * 16, min(rx * 16 + 16, w)):
-                    tops.append(top[y0, x])
-                    faces += s[y0, x] > 0
-            if not tops or faces < PLATEAU_SHARE * len(tops):
-                continue
-            g = float(np.median([t for t in tops]))
-            cur = float(np.median(H[region]))
-            if g > cur + PLATEAU_MIN and abs(float(np.median(Hc[region])) - g) > 0.5:
-                Hc[region] = g
-                raised = True
-        if not raised:
-            break
-        H = Hc
-        lvl = H[cy][:, cx]
-        yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s)
+    st_m = st_m & ~named
+    yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s, cap)
     return yb, s, flat | st_m
 
 
-def _walk(lvl, flat, under, upright, st_m, st_yb, st_s):
+def _walk(lvl, flat, under, upright, st_m, st_yb, st_s, cap):
     """Each pixel column walked from the camera's side north: floors flat
     at their level, faces rising from what is in front of them."""
     h, w = lvl.shape
@@ -193,7 +236,7 @@ def _walk(lvl, flat, under, upright, st_m, st_yb, st_s):
             # tall: past FACE_MAX rows the strip is the wall's top seen
             # from above (a side wall), not more face
             run = run + 1 if upright[y, x] else 0
-            r_ = 1.0 if upright[y, x] and run <= FACE_MAX else 0.0
+            r_ = 1.0 if upright[y, x] and run <= cap[y, x] else 0.0
             yb[y, x], s[y, x] = base, r_
             below = base + r_
     return yb, s
@@ -411,9 +454,13 @@ def build(rm, kinds, things=None):
     # along their outlines
     fol = (_cells(K1 == "foliage", (h, w)) & alpha) | _cells(K0 == "foliage", (h, w))
     leafy = OB.leafy(pic)
+    dumps = Path(rm.meta["path"]).parent
+    stats = OB.statistics(dumps, dumps / "binding.json")
     if things is None:
-        things = OB.objects(rm, *OB.statistics(Path(rm.meta["path"]).parent,
-                                               Path(rm.meta["path"]).parent / "binding.json"))
+        things = OB.objects(rm, *stats)
+    # the object classes named on the review page, spread over bound tiles
+    C = object_grid(rm, load_objects(), OB.bound(OB.cell_keys(rm.raw, rm.cls), rm.cls, *stats))
+    ocls = _cell_values(C, (h, w))
     crowns = np.zeros((h, w), np.int32)
     for j in range(1, things.max() + 1):
         t = things == j
@@ -437,7 +484,8 @@ def build(rm, kinds, things=None):
     for m in rest:
         covered |= m
     shapes += rest
-    yb, s, flat = ground(rm, K0, K1, alpha, covered=covered)
+    yb, s, flat = ground(rm, K0, K1, alpha, covered=covered, ocls=ocls)
+    yb, s = build_blocks(yb, s, ocls, OB.mask(rm) & ~covered & ~alpha)
     # the ground under a thing is one level, the one it rests at (columns
     # carried on from different things south of it would stand as walls)
     carried = ~_cells(np.isin(K0, KEEP_LEVEL), (h, w))

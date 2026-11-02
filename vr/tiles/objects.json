@@ -1,0 +1,398 @@
+{
+ "1f6a7b2a:0:113": {
+  "class": "block",
+  "notes": [
+   "n-20261028021721-lgm3"
+  ]
+ },
+ "1f6a7b2a:0:121": {
+  "class": "decal",
+  "notes": [
+   "n-20261028022308-k41h"
+  ]
+ },
+ "1f6a7b2a:0:1221": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028021444-18k7"
+  ]
+ },
+ "1f6a7b2a:0:1538": {
+  "class": "basin",
+  "notes": [
+   "n-20261028022825-k9y8"
+  ]
+ },
+ "1f6a7b2a:0:16458": {
+  "class": "block",
+  "notes": [
+   "n-20261028022710-7rdn"
+  ]
+ },
+ "1f6a7b2a:0:16509": {
+  "class": "block",
+  "notes": [
+   "n-20261028022640-u0gv"
+  ]
+ },
+ "1f6a7b2a:0:354": {
+  "class": "plank",
+  "notes": [
+   "n-20261028022229-gu1z"
+  ]
+ },
+ "1f6a7b2a:0:683": {
+  "class": "stairs_foot",
+  "notes": [
+   "n-20261028021658-axnd"
+  ]
+ },
+ "1f6a7b2a:0:838": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028022057-ik3j"
+  ]
+ },
+ "5d86dcad:1:1066": {
+  "class": "block",
+  "notes": [
+   "n-20261028022640-u0gv"
+  ]
+ },
+ "5d86dcad:1:1178": {
+  "class": "plank",
+  "notes": [
+   "n-20261028022229-gu1z"
+  ]
+ },
+ "5d86dcad:1:1293": {
+  "class": "ornament",
+  "notes": [
+   "n-20261028021535-73ma"
+  ]
+ },
+ "5d86dcad:1:1467": {
+  "class": "awning",
+  "notes": [
+   "n-20261028023115-qa5o"
+  ]
+ },
+ "5d86dcad:1:1566": {
+  "class": "banner",
+  "notes": [
+   "n-20261028022941-5lib"
+  ]
+ },
+ "5d86dcad:1:1627": {
+  "class": "banner",
+  "notes": [
+   "n-20261028022925-bh5k"
+  ]
+ },
+ "5d86dcad:1:1659": {
+  "class": "banner",
+  "notes": [
+   "n-20261028023000-38kf"
+  ]
+ },
+ "5d86dcad:1:224": {
+  "class": "block",
+  "notes": [
+   "n-20261028022441-dogq"
+  ]
+ },
+ "5d86dcad:1:845": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028021925-8rfi"
+  ]
+ },
+ "5d86dcad:1:846": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028021949-6sj0"
+  ]
+ },
+ "5d86dcad:1:851": {
+  "class": "ornament",
+  "notes": [
+   "n-20261028001836-1jen"
+  ]
+ },
+ "5d86dcad:1:852": {
+  "class": "ornament",
+  "notes": [
+   "n-20261028001813-wpuy"
+  ]
+ },
+ "6bfc8769:0:1438": {
+  "class": "decal",
+  "notes": [
+   "n-20261028021321-6tj4"
+  ]
+ },
+ "6bfc8769:0:1714": {
+  "class": "pillar",
+  "notes": [
+   "n-20261028003319-yzzf"
+  ]
+ },
+ "6bfc8769:0:411": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028003350-bwcz"
+  ]
+ },
+ "6bfc8769:0:555": {
+  "class": "furniture",
+  "notes": [
+   "n-20261028020932-pl97"
+  ]
+ },
+ "6bfc8769:0:568": {
+  "class": "furniture",
+  "notes": [
+   "n-20261028020812-dvas"
+  ]
+ },
+ "6bfc8769:0:571": {
+  "class": "furniture",
+  "notes": [
+   "n-20261028020903-8pc5"
+  ]
+ },
+ "6bfc8769:0:574": {
+  "class": "furniture",
+  "notes": [
+   "n-20261028003257-l5ic"
+  ]
+ },
+ "6bfc8769:0:635": {
+  "class": "block",
+  "notes": [
+   "n-20261028021018-ler5"
+  ]
+ },
+ "6bfc8769:0:641": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028003600-zwwe"
+  ]
+ },
+ "71a68fd1:1:1423": {
+  "class": "pillar",
+  "notes": [
+   "n-20261028003319-yzzf"
+  ]
+ },
+ "71a68fd1:1:204": {
+  "class": "block",
+  "notes": [
+   "n-20261028021018-ler5"
+  ]
+ },
+ "71a68fd1:1:548": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028003147-to3m"
+  ]
+ },
+ "71a68fd1:1:730": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028021222-f1v8"
+  ]
+ },
+ "71a68fd1:1:869": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028002846-v51w"
+  ]
+ },
+ "a4b302e3:1:441": {
+  "class": "ornament",
+  "notes": [
+   "n-20261028001705-fyn2"
+  ]
+ },
+ "a4b302e3:1:578": {
+  "class": "fence",
+  "notes": [
+   "n-20261028001220-g503"
+  ]
+ },
+ "a7a07eff:0:562": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028002026-mdx2"
+  ]
+ },
+ "a7a07eff:0:563": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028002120-tdo1"
+  ]
+ },
+ "a7a07eff:0:568": {
+  "class": "stairs_top",
+  "notes": [
+   "n-20261028002220-y518"
+  ]
+ },
+ "a7a07eff:0:584": {
+  "class": "stairs_foot",
+  "notes": [
+   "n-20261028002245-6l0c"
+  ]
+ },
+ "a7a07eff:0:681": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028002344-ythj"
+  ]
+ },
+ "a7a07eff:0:711": {
+  "class": "basin",
+  "notes": [
+   "n-20261028002504-ojdz"
+  ]
+ },
+ "a7a07eff:0:761": {
+  "class": "decal",
+  "notes": [
+   "n-20261028002427-1j91"
+  ]
+ },
+ "a7a07eff:0:777": {
+  "class": "decal",
+  "notes": [
+   "n-20261028002705-ul4z"
+  ]
+ },
+ "cdc10d77:0:1153": {
+  "class": "fence",
+  "notes": [
+   "n-20261028000216-fp68"
+  ]
+ },
+ "cdc10d77:0:116": {
+  "class": "decal",
+  "notes": [
+   "n-20261028000154-p7rc"
+  ]
+ },
+ "cdc10d77:0:1163": {
+  "class": "fence",
+  "notes": [
+   "n-20261028001143-pz1g"
+  ]
+ },
+ "cdc10d77:0:1215": {
+  "class": "basin",
+  "notes": [
+   "n-20261028001524-tmrr"
+  ]
+ },
+ "cdc10d77:0:1259": {
+  "class": "block",
+  "notes": [
+   "n-20261028023931-gk8u"
+  ]
+ },
+ "cdc10d77:0:1289": {
+  "class": "plank",
+  "notes": [
+   "n-20261028001330-20pj"
+  ]
+ },
+ "cdc10d77:0:131": {
+  "class": "block",
+  "notes": [
+   "n-20261028001019-qhkh"
+  ]
+ },
+ "cdc10d77:0:148": {
+  "class": "fence",
+  "notes": [
+   "n-20261028000744-epcd"
+  ]
+ },
+ "cdc10d77:0:149": {
+  "class": "fence",
+  "notes": [
+   "n-20261028000520-jgrj"
+  ]
+ },
+ "cdc10d77:0:1501": {
+  "class": "block",
+  "notes": [
+   "n-20261027235724-m8gh"
+  ]
+ },
+ "cdc10d77:0:16418": {
+  "class": "block",
+  "notes": [
+   "n-20261027235828-n9b3"
+  ]
+ },
+ "cdc10d77:0:2021": {
+  "class": "stairs_top",
+  "notes": [
+   "n-20261028000307-0kg1"
+  ]
+ },
+ "cdc10d77:0:2037": {
+  "class": "stairs_foot",
+  "notes": [
+   "n-20261028000243-w5zd"
+  ]
+ },
+ "cdc10d77:0:224": {
+  "class": "decal",
+  "notes": [
+   "n-20261028024203-powv"
+  ]
+ },
+ "cdc10d77:0:541": {
+  "class": "decal",
+  "notes": [
+   "n-20261028024034-0ot2"
+  ]
+ },
+ "cdc10d77:0:551": {
+  "class": "stairs_foot",
+  "notes": [
+   "n-20261028001411-o7rp"
+  ]
+ },
+ "cdc10d77:0:64": {
+  "class": "decal",
+  "notes": [
+   "n-20261028000121-0f7d"
+  ]
+ },
+ "cdc10d77:0:66": {
+  "class": "block",
+  "notes": [
+   "n-20261028000833-sqm1"
+  ]
+ },
+ "cdc10d77:0:73": {
+  "class": "decal",
+  "notes": [
+   "n-20261027235946-18x8"
+  ]
+ },
+ "cdc10d77:0:98": {
+  "class": "fence",
+  "notes": [
+   "n-20261028000451-z6wt"
+  ]
+ },
+ "cf802db6:1:286": {
+  "class": "wall_decor",
+  "notes": [
+   "n-20261028002148-cu34"
+  ]
+ }
+}
