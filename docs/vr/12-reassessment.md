@@ -248,3 +248,18 @@ over the tiles bound to it when they are a small group (up to 16 cells).
 
 Notes on a common floor tile under a sprite (a mushroom, the whirlwind)
 name a game object, not the tile; those tiles are not classed.
+
+**6. From the review of the levels** (your notes on the turned views).
+- *A fence is not a cliff.* Cells with a named class (fence, posts, a
+  stone) between two areas add no height. A fence across a field had made
+  the field beyond it 16 px lower.
+- *A fence stands where it is drawn.* The grass round its posts is floor;
+  before, the whole cell stood up as a green block.
+- *Rooms have walls at one height* (the corner notes in 128_00, 128_03 and
+  128_04). When a room's main floor (the largest walkable area not
+  reaching the room's edge) is walled in, 85% of the cells round it
+  blocked, the blocked cells joined to that ring are its walls.
+  - Their height is the north wall's face above the main floor.
+  - Wall rows rising straight from a floor in front are the face; every
+    other wall pixel is the wall's top, level at that height. The side and
+    south walls, and the corners, are level.

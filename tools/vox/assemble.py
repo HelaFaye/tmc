@@ -66,6 +66,7 @@ DECAL = ("decal", "plank")                                # flat on the floor
 # stairs_top / stairs_foot are hints for the stairs pass, not built here
 BLOCK = ("block", "furniture", "basin")                   # a lump standing on the floor
 FENCE = ("fence", "banner")                               # upright from the floor, low
+RIM_ENCLOSED = 0.85     # share of the cells round the main floor blocked: walled in
 FENCE_MAX = 16          # px: a fence or a banner's post is at most this tall
 BASIN_MAX = 8           # px: a basin's rim
 OBJECT_GROUP_MAX = 16   # cells: a class spreads over the tiles bound to it, up to this many
@@ -149,6 +150,68 @@ def build_blocks(yb, s, ocls, solid):
     return yb, s
 
 
+def rim(rm, K0, alab, alevel):
+    """(rim cells, its level, its height) for a room: when its main floor
+    (the largest walkable area not reaching the room's edge) is walled in
+    (RIM_ENCLOSED of the cells round it blocked; doors are small gaps), the
+    blocked cells joined to that ring of walls. Its height is the north
+    wall's: the median run of face cells north of the main floor. None
+    when the main floor is open (outdoors)."""
+    rows, cols = rm.cls.shape
+    if not alevel:
+        return None
+    border = np.zeros((rows, cols), bool)
+    border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
+    size = np.bincount(alab.ravel(), minlength=max(alevel) + 1)
+    inner = [j for j in alevel if not (border & (alab == j)).any()]
+    if not inner:
+        return None
+    main = max(inner, key=lambda j: size[j])
+    m = alab == main
+    ring = np.zeros_like(m)
+    ring[1:] |= m[:-1]; ring[:-1] |= m[1:]; ring[:, 1:] |= m[:, :-1]; ring[:, :-1] |= m[:, 1:]
+    ring &= ~m
+    blocked = np.isin(rm.cls, [RE.CLASS_WALL, RE.CLASS_LEDGE, RE.CLASS_VOID]) & (alab == 0)
+    if blocked[ring].mean() < RIM_ENCLOSED:
+        return None
+    lab, n = RE._label(blocked & np.isin(K0, ["face", "top", "void", None]))
+    joined = np.unique(lab[ring & (lab > 0)])
+    cells = np.isin(lab, joined) & (lab > 0)
+    runs = []
+    for cx in range(cols):
+        ys = np.nonzero(m[:, cx])[0]
+        if not len(ys):
+            continue
+        y, run = ys.min() - 1, 0
+        while y >= 0 and cells[y, cx] and K0[y, cx] == "face":
+            run += 1
+            y -= 1
+        if run:
+            runs.append(run)
+    if not runs:
+        return None
+    hr = 16.0 * float(np.median(runs))
+    return cells, alevel[main] + hr, hr
+
+
+def build_rim(yb, s, rim_px, lvl_rim, hr):
+    """A room's walls at one height: rows rising straight from a floor in
+    front of them are the wall's face, up to the rim's height; every other
+    rim pixel is the wall's top, level at it (the side and south walls, and
+    the corners, as the review notes say)."""
+    h = yb.shape[0]
+    top = yb + s
+    for x in np.nonzero(rim_px.any(axis=0))[0]:
+        for a, b in _runs(rim_px[:, x]):
+            base = top[b + 1, x] if b + 1 < h else None
+            for i, r in enumerate(range(b, a - 1, -1)):
+                if base is not None and i < hr and base + i < lvl_rim:
+                    yb[r, x], s[r, x] = base + i, 1.0
+                else:
+                    yb[r, x], s[r, x] = lvl_rim, 0.0
+    return yb, s
+
+
 def _cell_values(C, shape):
     """A cell grid's values per pixel."""
     cy = np.minimum(np.arange(shape[0]) // 16, C.shape[0] - 1)
@@ -160,7 +223,7 @@ def _cells(mask_cells, shape):
     return np.kron(mask_cells, np.ones((16, 16), bool))[:shape[0], :shape[1]]
 
 
-def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None):
+def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
     """(yb, s, flat): the ground layer's pixels. covered: pixels another
     shape builds (a crown); the ground lies flat under them."""
     h, w = rm.picture.shape[:2]
@@ -169,7 +232,10 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None):
     # (levels.py); tilevox's where no cliff says
     rows, cols = cls.shape
     a_cells = overhead_alpha[:rows * 16, :cols * 16].reshape(rows, 16, cols, 16).mean((1, 3)) > 0.25
-    H, alab, alevel = LV.solve(rm, K0, a_cells, H, ST.flights(rm))
+    things_c = np.zeros((rows, cols), bool)
+    if ocls is not None:
+        things_c = np.isin(ocls[8::16, 8::16][:rows, :cols], DECAL + BLOCK + FENCE)
+    H, alab, alevel = LV.solve(rm, K0, a_cells, H, ST.flights(rm), things_c)
     # a named thing on a wall cell sits at the level of the walkable ground
     # beside it (the posts at the top of steps on the upper field)
     # and so does any other flat or edge-top cell in no walkable area (a
@@ -191,8 +257,10 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None):
     if covered is None:
         covered = np.zeros((h, w), bool)
     oc = ocls if ocls is not None else np.full((h, w), None, object)
-    named = np.isin(oc, DECAL + BLOCK)          # flat at the floor, blocks built after
-    fence = np.isin(oc, FENCE)
+    sol = solid if solid is not None else np.ones((h, w), bool)
+    # a fence stands only where it is drawn; the grass round its posts is floor
+    fence = np.isin(oc, FENCE) & sol
+    named = np.isin(oc, DECAL + BLOCK) | (np.isin(oc, FENCE) & ~sol)   # flat at the floor
     flat = np.isin(k0, FLAT) | hidden | (k0 == "foliage") | (k0 == None) | covered | named  # noqa: E711
     upright = (np.isin(k0, UPRIGHT) | fence) & ~flat
     under = (hidden | (k0 == "foliage") | covered | named) & ~np.isin(k0, KEEP_LEVEL)
@@ -204,6 +272,13 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None):
     st_m = st_m & ~covered & ~hidden
     st_m = st_m & ~named
     yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s, cap)
+    # indoors, the walls go round at one height (rim)
+    rr = rim(rm, K0, alab, alevel)
+    if rr is not None:
+        cells, lvl_rim, hr = rr
+        rim_px = _cells(cells, (h, w)) & ~hidden & ~covered
+        yb, s = build_rim(yb, s, rim_px, lvl_rim, hr)
+        flat = flat | (rim_px & (s == 0))
     return yb, s, flat | st_m
 
 
@@ -484,8 +559,9 @@ def build(rm, kinds, things=None):
     for m in rest:
         covered |= m
     shapes += rest
-    yb, s, flat = ground(rm, K0, K1, alpha, covered=covered, ocls=ocls)
-    yb, s = build_blocks(yb, s, ocls, OB.mask(rm) & ~covered & ~alpha)
+    solid = OB.mask(rm)
+    yb, s, flat = ground(rm, K0, K1, alpha, covered=covered, ocls=ocls, solid=solid)
+    yb, s = build_blocks(yb, s, ocls, solid & ~covered & ~alpha)
     # the ground under a thing is one level, the one it rests at (columns
     # carried on from different things south of it would stand as walls)
     carried = ~_cells(np.isin(K0, KEEP_LEVEL), (h, w))

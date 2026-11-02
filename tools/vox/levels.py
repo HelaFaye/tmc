@@ -9,7 +9,8 @@ pixel column, the cliff between them is drawn as a face, and by the
      steps;
   2. down every column, wherever one area lies behind another across
      nothing but cliff (face rows, and the lip at its top), the face rows
-     are one measure of how much higher the area behind is; along every
+     are one measure of how much higher the area behind is (a fence,
+     posts or a stone in the way are things on the ground: no height); along every
      row, two areas side by side across a fence, posts or a bush (no
      cliff face) are level: a player sees across;
   3. each pair's measures give a median; the areas are set from the
@@ -43,10 +44,14 @@ def areas(rm, flights):
     return RE._label(walk)
 
 
-def measures(lab, K0, alpha_cells):
+def measures(lab, K0, alpha_cells, things=None):
     """{(south, north): [face rows]} down every column of cells, at pixel
-    resolution of 16 rows per cell."""
+    resolution of 16 rows per cell. things: cells of named things standing
+    on the ground (a fence, a post, a stone): they are no cliff, and add no
+    height."""
     rows, cols = lab.shape
+    if things is None:
+        things = np.zeros((rows, cols), bool)
     out = {}
     for cx in range(cols):
         cy = rows - 1
@@ -59,6 +64,9 @@ def measures(lab, K0, alpha_cells):
             g = cy - 1
             faces, ok = 0, True
             while g >= 0 and lab[g, cx] == 0:
+                if things[g, cx]:
+                    g -= 1
+                    continue
                 if alpha_cells[g, cx] or K0[g, cx] not in CLIFF_KINDS:
                     ok = False
                 faces += K0[g, cx] == "face"
@@ -80,7 +88,7 @@ def measures(lab, K0, alpha_cells):
                 g += 1
             e = g
             while e < cols and lab[cy, e] == 0 and e - g < SIDE_GAP:
-                if K0[cy, e] == "face" or alpha_cells[cy, e]:
+                if (K0[cy, e] == "face" and not things[cy, e]) or alpha_cells[cy, e]:
                     break
                 e += 1
             if g < cols and e < cols and lab[cy, e] not in (0, a) and e > g:
@@ -89,13 +97,13 @@ def measures(lab, K0, alpha_cells):
     return out
 
 
-def solve(rm, K0, alpha_cells, H0, flights):
+def solve(rm, K0, alpha_cells, H0, flights, things=None):
     """(H, labels, {area: level}): per cell, the level from the cliffs
     between walkable areas (H0, tilevox's, for cells no area covers)."""
     lab, n = areas(rm, flights)
     if n == 0:
         return np.asarray(H0, float), lab, {}
-    m = measures(lab, K0, alpha_cells)
+    m = measures(lab, K0, alpha_cells, things)
     pairs = {}
     for (a, b), d in m.items():
         if len(d) < MIN_MEASURES:
