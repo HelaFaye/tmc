@@ -68,6 +68,10 @@ BLOCK = ("block", "furniture", "basin")                   # a lump standing on t
 FENCE = ("fence", "banner")                               # upright from the floor, low
 RIM_ENCLOSED = 0.85     # share of the cells round the main floor blocked: walled in
 FENCE_MAX = 16          # px: a fence or a banner's post is at most this tall
+FRONT_MIN = 4           # px: a darker band this tall at a thing's bottom is its front
+SHADOW_HUE = 25         # degrees: a shadow keeps the floor's hue ...
+SHADOW_SAT = 0.25       # ... and about its saturation ...
+SHADOW_DARK = 0.85      # ... and is darker than this share of the floor's luminance
 BASIN_MAX = 8           # px: a basin's rim
 OBJECT_GROUP_MAX = 16   # cells: a class spreads over the tiles bound to it, up to this many
 
@@ -120,16 +124,58 @@ def object_grid(rm, objects, things_bound=None):
     return C
 
 
-def build_blocks(yb, s, ocls, solid):
-    """Blocks (a stone, a crate, a bed) stand on the floor in front of them:
-    half their drawn rows are their front, upright, the rest their level
-    top (a thing as deep as it is tall shows both equally at 45 degrees).
-    solid: the pixels of things (not the floor showing round them)."""
+def _shadow(pic, m, walk):
+    """Pixels of m that are the floor's own colour in shade (the hue and
+    saturation of the floor round m, darker): a thing's shadow on the floor,
+    which says there is a gap under it, not more of the thing."""
+    from . import regions as RG
+    hue, sat = RG.hsv(pic)
+    lum = RG.luminance(pic)
+    ys, xs = np.nonzero(m)
+    y0, y1 = max(0, ys.min() - 4), min(m.shape[0], ys.max() + 5)
+    x0, x1 = max(0, xs.min() - 4), min(m.shape[1], xs.max() + 5)
+    ring = np.zeros_like(m)
+    ring[y0:y1, x0:x1] = True
+    ring &= ~m & walk
+    if ring.sum() < 8:
+        return np.zeros_like(m)
+    fh, fs, fl = np.median(hue[ring]), np.median(sat[ring]), np.median(lum[ring])
+    dh = np.abs(((hue - fh) + 180) % 360 - 180)
+    return m & (dh < SHADOW_HUE) & (np.abs(sat - fs) < SHADOW_SAT) & \
+        (lum < SHADOW_DARK * fl) & (lum > 0.25 * fl)
+
+
+def build_blocks(yb, s, ocls, solid, pic=None, walk=None):
+    """Blocks (a stone, a crate) and furniture (a table, a bed) stand on the
+    floor in front of them. Their shadow on the floor stays floor. Their
+    front is the darker band at their bottom (a table's edge and legs, a
+    bed's side), upright; above it they are level, at the front's height
+    (furniture) -- or, for a block with no clear front, half its drawn rows
+    are its front (a thing as deep as it is tall shows both equally at 45
+    degrees). solid: the pixels of things (not the floor showing round them)."""
+    from . import regions as RG
     h = yb.shape[0]
+    lum = RG.luminance(pic) if pic is not None else None
     blk = np.isin(ocls, BLOCK) & solid
+    # furniture is one piece across a runner or a cover in the floor's own
+    # colour: each row is filled between its outermost solid pixels
+    furn = np.isin(ocls, ("furniture",))
+    if furn.any():
+        fl, fn = RE._label(furn)
+        for k in range(1, fn + 1):
+            cells_k = fl == k
+            part = cells_k & solid
+            for y in np.nonzero(part.any(axis=1))[0]:
+                xs_ = np.nonzero(part[y])[0]
+                blk[y, xs_.min():xs_.max() + 1] |= cells_k[y, xs_.min():xs_.max() + 1]
     lab, n = RE._label(blk)
+    built = np.zeros_like(blk)
     for j in range(1, n + 1):
         m = lab == j
+        if m.sum() < 12:
+            continue
+        if pic is not None and walk is not None:
+            m &= ~_shadow(pic, m, walk)
         ys, xs = np.nonzero(m)
         if len(ys) < 12:
             continue
@@ -138,8 +184,20 @@ def build_blocks(yb, s, ocls, solid):
         top = yb + s
         base = float(np.median([top[min(cols[x][1] + 1, h - 1), x] for x in cols]))
         hb = rows / 2.0
+        if lum is not None:
+            med = float(np.median(lum[m]))
+            fronts = []
+            for x, (rt, rb) in cols.items():
+                f = 0
+                while rb - f >= rt and m[rb - f, x] and lum[rb - f, x] < med and f < rows / 2:
+                    f += 1
+                fronts.append(f)
+            hf = float(np.median(fronts)) if fronts else 0
+            if hf >= FRONT_MIN:
+                hb = hf
         if (ocls[m] == "basin").mean() > 0.5:
             hb = min(hb, BASIN_MAX)
+        built |= m
         for x in cols:
             for a, b in _runs(m[:, x]):
                 for i, r in enumerate(range(b, a - 1, -1)):
@@ -147,10 +205,11 @@ def build_blocks(yb, s, ocls, solid):
                         yb[r, x], s[r, x] = base + i, 1.0
                     else:
                         yb[r, x], s[r, x] = base + hb, 0.0
+    build_blocks.built = built
     return yb, s
 
 
-def rim(rm, K0, alab, alevel):
+def rim(rm, K0, alab, alevel, things=None):
     """(rim cells, its level, its height) for a room: when its main floor
     (the largest walkable area not reaching the room's edge) is walled in
     (RIM_ENCLOSED of the cells round it blocked; doors are small gaps), the
@@ -174,7 +233,10 @@ def rim(rm, K0, alab, alevel):
     blocked = np.isin(rm.cls, [RE.CLASS_WALL, RE.CLASS_LEDGE, RE.CLASS_VOID]) & (alab == 0)
     if blocked[ring].mean() < RIM_ENCLOSED:
         return None
-    lab, n = RE._label(blocked & np.isin(K0, ["face", "top", "void", None]))
+    wallish = blocked & np.isin(K0, ["face", "top", "void", None])
+    if things is not None:
+        wallish &= ~things          # furniture and other named things are no wall
+    lab, n = RE._label(wallish)
     joined = np.unique(lab[ring & (lab > 0)])
     cells = np.isin(lab, joined) & (lab > 0)
     runs = []
@@ -191,10 +253,13 @@ def rim(rm, K0, alab, alevel):
     if not runs:
         return None
     hr = 16.0 * float(np.median(runs))
-    return cells, alevel[main] + hr, hr
+    # the room's inside: its walkable areas that do not reach its edge (a
+    # wall rises only from the floor inside it, not from the ground outside)
+    inside = np.isin(alab, inner)
+    return cells, alevel[main] + hr, hr, inside
 
 
-def build_rim(yb, s, rim_px, lvl_rim, hr):
+def build_rim(yb, s, rim_px, lvl_rim, hr, inside=None):
     """A room's walls at one height: rows rising straight from a floor in
     front of them are the wall's face, up to the rim's height; every other
     rim pixel is the wall's top, level at it (the side and south walls, and
@@ -203,13 +268,59 @@ def build_rim(yb, s, rim_px, lvl_rim, hr):
     top = yb + s
     for x in np.nonzero(rim_px.any(axis=0))[0]:
         for a, b in _runs(rim_px[:, x]):
-            base = top[b + 1, x] if b + 1 < h else None
+            base = top[b + 1, x] if b + 1 < h and (inside is None or inside[b + 1, x]) else None
             for i, r in enumerate(range(b, a - 1, -1)):
                 if base is not None and i < hr and base + i < lvl_rim:
                     yb[r, x], s[r, x] = base + i, 1.0
                 else:
                     yb[r, x], s[r, x] = lvl_rim, 0.0
     return yb, s
+
+
+def rim_skirts(rm, top):
+    """(V, F, UV): the outer sides of a room's walls, down to the ground
+    outside, where the drawing shows none (the side away from the room).
+    Each takes the colour of the wall's own edge pixel."""
+    got = rm.meta.get("rim")
+    if not got:
+        return None
+    rim_px, lvl, inside = got
+    blocks = getattr(build_blocks, "built", None)
+    if blocks is not None and blocks.shape == rim_px.shape:
+        rim_px = rim_px & ~blocks       # a bed against the wall is no wall
+    h, w = rim_px.shape
+    quads, uvs = [], []
+    for y in range(h):
+        for x in range(w):
+            if not rim_px[y, x]:
+                continue
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                yy, xx = y + dy, x + dx
+                if not (0 <= yy < h and 0 <= xx < w) or rim_px[yy, xx] or inside[yy, xx] \
+                        or (blocks is not None and blocks[yy, xx]):
+                    continue
+                g = top[yy, xx]
+                if g >= lvl - 0.5:
+                    continue
+                if dy == 1:      # south side: a vertical face at the pixel's lower edge
+                    z = y + 1 + lvl
+                    q = [(x, lvl, z), (x + 1, lvl, z), (x + 1, g, z), (x, g, z)]
+                elif dy == -1:   # north side
+                    z = y + lvl
+                    q = [(x + 1, lvl, z), (x, lvl, z), (x, g, z), (x + 1, g, z)]
+                else:            # east / west side, along the pixel's depth
+                    xe = x + 1 if dx == 1 else x
+                    z0, z1 = y + lvl, y + 1 + lvl
+                    q = [(xe, lvl, z0), (xe, lvl, z1), (xe, g, z1), (xe, g, z0)]
+                    if dx == -1:
+                        q = q[::-1]
+                quads.append(q)
+                uvs.append((x, y))
+    if not quads:
+        return None
+    V = np.array(quads, float).reshape(-1, 3)
+    F = np.arange(len(V)).reshape(-1, 4)
+    return V, F, np.array(uvs, float)
 
 
 def _cell_values(C, shape):
@@ -275,10 +386,11 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
     # indoors, the walls go round at one height (rim)
     rr = rim(rm, K0, alab, alevel)
     if rr is not None:
-        cells, lvl_rim, hr = rr
+        cells, lvl_rim, hr, inside = rr
         rim_px = _cells(cells, (h, w)) & ~hidden & ~covered
-        yb, s = build_rim(yb, s, rim_px, lvl_rim, hr)
+        yb, s = build_rim(yb, s, rim_px, lvl_rim, hr, _cells(inside, (h, w)))
         flat = flat | (rim_px & (s == 0))
+        rm.meta["rim"] = (rim_px, lvl_rim, _cells(inside, (h, w)))
     return yb, s, flat | st_m
 
 
@@ -561,7 +673,8 @@ def build(rm, kinds, things=None):
     shapes += rest
     solid = OB.mask(rm)
     yb, s, flat = ground(rm, K0, K1, alpha, covered=covered, ocls=ocls, solid=solid)
-    yb, s = build_blocks(yb, s, ocls, solid & ~covered & ~alpha)
+    walk_px = _cells(rm.cls == RE.CLASS_GROUND, (h, w)) & ~solid
+    yb, s = build_blocks(yb, s, ocls, solid & ~covered & ~alpha, pic, walk_px)
     # the ground under a thing is one level, the one it rests at (columns
     # carried on from different things south of it would stand as walls)
     carried = ~_cells(np.isin(K0, KEEP_LEVEL), (h, w))
@@ -642,6 +755,9 @@ def build(rm, kinds, things=None):
             part = MS.build(gyb[y0:y1, x0:x1], gs_[y0:y1, x0:x1], ~m[y0:y1, x0:x1],
                             ox=x0, oz=y0, px0=x0, py0=y0)
             parts.append(_kept(*part))
+    sk = rim_skirts(rm, top)
+    if sk is not None:
+        parts.append(sk)
     V, F, UV = _join(parts)
     report = check(groups, top, flat & ~covered & ~bodies & ~alpha, K0, rm)
     stood, fronts = upright_overhead(groups, s, alpha)

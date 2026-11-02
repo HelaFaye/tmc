@@ -143,22 +143,74 @@
    "n-20261028003350-bwcz"
   ]
  },
+ "6bfc8769:0:551": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:552": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:553": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:554": {
+  "class": "block",
+  "notes": [
+   "room 128_04 stool_l",
+   "room 128_04 stool_r"
+  ]
+ },
  "6bfc8769:0:555": {
   "class": "furniture",
   "notes": [
-   "n-20261028020932-pl97"
+   "n-20261028020932-pl97",
+   "room 128_04 bed"
+  ]
+ },
+ "6bfc8769:0:556": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 bed"
+  ]
+ },
+ "6bfc8769:0:567": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
   ]
  },
  "6bfc8769:0:568": {
   "class": "furniture",
   "notes": [
-   "n-20261028020812-dvas"
+   "n-20261028020812-dvas",
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:569": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
   ]
  },
  "6bfc8769:0:571": {
   "class": "furniture",
   "notes": [
-   "n-20261028020903-8pc5"
+   "n-20261028020903-8pc5",
+   "room 128_04 bed"
+  ]
+ },
+ "6bfc8769:0:572": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 bed"
   ]
  },
  "6bfc8769:0:574": {
@@ -167,16 +219,82 @@
    "n-20261028003257-l5ic"
   ]
  },
+ "6bfc8769:0:583": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:584": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:585": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 table"
+  ]
+ },
+ "6bfc8769:0:587": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 bed"
+  ]
+ },
+ "6bfc8769:0:588": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 bed"
+  ]
+ },
  "6bfc8769:0:635": {
   "class": "block",
   "notes": [
    "n-20261028021018-ler5"
   ]
  },
+ "6bfc8769:0:636": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 sofa"
+  ]
+ },
+ "6bfc8769:0:638": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 sofa"
+  ]
+ },
+ "6bfc8769:0:639": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 sofa"
+  ]
+ },
  "6bfc8769:0:641": {
   "class": "wall_decor",
   "notes": [
    "n-20261028003600-zwwe"
+  ]
+ },
+ "6bfc8769:0:652": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 sofa"
+  ]
+ },
+ "6bfc8769:0:654": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 sofa"
+  ]
+ },
+ "6bfc8769:0:655": {
+  "class": "furniture",
+  "notes": [
+   "room 128_04 sofa"
   ]
  },
  "71a68fd1:1:1423": {

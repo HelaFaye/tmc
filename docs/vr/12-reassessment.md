@@ -263,3 +263,20 @@ name a game object, not the tile; those tiles are not classed.
   - Wall rows rising straight from a floor in front are the face; every
     other wall pixel is the wall's top, level at that height. The side and
     south walls, and the corners, are level.
+
+**7. Furniture, shadows and walls meeting the floor** (notes on 128_04).
+- *Shadows are floor.* Pixels of a thing in the floor's hue, darker, are
+  its shadow, so the gap under a table shows instead of the table running
+  down to the floor.
+- *A thing's front is its darker bottom band* (a table's edge and legs, a
+  bed's side): upright. Above it the thing is level at the front's height,
+  or at half its drawn rows when it has no clear front.
+- *Furniture is one piece*, filled row by row between its outermost solid
+  pixels, so a runner in the carpet's colour does not cut a table in two.
+- The bedroom's sofa, bed, table and stools are classed by the cells they
+  cover (`vr/tiles/objects.json`).
+- *Walls rise only from the floor inside a room.* The south wall had stood
+  up from the ground outside it.
+- *Walls meet the ground.* A room's walls get skirts down to the ground on
+  their outer sides, where the drawing shows none, in their edge pixel's
+  colour (to be replaced by cloned texture).
