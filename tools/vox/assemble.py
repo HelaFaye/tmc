@@ -237,13 +237,42 @@ def build_blocks(yb, s, ocls, solid, pic=None, walk=None):
     return yb, s
 
 
-def rim(rm, K0, alab, alevel, things=None):
+def _flanked(core, extra, reach=3):
+    """Cells of extra with core cells on both sides along one line (north
+    and south, or west and east) within reach cells, across extra cells:
+    a window or a painting in a wall, which goes on past it both ways."""
+    rows, cols = core.shape
+    out = np.zeros_like(extra)
+    for cy, cx in zip(*np.nonzero(extra)):
+        for d in (((-1, 0), (1, 0)), ((0, -1), (0, 1))):
+            ok = True
+            for dy, dx in d:
+                y, x, hit = cy, cx, False
+                for _ in range(reach):
+                    y, x = y + dy, x + dx
+                    if not (0 <= y < rows and 0 <= x < cols):
+                        break
+                    if core[y, x]:
+                        hit = True
+                        break
+                    if not extra[y, x]:
+                        break
+                ok &= hit
+            if ok:
+                out[cy, cx] = True
+                break
+    return out
+
+
+def rim(rm, K0, alab, alevel, things=None, decor=None):
     """(rim cells, its level, its height) for a room: when its main floor
     (the largest walkable area not reaching the room's edge) is walled in
     (RIM_ENCLOSED of the cells round it blocked; doors are small gaps), the
     blocked cells joined to that ring of walls. Its height is the north
     wall's: the median run of face cells north of the main floor. None
-    when the main floor is open (outdoors)."""
+    when the main floor is open (outdoors). decor: cells that may be part
+    of a wall when it goes on both sides of them (a window, a painting:
+    the catalogue calls them props)."""
     rows, cols = rm.cls.shape
     if not alevel:
         return None
@@ -264,6 +293,8 @@ def rim(rm, K0, alab, alevel, things=None):
     wallish = blocked & np.isin(K0, ["face", "top", "void", None])
     if things is not None:
         wallish &= ~things          # furniture and other named things are no wall
+    if decor is not None:
+        wallish |= _flanked(wallish, decor & blocked & ~wallish)
     lab, n = RE._label(wallish)
     joined = np.unique(lab[ring & (lab > 0)])
     cells = np.isin(lab, joined) & (lab > 0)
@@ -352,12 +383,127 @@ def rim_skirts(rm, top):
                     if dx == -1:
                         q = q[::-1]
                 quads.append(q)
-                uvs.append((x, y))
+                uvs.append((x + 0.5, y + 0.5))      # the pixel's centre, as mesh.build's
     if not quads:
         return None
     V = np.array(quads, float).reshape(-1, 3)
     F = np.arange(len(V)).reshape(-1, 4)
     return V, F, np.array(uvs, float)
+
+
+DECOR_DIFF = 40         # colour difference from the wall's own pattern: the art
+DECOR_INSET = 0.05      # px: art hangs this far in front of its wall
+
+
+def side_decor(cells, inside, rim_px, s, lvl_rim, hr):
+    """Windows and paintings in a room's side walls: [{px, side, xw, floor,
+    top}]. The game draws them facing the camera on the wall's top band;
+    they belong on the wall's inner face (x = xw), facing into the room
+    (side "e": an east wall, facing west). Art on the north wall stands on
+    its face already."""
+    rows, cols = cells.shape
+    lab, n = RE._label(cells)
+    out = []
+    for j in range(1, n + 1):
+        g = lab == j
+        ys, xs = np.nonzero(g)
+        west = east = 0
+        for cy in np.unique(ys):
+            x0, x1 = xs[ys == cy].min(), xs[ys == cy].max()
+            west += bool(inside[cy, max(0, x0 - 3):x0].any())
+            east += bool(inside[cy, x1 + 1:x1 + 4].any())
+        if west == east:
+            continue
+        px = _cells(g, rim_px.shape) & rim_px & (s == 0)
+        if px.sum() < 32:
+            continue
+        pys, pxs = np.nonzero(px)
+        r = int(np.median(pys))
+        if west > east:             # the room lies west: an east wall
+            x = int(pxs.min())
+            while x > 0 and rim_px[r, x - 1]:
+                x -= 1
+            side, xw = "e", float(x)
+        else:
+            x = int(pxs.max())
+            while x + 1 < rim_px.shape[1] and rim_px[r, x + 1]:
+                x += 1
+            side, xw = "w", float(x + 1)
+        out.append({"px": px, "side": side, "xw": xw, "floor": lvl_rim - hr, "top": lvl_rim})
+    return out
+
+
+def _wall_pattern(pic, px, rim_px):
+    """The wall under px: each pixel the colour of its column's nearest wall
+    pixel above or below px (a side wall's stones run along it)."""
+    out = pic.copy()
+    h = pic.shape[0]
+    clean = rim_px & ~px
+    for x in np.nonzero(px.any(axis=0))[0]:
+        ys = np.nonzero(px[:, x])[0]
+        a, b = int(ys.min()), int(ys.max())
+        # up to 8 clean wall rows next to it, above (else below), repeated
+        # away from them so the wall's pattern carries on across
+        for start, step in ((a - 1, -1), (b + 1, 1)):
+            src = []
+            y = start
+            while 0 <= y < h and clean[y, x] and len(src) < 8:
+                src.append(y)
+                y += step
+            if src:
+                break
+        if not src:
+            continue
+        edge = a if step == -1 else b
+        for y in ys:
+            dist = abs(int(y) - edge)          # 0 at the edge next to src
+            out[y, x] = pic[src[dist % len(src)], x]
+    return out
+
+
+def decor_panels(rm, pic, paint):
+    """(V, F, UV, art) for the side walls' windows and paintings: each art
+    pixel a quad on the wall's inner face, keeping the art upright and its
+    size (scaled down when taller than the wall); and the wall's top under
+    it painted (in paint, the texture's lower half) in the wall's own
+    pattern. art: the pixels moved."""
+    h, w = pic.shape[:2]
+    art_all = np.zeros((h, w), bool)
+    quads, uvs = [], []
+    for d in rm.meta.get("side_decor") or []:
+        px = d["px"]
+        rim_px = rm.meta["rim"][0]
+        wall = _wall_pattern(pic, px, rim_px)
+        diff = np.abs(pic.astype(int) - wall.astype(int)).sum(axis=2)
+        art = px & (diff > DECOR_DIFF)
+        if art.sum() < 16:
+            continue
+        paint[px] = wall[px]
+        art_all |= px
+        ys, xs = np.nonzero(art)
+        y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+        W, Hd = x1 - x0 + 1, y1 - y0 + 1
+        hr = d["top"] - d["floor"]
+        k = min(1.0, (hr - 2.0) / Hd) if hr > 2 else 1.0
+        ybot = d["floor"] + max(1.0, (hr - Hd * k) / 2.0)
+        zc = (y0 + y1 + 1) / 2.0 + d["top"]
+        east = d["side"] == "e"
+        xq = d["xw"] - DECOR_INSET if east else d["xw"] + DECOR_INSET
+        for y, x in zip(ys, xs):
+            i, jr = x - x0, y1 - y
+            ya, yt = ybot + jr * k, ybot + (jr + 1) * k
+            if east:        # facing west: the art's left is north
+                za, zb = zc - W * k / 2 + i * k, zc - W * k / 2 + (i + 1) * k
+                q = [(xq, ya, za), (xq, ya, zb), (xq, yt, zb), (xq, yt, za)]
+            else:           # facing east: the art's left is south
+                za, zb = zc + W * k / 2 - (i + 1) * k, zc + W * k / 2 - i * k
+                q = [(xq, yt, za), (xq, yt, zb), (xq, ya, zb), (xq, ya, za)]
+            quads.append(q)
+            uvs.append((x + 0.5, y + 0.5))
+    if not quads:
+        return None, art_all
+    V = np.array(quads, float).reshape(-1, 3)
+    return (V, np.arange(len(V)).reshape(-1, 4), np.array(uvs, float)), art_all
 
 
 def _cell_values(C, shape):
@@ -385,9 +531,13 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
         things_c = np.isin(ocls[8::16, 8::16][:rows, :cols], DECAL + BLOCK + FENCE)
     flights = ST.flights(rm)
     H, alab, alevel = LV.solve(rm, K0, a_cells, H, flights, things_c)
+    # a window or a painting in a wall (the catalogue's props, or named so)
+    decor_c = np.isin(K0, ["prop", "trunk"]) & ~things_c
+    if ocls is not None:
+        decor_c |= ocls[8::16, 8::16][:rows, :cols] == "wall_decor"
     # indoors, floors are level unless steps say otherwise: every walkable
     # area at the main floor's level, the top of a flight its rise above
-    if rim(rm, K0, alab, alevel) is not None:
+    if rim(rm, K0, alab, alevel, decor=decor_c) is not None:
         size = np.bincount(alab.ravel(), minlength=max(alevel) + 1)
         border = np.zeros((rows, cols), bool)
         border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
@@ -445,7 +595,8 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
     # a walled room's rim)
     rm.meta["wall_px"] = (s >= 0.9) & np.isin(k0, ["face", "top"]) & ~named
     # indoors, the walls go round at one height (rim)
-    rr = rim(rm, K0, alab, alevel)
+    rr = rim(rm, K0, alab, alevel, decor=decor_c)
+    rm.meta.pop("side_decor", None)
     if rr is not None:
         cells, lvl_rim, hr, inside, outer = rr
         out_px = _cells(outer, (h, w))
@@ -455,6 +606,7 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
         flat = flat | (rim_px & (s == 0))
         rm.meta["rim"] = (rim_px, lvl_rim, _cells(inside, (h, w)), lvl_rim - hr)
         rm.meta["wall_px"] = rm.meta["wall_px"] | rim_px
+        rm.meta["side_decor"] = side_decor(decor_c & cells, inside, rim_px, s, lvl_rim, hr)
     return yb, s, flat | st_m
 
 
@@ -802,12 +954,18 @@ def build(rm, kinds, things=None):
     # outline). They are textured from a copy of the picture below it, in
     # which each body pixel has the colour of its column's front wall.
     paint = _wall_paint(pic, bodies, yb + s)
-    if bodies.any():
+    # side walls' windows and paintings hang on the walls' inner faces; the
+    # wall tops they were drawn on take the walls' own pattern
+    panels, decor_top = decor_panels(rm, pic, paint)
+    repainted = bodies | decor_top
+    if repainted.any():
         u = np.clip(gUV[:, 0].astype(int), 0, w - 1)
         v = np.clip(gUV[:, 1].astype(int), 0, h - 1)
         gUV = gUV.copy()
-        gUV[bodies[v, u], 1] += h
+        gUV[repainted[v, u], 1] += h
     parts = [(gV, gF, gUV)]
+    if panels is not None:
+        parts.append(panels)
     for m in _groups(_cells(K1 == "deck", (h, w)) & alpha):
         groups["deck"].append((m, flat_on(m, top, level=lvl)))
     for kind, gs in groups.items():
