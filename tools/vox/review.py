@@ -8,6 +8,9 @@ For each room it writes, under OUT:
   data/<rid>.json       its labels (classify.py)
   vox/<rid>_game.png    the room built, seen from the game's camera
   vox/<rid>_turned.png  the build from yaw 35 and -35 (pitch 30), side by side
+  vox/<rid>_open.png    the same with the walls faded (a viewer's view into a room)
+  vox/<rid>.mesh.gz, vox/<rid>_tex.png  the build for the page's live 3D view
+                        (export.py)
 and then OUT/rooms.js, the index of every room done so far.
 
 The build is assemble.py's (doc 12): tile kinds (the catalogue's first
@@ -33,6 +36,7 @@ from PIL import Image
 
 from . import assemble as AS
 from . import classify as CL
+from . import export as EX
 from . import glrender as GL
 from . import overhead as OV
 from . import room as RM
@@ -83,9 +87,24 @@ def do_room(dump, out, vox=True, kinds=None):
             sheet.paste(v, (x, 0))
             x += v.width + 8
         sheet.save(out / "vox" / f"{rm.rid}_turned.png")
+        # the live view's mesh, and the turned views with the walls faded
+        Va, Fa, UVa = np.asarray(V, float), np.asarray(F), np.asarray(UV, float)
+        wall = EX.wall_quads(rm, UVa)
+        EX.write(out / "vox" / rm.rid, Va, Fa, UVa, tex, wall)
+        if wall is not None and wall.any():
+            op = GL.render_views(Va, Fa[~wall], UVa[~wall], tex, pic.shape[:2], [(35, 30), (-35, 30)])
+            ov = [Image.fromarray(v) for v in op]
+            osheet = Image.new("RGB", (sum(v.width for v in ov) + 8, max(v.height for v in ov)), (22, 24, 30))
+            x = 0
+            for v in ov:
+                osheet.paste(v, (x, 0))
+                x += v.width + 8
+            osheet.save(out / "vox" / f"{rm.rid}_open.png")
+            rec["vox_open"] = f"vox/{rm.rid}_open.png"
         rec.update(vox_game=f"vox/{rm.rid}_game.png", vox_turned=f"vox/{rm.rid}_turned.png",
                    turned_w=sheet.width, turned_h=sheet.height, vox_build=BUILD,
-                   vox_date=time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()), vox_check=report)
+                   vox_date=time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()), vox_check=report,
+                   vox_mesh=f"vox/{rm.rid}.mesh.gz", vox_tex=f"vox/{rm.rid}_tex.png")
     (out / "data" / f"{rm.rid}.json").write_text(json.dumps(rec))
     return rec
 

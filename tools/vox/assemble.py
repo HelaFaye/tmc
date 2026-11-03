@@ -441,6 +441,9 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
     st_m = st_m & ~covered & ~hidden
     st_m = st_m & ~named
     yb, s = _walk(lvl, flat, under, upright, st_m, st_yb, st_s, cap)
+    # walls a viewer may fade to see into a room: upright faces (and, below,
+    # a walled room's rim)
+    rm.meta["wall_px"] = (s >= 0.9) & np.isin(k0, ["face", "top"]) & ~named
     # indoors, the walls go round at one height (rim)
     rr = rim(rm, K0, alab, alevel)
     if rr is not None:
@@ -451,6 +454,7 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
         yb, s = build_rim(yb, s, rim_px, lvl_rim, hr, _cells(inside, (h, w)), out_px)
         flat = flat | (rim_px & (s == 0))
         rm.meta["rim"] = (rim_px, lvl_rim, _cells(inside, (h, w)), lvl_rim - hr)
+        rm.meta["wall_px"] = rm.meta["wall_px"] | rim_px
     return yb, s, flat | st_m
 
 
@@ -735,6 +739,8 @@ def build(rm, kinds, things=None):
     yb, s, flat = ground(rm, K0, K1, alpha, covered=covered, ocls=ocls, solid=solid)
     walk_px = _cells(rm.cls == RE.CLASS_GROUND, (h, w)) & ~solid
     yb, s = build_blocks(yb, s, ocls, solid & ~covered & ~alpha, pic, walk_px)
+    if "wall_px" in rm.meta:
+        rm.meta["wall_px"] = rm.meta["wall_px"] & ~build_blocks.built   # a sofa is no wall
     # the ground under a thing is one level, the one it rests at (columns
     # carried on from different things south of it would stand as walls)
     carried = ~_cells(np.isin(K0, KEEP_LEVEL), (h, w))
