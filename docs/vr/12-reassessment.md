@@ -280,3 +280,10 @@ name a game object, not the tile; those tiles are not classed.
 - *Walls meet the ground.* A room's walls get skirts down to the ground on
   their outer sides, where the drawing shows none, in their edge pixel's
   colour (to be replaced by cloned texture).
+- *Indoors, floors are level unless steps say otherwise.* In a walled room
+  every walkable area is at the main floor's level, and the area at the
+  top of a flight is that flight's rise above it (the castle hall's
+  galleries and throne). The ground outside the walls (the filler reaching
+  the room's edge) is at the floor's level, and wall skirts go down to the
+  floor, no lower: the streaks below the castle hall were skirts hanging to
+  filler 32 px down.

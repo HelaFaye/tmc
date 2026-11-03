@@ -256,7 +256,10 @@ def rim(rm, K0, alab, alevel, things=None):
     # the room's inside: its walkable areas that do not reach its edge (a
     # wall rises only from the floor inside it, not from the ground outside)
     inside = np.isin(alab, inner)
-    return cells, alevel[main] + hr, hr, inside
+    # the ground outside the walls (reaching the room's edge) is the
+    # filler round the room, at the room's floor level
+    outer = (alab > 0) & ~inside
+    return cells, alevel[main] + hr, hr, inside, outer
 
 
 def build_rim(yb, s, rim_px, lvl_rim, hr, inside=None):
@@ -284,7 +287,7 @@ def rim_skirts(rm, top):
     got = rm.meta.get("rim")
     if not got:
         return None
-    rim_px, lvl, inside = got
+    rim_px, lvl, inside, floor = got
     blocks = getattr(build_blocks, "built", None)
     if blocks is not None and blocks.shape == rim_px.shape:
         rim_px = rim_px & ~blocks       # a bed against the wall is no wall
@@ -299,7 +302,7 @@ def rim_skirts(rm, top):
                 if not (0 <= yy < h and 0 <= xx < w) or rim_px[yy, xx] or inside[yy, xx] \
                         or (blocks is not None and blocks[yy, xx]):
                     continue
-                g = top[yy, xx]
+                g = max(top[yy, xx], floor)       # down to the floor, no lower
                 if g >= lvl - 0.5:
                     continue
                 if dy == 1:      # south side: a vertical face at the pixel's lower edge
@@ -346,7 +349,28 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
     things_c = np.zeros((rows, cols), bool)
     if ocls is not None:
         things_c = np.isin(ocls[8::16, 8::16][:rows, :cols], DECAL + BLOCK + FENCE)
-    H, alab, alevel = LV.solve(rm, K0, a_cells, H, ST.flights(rm), things_c)
+    flights = ST.flights(rm)
+    H, alab, alevel = LV.solve(rm, K0, a_cells, H, flights, things_c)
+    # indoors, floors are level unless steps say otherwise: every walkable
+    # area at the main floor's level, the top of a flight its rise above
+    if rim(rm, K0, alab, alevel) is not None:
+        size = np.bincount(alab.ravel(), minlength=max(alevel) + 1)
+        border = np.zeros((rows, cols), bool)
+        border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
+        inner = [j for j in alevel if not (border & (alab == j)).any()]
+        main = max(inner, key=lambda j: size[j])
+        base = alevel[main]
+        new = {j: base for j in alevel}
+        for f in flights:
+            x0, y0, x1, y1 = f["rect"]
+            if f.get("up") != "n" or y0 == 0:
+                continue
+            above = np.unique(alab[y0 - 1, x0:x1 + 1])
+            for j in above[above > 0]:
+                new[int(j)] = base + float(f["top"] - f["base"])
+        for j, v in new.items():
+            H[alab == j] = v
+        alevel = new
     # a named thing on a wall cell sits at the level of the walkable ground
     # beside it (the posts at the top of steps on the upper field)
     # and so does any other flat or edge-top cell in no walkable area (a
@@ -386,11 +410,13 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
     # indoors, the walls go round at one height (rim)
     rr = rim(rm, K0, alab, alevel)
     if rr is not None:
-        cells, lvl_rim, hr, inside = rr
+        cells, lvl_rim, hr, inside, outer = rr
+        out_px = _cells(outer, (h, w))
+        yb[out_px], s[out_px] = lvl_rim - hr, 0.0
         rim_px = _cells(cells, (h, w)) & ~hidden & ~covered
         yb, s = build_rim(yb, s, rim_px, lvl_rim, hr, _cells(inside, (h, w)))
         flat = flat | (rim_px & (s == 0))
-        rm.meta["rim"] = (rim_px, lvl_rim, _cells(inside, (h, w)))
+        rm.meta["rim"] = (rim_px, lvl_rim, _cells(inside, (h, w)), lvl_rim - hr)
     return yb, s, flat | st_m
 
 
