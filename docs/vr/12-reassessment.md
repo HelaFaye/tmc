@@ -287,3 +287,11 @@ name a game object, not the tile; those tiles are not classed.
   the room's edge) is at the floor's level, and wall skirts go down to the
   floor, no lower: the streaks below the castle hall were skirts hanging to
   filler 32 px down.
+- *Curved furniture.* When a thing's top, its dithering smoothed out,
+  changes brightness steadily down its rows, its shading draws a curve (a
+  sofa's seat and back): the top is rounded, rising from the front to a
+  crest. A plain top (a table's wood) stays level.
+- *A wall behind furniture rises from the floor* like any other inside
+  wall; the bed had stood in front of a dark overhang.
+- Still open in 128_04: the bed's headboard should stand upright at its
+  back, and its two edge posts come out as dark strips.

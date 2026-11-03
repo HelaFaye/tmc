@@ -68,6 +68,8 @@ BLOCK = ("block", "furniture", "basin")                   # a lump standing on t
 FENCE = ("fence", "banner")                               # upright from the floor, low
 RIM_ENCLOSED = 0.85     # share of the cells round the main floor blocked: walled in
 FENCE_MAX = 16          # px: a fence or a banner's post is at most this tall
+CURVE_CORR = 0.45       # a top whose brightness follows its rows this closely is curved
+CURVE_SPREAD = 8.0      # luminance: and spreads at least this much
 FRONT_MIN = 4           # px: a darker band this tall at a thing's bottom is its front
 SHADOW_HUE = 25         # degrees: a shadow keeps the floor's hue ...
 SHADOW_SAT = 0.25       # ... and about its saturation ...
@@ -145,6 +147,23 @@ def _shadow(pic, m, walk):
         (lum < SHADOW_DARK * fl) & (lum > 0.25 * fl)
 
 
+def _curved(lum, m, hb):
+    """Whether m's top (above its front band) is shaded as a curve: once
+    dithering is smoothed (3x3 mean), its brightness changes steadily down
+    the rows (|correlation| of row and brightness above CURVE_CORR)."""
+    h, w = lum.shape
+    P = np.pad(lum, 1, mode="edge")
+    sm = sum(P[1 + dy:h + 1 + dy, 1 + dx:w + 1 + dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1)) / 9.0
+    ys, xs = np.nonzero(m)
+    top = ys < ys.max() - hb
+    if top.sum() < 24:
+        return False
+    r, v = ys[top].astype(float), sm[ys[top], xs[top]]
+    if r.std() == 0 or v.std() < CURVE_SPREAD:
+        return False
+    return abs(float(np.corrcoef(r, v)[0, 1])) > CURVE_CORR
+
+
 def build_blocks(yb, s, ocls, solid, pic=None, walk=None):
     """Blocks (a stone, a crate) and furniture (a table, a bed) stand on the
     floor in front of them. Their shadow on the floor stays floor. Their
@@ -197,12 +216,21 @@ def build_blocks(yb, s, ocls, solid, pic=None, walk=None):
                 hb = hf
         if (ocls[m] == "basin").mean() > 0.5:
             hb = min(hb, BASIN_MAX)
+        # a shading gradient over the top (dithering smoothed out) draws a
+        # curve: a sofa's seat and back, a cushion. Then the top is rounded,
+        # rising from the front to a crest; a plain top stays level
+        rounded = lum is not None and _curved(lum, m, hb)
         built |= m
         for x in cols:
             for a, b in _runs(m[:, x]):
+                n_top = (b - a + 1) - int(np.ceil(hb))
+                cap = OV._cap_rows(n_top, peak=min(hb, n_top / 2.0)) if rounded and n_top > 2 else None
                 for i, r in enumerate(range(b, a - 1, -1)):
                     if i < hb:
                         yb[r, x], s[r, x] = base + i, 1.0
+                    elif cap is not None:
+                        k = i - int(np.ceil(hb))
+                        yb[r, x], s[r, x] = base + hb + cap[k], cap[k + 1] - cap[k]
                     else:
                         yb[r, x], s[r, x] = base + hb, 0.0
     build_blocks.built = built
@@ -262,7 +290,7 @@ def rim(rm, K0, alab, alevel, things=None):
     return cells, alevel[main] + hr, hr, inside, outer
 
 
-def build_rim(yb, s, rim_px, lvl_rim, hr, inside=None):
+def build_rim(yb, s, rim_px, lvl_rim, hr, inside=None, outer=None):
     """A room's walls at one height: rows rising straight from a floor in
     front of them are the wall's face, up to the rim's height; every other
     rim pixel is the wall's top, level at it (the side and south walls, and
@@ -271,7 +299,13 @@ def build_rim(yb, s, rim_px, lvl_rim, hr, inside=None):
     top = yb + s
     for x in np.nonzero(rim_px.any(axis=0))[0]:
         for a, b in _runs(rim_px[:, x]):
-            base = top[b + 1, x] if b + 1 < h and (inside is None or inside[b + 1, x]) else None
+            base = None
+            if b + 1 < h:
+                if inside is None or inside[b + 1, x]:
+                    base = top[b + 1, x]
+                elif outer is not None and not outer[b + 1, x]:
+                    # a wall behind furniture still rises from the floor
+                    base = lvl_rim - hr
             for i, r in enumerate(range(b, a - 1, -1)):
                 if base is not None and i < hr and base + i < lvl_rim:
                     yb[r, x], s[r, x] = base + i, 1.0
@@ -414,7 +448,7 @@ def ground(rm, K0, K1, overhead_alpha, covered=None, ocls=None, solid=None):
         out_px = _cells(outer, (h, w))
         yb[out_px], s[out_px] = lvl_rim - hr, 0.0
         rim_px = _cells(cells, (h, w)) & ~hidden & ~covered
-        yb, s = build_rim(yb, s, rim_px, lvl_rim, hr, _cells(inside, (h, w)))
+        yb, s = build_rim(yb, s, rim_px, lvl_rim, hr, _cells(inside, (h, w)), out_px)
         flat = flat | (rim_px & (s == 0))
         rm.meta["rim"] = (rim_px, lvl_rim, _cells(inside, (h, w)), lvl_rim - hr)
     return yb, s, flat | st_m
