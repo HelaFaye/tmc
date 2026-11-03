@@ -295,3 +295,25 @@ name a game object, not the tile; those tiles are not classed.
   wall; the bed had stood in front of a dark overhang.
 - Still open in 128_04: the bed's headboard should stand upright at its
   back, and its two edge posts come out as dark strips.
+
+**8. The review page** (`tools/vox/review.py` writes it; the page itself
+lives with the dumps, not in the repository, because it shows the ROM's
+art).
+- *Live 3D.* Each room's build is written as a compact mesh
+  (`tools/vox/export.py`): one strip per run of pixel quads along a row,
+  quarter-pixel int16 positions, gzip. Hyrule Town goes from 1.37 million
+  quads to 289 thousand, 3.6 MB. The page draws it with WebGL2, with no
+  library, so it works offline too (through a local web server:
+  `python3 -m http.server` in the page's folder).
+- *Fading walls.* Every quad carries a wall flag (upright faces and a
+  room's walls, not the furniture against them). The viewer fades walls on
+  a toggle and when the camera comes close; the turned views have a
+  walls-faded copy. Previews keep the walls by default, so room shapes and
+  wall heights can be judged.
+- *Free-form notes.* Drag on any room's picture to outline an area and
+  write about it; notes show on the picture as pins and boxes. Every view
+  has a link (mode, room, spot or area, tile), a "Copy link" button and a
+  "Go to" box for links.
+- *Offline and summaries.* Without the shared database (a local copy),
+  reviews and notes save in the browser. "Export summary" writes every
+  review and note, with links and replies, as Markdown and JSON.
