@@ -63,8 +63,45 @@ Values marked *measure* are not known well enough to design around yet.
 - **CPU:** dual-core 240 MHz with an FPU.
 - **Radios:** Wi-Fi and BLE.
 - **USB:** OTG, which can act as a USB host.
-- **PSRAM:** depends on the variant (commonly none or 2 MB); *confirm the module*.
-- **SD card:** a breakout on SPI (or SDMMC 1-bit).
+- **Module:** ESP32-S3FH4R2, so 4 MB of in-package flash and 2 MB of
+  in-package quad PSRAM. The PSRAM holds the page cache for streaming and the
+  audio buffers.
+- **SD card:** a breakout on SPI.
+
+### Wiring without a level shifter
+
+There is no level shifter. ESP32-S3 GPIOs are 3.3 V and **not 5 V tolerant**,
+so before anything is connected:
+
+1. Measure the calculator's TX line at idle (high) with a multimeter, with
+   the calculator running an add-in that has opened the serial port.
+2. Connect directly only if it reads 3.3 V or less. Put about 1 kΩ in series
+   with each signal line to limit current while the two boards disagree, for
+   example during power-up.
+3. If it reads above 3.6 V, connect nothing. Use a level shifter after all, or
+   at least a resistor divider on the calculator-TX to ESP32-RX line.
+4. Connect ground first.
+
+Record the measured voltage here when it is taken.
+
+### Suggested pinout (not decided)
+
+The constraints:
+
+- avoid the strapping pins: GPIO 0, 3, 45 and 46;
+- leave the USB pins (GPIO 19 and 20) free for USB OTG (D4's fallback);
+- keep GPIO 43 and 44 for the UART0 console;
+- GPIO 48 is the board's RGB LED;
+- the in-package PSRAM does not use any exposed pins.
+
+| Function | GPIO | Note |
+|---|---|---|
+| SD CS / MOSI / SCK / MISO | 10 / 11 / 12 / 13 | SPI2 (FSPI) on its native IO_MUX pins, the fastest SPI path |
+| Calculator link TX → calculator RX | 5 | UART1, about 1 kΩ in series |
+| Calculator link RX ← calculator TX | 6 | UART1, about 1 kΩ in series; check the voltage first |
+| I2S BCLK / WS / DOUT (Phase 4) | 7 / 8 / 9 | to an I2S DAC such as a PCM5102A or MAX98357A |
+| Spare | 1, 2, 4 | |
+| USB D− / D+ | 19 / 20 | reserved for USB host |
 
 ## Architecture
 
@@ -204,15 +241,18 @@ numbers, and the D1 decision, all written into this file.
 
 ### Phase 3: the ESP32 storage interface
 
-- **Firmware**, a new ESP-IDF project. It could live in its own repository or
-  under `port/fxcg/esp32/`, modelled on gbagate's layout. It provides:
+- **Firmware**, a new ESP-IDF project in HelaFaye/CasioMini3D, next to the
+  launcher, since every fx-CG50 port shares it. It is modelled on gbagate's
+  layout and provides:
   - the SLIP+CRC link service;
   - FAT on the SD card;
   - commands to list, read, write and checksum files;
   - an installer that copies add-ins and paks into calculator storage;
   - save backup and restore.
-- **Calculator side:** a link client in `port/fxcg/` and a small launcher or
-  file browser add-in. The launcher can be shared by later ports.
+- **Calculator side:**
+  - a link client library and the launcher/file-browser add-in, both in
+    CasioMini3D;
+  - Picori's own use of the client in `port/fxcg/`, in this repository.
 - **Emulation before hardware:** a "SuperMini + SD" board in qemu_esp32, its
   serial port bridged to the calculator side. First that is the host build of
   the link client; later casio-emu, if it gains a serial model (its serial
@@ -278,11 +318,21 @@ numbers, and the D1 decision, all written into this file.
    - The PPU is GPL-3.0, and the calculator build must keep that license's
      obligations.
 
-## Questions for the owner
+## Where the code lives
 
-1. Which SuperMini variant (flash and PSRAM size), and which pins go to the SD
-   breakout?
-2. Is a level shifter planned between the 2.5 mm port and the ESP32?
-3. Which region comes first (USA is assumed)?
-4. Should the ESP32 firmware live in this repository, in gbagate, or in a new
-   repository?
+| Part | Repository |
+|---|---|
+| The Picori port (`port/fxcg/`, paks, build) | HelaFaye/tmc, `fx-cg50` branch |
+| The launcher add-in, the calculator link client, the ESP32 firmware | HelaFaye/CasioMini3D |
+| GB-Link compatibility on the fx-CG50 | HelaFaye/CasioMini3D for now, moved to its own repository later |
+
+## Decided
+
+- **Module:** ESP32-S3FH4R2 (4 MB flash, 2 MB PSRAM).
+- **No level shifter:** see "Wiring without a level shifter".
+- **Repositories:** as in the table above.
+
+## Still open
+
+1. The pinout. The table above is a suggestion.
+2. Which region comes first. USA is assumed.
