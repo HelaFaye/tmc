@@ -4,6 +4,9 @@ Status: plan, November 2026. Nothing below is implemented yet. When this plan
 was written, the `fx-cg50` branch pointed at the same commit as `master`
 (`08f3ada`).
 
+Progress, measurements and decisions as they happen are logged in
+[`fx-cg50-progress.md`](fx-cg50-progress.md).
+
 ## Goal
 
 Run The Minish Cap, built from this decompilation, as a native fx-CG50 add-in.
@@ -21,6 +24,16 @@ multiplayer, against mGBA running the US ROM.
 
 As with the PC port, the player supplies the ROM. No ROM data is ever
 distributed.
+
+## Base
+
+[zeldaret/tmc](https://github.com/zeldaret/tmc) is the decompilation on its
+own: matching C for the GBA. Project Picori (this repository) builds it as a
+native PC game and adds the port layer, region support and portability fixes
+(64-bit pointers, the N64 work for big-endian 32-bit). The calculator port
+starts from Picori's tree, on the `fx-cg50` branch, because the game code here
+already runs outside the GBA. Picori's PC-only parts (SDL, ImGui, the GPU
+renderer, RetroAchievements and so on) stay out of the calculator build.
 
 ## What the code base gives us
 
@@ -105,45 +118,52 @@ The constraints:
 
 ## Architecture
 
+One **launcher** add-in is the only program installed on the calculator. It
+owns the ESP32 link and runs every application it loads from the SD card.
+Applications such as Picori are never installed into storage memory.
+
 ```
- fx-CG50 add-in (gint)                       ESP32-S3 SuperMini
- ┌───────────────────────────────┐           ┌──────────────────────────────┐
- │ src/  decompiled game logic   │           │ SD card: FAT, paks, saves    │
- │ port/fxcg/  C platform layer  │  2.5 mm   │ link service (same protocol) │
- │   video: PPU → scale → dupdate│  serial   │ storage: list/read/write     │
- │   input: keyboard map         │◄─────────►│ installer: add-ins and paks  │
- │   saves: storage memory       │ SLIP+CRC  │ audio: agbplay → I2S         │
- │   ROM pager (D1)              │           │ Wi-Fi: HTTP/WebDAV file share│
- │   link client (optional)      │           │ later: GB-Link/Celio bridge  │
- └───────────────────────────────┘           └──────────────────────────────┘
+ fx-CG50                                              ESP32-S3 SuperMini
+ ┌──────────────────────────────────────────┐         ┌───────────────────────────┐
+ │ Launcher (the one installed .g3a, gint)  │         │ SD card: apps, page paks, │
+ │   link client (SLIP+CRC)                 │ 2.5 mm  │   audio data, saves       │
+ │   page cache in RAM + preloader          │ serial  │ link service              │
+ │   decompressor (deflate)                 │◄───────►│ page server (per pak)     │
+ │   app loader: load, relocate, run        │         │ audio: agbplay -> I2S     │
+ │   service table for apps                 │         │ Wi-Fi file transfer       │
+ │ ┌──────────────────────────────────────┐ │         │ later: GB-Link/Celio      │
+ │ │ App in RAM (Picori): src/ + port/fxcg│ │         └───────────────────────────┘
+ │ │ reads ROM pages through the launcher │ │
+ │ └──────────────────────────────────────┘ │
+ └──────────────────────────────────────────┘
 ```
 
-The game must also run **without** the ESP32: from storage memory, silently.
-The ESP32 adds to the game; it never stands between the game and a frame.
+Internal storage use is kept to a minimum: the launcher's `.g3a` and small
+settings files. Game code, game data and saves live on the SD card and reach
+the calculator through the launcher. (While bringing the game up, before the
+link works, a development build may keep its page pak in storage memory.)
 
 ### Decisions
 
-**D1. ROM access: an MMU-backed 16 MB window, if the spike works.**
+**D1. ROM access: a 16 MB window backed by the launcher's page cache.**
 
-- `gRomData` points at a virtual 16 MB range.
-- A TLB-miss handler fills entries from a software page table. The table
-  points at 4 KB pages held in a RAM cache, which is loaded from the paks.
-- The 121 pointer sites keep working unchanged.
-- The SH-4 UTLB has only 64 entries, so a refill handler is required anyway.
-  When it can do I/O, misses can also stream pages.
+- `gRomData` points at a virtual 16 MB range, so the 121 direct pointer sites
+  keep working unchanged.
+- A TLB-miss handler maps each 4 KB ROM page to its copy in the RAM page
+  cache. The SH-4 UTLB has only 64 entries, so a software refill from a page
+  table is needed anyway.
+- A page that is not cached is a miss: the game waits while the launcher
+  fetches it. Preloading (D4) exists to make misses rare.
 - **Fallback:** if gint's exception handling makes this impractical, convert
-  the 121 sites to an accessor macro and keep only the measured working set.
-  The PC build can check that the converted code is exactly equivalent.
-- Either way, phase 0 measures the real working set first. Only pages the game
-  touches ship. Graphics and sound already come from the asset paks, not
-  `gRomData`.
+  the 121 sites to an accessor macro. The PC build can check that the
+  converted code is exactly equivalent.
 
 **D2. Audio runs on the ESP32.**
 
 - The calculator sends m4a engine events: song start and stop, sound effects,
   volume and tempo, stamped with the game frame.
-- The ESP32 runs agbplay and drives an I2S DAC or PWM.
-- Without the ESP32, the game is silent.
+- The ESP32 runs agbplay from audio data on its SD card and drives an I2S DAC
+  or PWM. Audio data never crosses the link.
 
 **D3. Video: VirtuaPPU at 240×160, scaled to 336×224 (×1.4) or shown 1:1.**
 
@@ -151,143 +171,205 @@ The ESP32 adds to the game; it never stands between the game and a frame.
   are duplicated.
 - Optionally, widescreen 384×160 at 1:1, using the existing widescreen support.
 - Game logic always runs at 60 ticks per second. If it has to, rendering drops
-  to every second frame. Frame time is the main performance risk.
+  to every second frame. Frame time is a main performance risk.
 
-**D4. Transport: the 2.5 mm port first, USB as the fallback.**
+**D4. Transport and preloading: the 2.5 mm port, with room-level preloading.**
 
-- At 115,200 baud the link carries about 11 KB/s. That is enough for audio
-  events, saves and link play, but loading a 4 KB page takes about 0.35 s.
-- So streaming means **bulk loads** at boot, at room transitions, and when
-  installing. It does not mean demand paging inside a frame.
-- If the SCIF runs reliably at about 1–2 Mbaud, room-level prefetch becomes
-  practical.
-- The ESP32-S3 can be a USB host for gint's USB device. Measure that path too
-  before committing to an ESP32 board revision.
 - **Framing:** SLIP with a CRC, reusing `link_proto.{h,c}` from
   HelaFaye/gbagate, where it is already tested.
+- **Link speed** (8N1, ten bits per byte, before protocol overhead): about
+  11 KB/s at 115,200 baud, the OS's limit; about 90 KB/s at 921,600 baud, if the
+  SH7305 SCIF runs that fast when driven directly. The real limit is a Phase 0
+  device measurement.
+- **What a room needs** is measured (see Phase 0 results): a small baseline
+  that stays resident, plus each room's own pages, compressed.
+- **Preloading:**
+  - At launch, the baseline and the starting room's pages are loaded before
+    the game starts.
+  - During play, the preloader fetches the pages of the rooms reachable from
+    the current one (room exits come from the ROM's exit lists) in the
+    background, nearest first, while the link is otherwise idle.
+  - Each room's manifest says which pages to fetch. Rooms visited in the
+    measurement runs have exact manifests; for others the pager falls back to
+    fetching on a miss, and the manifests improve as more of the game is
+    measured.
+  - Cache eviction is least recently used, never evicting the baseline or the
+    current room.
+- At 115,200 baud a median room takes about 1.5 s to fetch. Room-level
+  preloading is required, and fast room changes may still stall. Above about
+  460,800 baud even fetching a room on arrival takes under a second. The
+  ESP32-S3's USB host mode, talking to gint's USB device, is the fallback if
+  the serial port can't run fast enough.
 
 **D5. Build: fxSDK and gint, with a C-only platform layer.**
 
-- A new `port/fxcg/` directory holds the calculator platform: main loop,
-  video, keyboard, timers, saves, ROM pager and link client.
+- `port/fxcg/` in this repository holds Picori's calculator platform: main
+  loop, video, keyboard, timers and the calls into the launcher's services.
 - The `TMC_N64` guards become `TMC_EMBEDDED` (32-bit, no SDL) plus `TMC_BE`
   (big-endian ROM reads). The calculator sets `TMC_FXCG` on top.
-- The build follows CasioMini3D's fxGLMark CMake (`fxsdk build-cg`,
-  `GenerateG3A`).
+- The build follows CasioMini3D's fxGLMark CMake (`fxsdk build-cg`).
 
-**D6. Assets: baked binary paks.**
+**D6. Data: a compressed page pak plus baked asset paks.**
 
-- A PC-side tool turns the extracted assets and the measured ROM pages into
-  region-specific binary paks.
-- Paks are installed to storage memory or kept on SD.
+- `scripts/fxcg/build_page_pak.py` stores every measured ROM page once,
+  compressed with raw deflate on its own, with an index, the resident baseline
+  and a manifest per room. The format carries a codec ID.
+- Per-room chunks compressed to: deflate 39%, zstd 37%, LZMA 32%, LZ4 51%.
+  Single 4 KB pages compressed independently average 37% with deflate, so
+  page granularity costs almost nothing.
+- Deflate comes first: its decoder is small and fast without an FPU. LZMA saves
+  another sixth of the link time, if the SH-4A has the cycles to spare.
+- Pointer tables the PC port resolves at load time are resolved by the build
+  tools instead and shipped baked, so the calculator does not need the 8.9 MB
+  the PC port touches while loading.
 - The calculator never parses JSON.
+
+**D7. The launcher runs applications from RAM.**
+
+- An application is a relocatable executable built with the fxSDK toolchain
+  and stored on the SD card. The launcher loads it into RAM, applies its
+  relocations and calls its entry point with a table of launcher services:
+  page access and preloading, files, saves, audio events, time and input.
+- The launcher stays resident, so the link, the cache and the preloader keep
+  running under every application.
+- Application code then uses RAM, so the RAM budget covers the launcher, the
+  application's code, the page cache and the game's own state. Picori's code
+  size on SH-4 must be measured early.
+- Prior art exists for loading executables into RAM on Casio calculators.
+  Whether gint allows running code from RAM is proven by a spike in Phase 0.
 
 ## Phases
 
-Each phase ends with something measured or running, not just written.
+Each phase ends with something measured or running, not just written. The
+order: first the game running on the calculator (Phase 1), then preloading
+from the ESP32 (Phase 2), then performance. ESP32 loading is not optimised
+until the game runs.
 
 ### Phase 0: measure and set up (no calculator code yet)
 
 A USA ROM matching `tmc.sha1` (`b4bd50e4…`) is available to the development
 session for these measurements. It is kept outside every repository.
 
-1. **ROM working set.** Run PC builds headless with `TMC_AUTOPLAY` and the repro
-   harness through as much of the game as the scripted inputs cover.
-   - Dump the touched-page bitmap.
-   - Report pages touched, total and per area. This sizes D1.
+1. **ROM working set (done; see results below).** `port/port_rom_touch.c`
+   records every ROM page the game touches, and `scripts/fxcg/` sweeps rooms
+   and summarises them.
 2. **Endianness and 32-bit.** Build the game core (no SDL, a null platform) as
    32-bit big-endian and run it under `qemu-user` (for example `qemu-mips` or
-   `qemu-ppc`).
-   - Compare frame hashes with the 64-bit PC build over the same input script.
-     This uses the golden-frame method from CasioMini3D's
-     `apps/fxGLMark/tests/profile`.
-   - Fix divergences before touching the calculator.
-3. **Toolchain.** Get fxSDK, gint and `sh-elf-gcc` into CI, and boot a "hello"
-   g3a in casio-emu, which CasioMini3D's regression harness already uses.
-4. **Device measurements.** On a real fx-CG50, measure:
+   `qemu-ppc`). Compare frame hashes with the 64-bit PC build over the same
+   input script, as CasioMini3D's golden frames do.
+3. **Toolchain.** fxSDK, gint and `sh-elf-gcc` in CI; a "hello" g3a booting in
+   casio-emu.
+4. **Code size.** Build the game core with `sh-elf-gcc` and measure its code
+   and data size: this sizes D7.
+5. **Device measurements** on a real fx-CG50:
    - the RAM gint can give an add-in;
    - `dupdate` time;
-   - storage-memory read speed;
-   - 2.5 mm logic levels and the highest reliable SCIF baud rate.
-5. **D1 spike.** Install a TLB-miss handler under gint that maps a 16 MB window
-   from a RAM page table. Decide between D1 and its fallback.
+   - 2.5 mm logic levels (before connecting the ESP32), then the highest
+     reliable SCIF baud rate.
+6. **Spikes:** the D1 TLB-miss window, and the D7 load-relocate-run of a small
+   application from RAM.
 
-Exit: working-set size, big-endian frame parity, a g3a in CI, the device
-numbers, and the D1 decision, all written into this file.
+#### Results: ROM working set
 
-### Phase 1: the game core on the calculator, without the ESP32
+Method: each run boots a fresh game headless, starts in the target room and
+plays for 13 to 20 seconds of game time with audio off. A room counts only if
+the harness confirmed reaching it.
+
+| Measure | Value |
+|---|---|
+| Rooms measured | 592 (room 0 of all 74 named areas, rooms 1-7 of each) |
+| Pages every room touches (resident baseline) | 13 (52 KB; 21 KB compressed) |
+| Pages per room during play | median 21, maximum 80 (Hyrule Town, 320 KB) |
+| Per room beyond the baseline, compressed | median 11 KB, 90th percentile 25 KB, maximum 104 KB |
+| All rooms together | 478 pages, 1.87 MB raw; the page pak is 0.74 MB (39%) with an 18 KB index |
+| Touched while the PC port loads | 2277 pages (8.9 MB): table resolution and asset overlays, not shipped (D6) |
+
+So the game reads well under 2 MB of its 16 MB ROM while playing these rooms.
+
+Preload simulation (`lib/cglink/tools/cglink_sim` in CasioMini3D, using the
+real link code; a 16-room route from Hyrule Town to Deepwood Shrine):
+
+| Baud | Prefetch the next room | Fetch on arrival only |
+|---|---|---|
+| 115,200 | 11.3 s at launch, then no stall over 0.1 s | 10 stalls, worst 11.3 s |
+| 921,600 | 1.4 s at launch, then none | 6 stalls, worst 1.4 s |
+
+The same holds at a rushed five seconds per room. The launch stall is the
+preload before the game starts: the baseline plus Hyrule Town.
+
+The harness counts any armed warp as reached, so some high room numbers may
+not be real rooms; their manifests are still valid page sets, but 592 is an
+upper bound on distinct rooms.
+
+Limits of the measurement:
+- Rooms are visited briefly, standing at the entrance. Enemies, items and
+  cutscenes deeper in a room add pages the manifests don't yet have; misses
+  catch those.
+- Music and sound data are not counted (audio was off); they stay on the
+  ESP32 (D2).
+- The load phase (8.9 MB touched by the PC port) is not shipped: the tools
+  bake what it computes (D6).
+
+### Phase 1: the compressed game on the calculator
 
 - Write `port/fxcg/`:
   - a gint main loop that calls `AgbMain`;
   - VBlank pacing from a gint timer;
   - the keyboard map: D-pad on the arrows, A/B/L/R/Start/Select on F-keys and
     SHIFT, ALPHA, EXIT and MENU, configurable;
-  - PPU output through the D3 scaler to `dupdate`;
-  - saves to storage memory.
-- Load the ROM pager from paks in storage memory.
+  - PPU output through the D3 scaler to `dupdate`.
+- Bring-up build: a stand-alone add-in reading the compressed page pak from
+  storage memory through the same page-cache interface the launcher will
+  provide, so moving to the launcher changes no game code.
 - Exit: boots to the title screen, starts a new file and plays through Hyrule
-  Town without corruption, with frame hashes matching the PC build for the same
-  inputs.
+  Town, with frame hashes matching the PC build for the same inputs.
 
-### Phase 2: performance
+### Phase 2: the launcher and preloading from the ESP32
 
-- Profile on the device. Test whether the CasioMini3D host cost model (32-bit
-  soft-float build plus callgrind) carries over to the game core.
+- **ESP32 firmware** (ESP-IDF, in CasioMini3D): the SLIP+CRC link service, FAT
+  on SD, file commands, a page server that streams compressed pages from a
+  pak, and save storage.
+- **Launcher** (CasioMini3D): link client, page cache, preloader, deflate
+  decoder, the D7 application loader, and a file browser for the SD card.
+- **Preload tests, in order:**
+  1. Host simulation: the link client against a host build of the page
+     server over a throttled pipe at 115,200 and 921,600 baud, replaying a
+     route of room changes and logging every stall.
+  2. qemu_esp32 with a "SuperMini + SD" board serving the page pak, its serial
+     port bridged to the host link client.
+  3. Hardware: the launcher on a real fx-CG50 and SuperMini, measuring fetch
+     time per room and stalls along the same route.
+- Exit: Picori launched from the SD card through the launcher, with the
+  calculator's storage memory holding only the launcher, and a stall log for
+  a fixed route.
+
+### Phase 3: performance
+
+- Profile on the device. Test whether the CasioMini3D host cost model carries
+  over to the game core.
 - Optimise the PPU for the SH-4A, keeping output byte-exact with
-  `tools/ppu_parity_check.sh`:
-  - a tile decode cache;
-  - background layers that are skipped when unchanged;
-  - scanlines rendered straight into the LCD format.
+  `tools/ppu_parity_check.sh`.
 - Add frame skipping and an optional overclock profile.
-- Exit: logic at a steady 60 ticks per second, a published render rate
-  (at least 30 fps), and the measured cost of each subsystem.
-
-### Phase 3: the ESP32 storage interface
-
-- **Firmware**, a new ESP-IDF project in HelaFaye/CasioMini3D, next to the
-  launcher, since every fx-CG50 port shares it. It is modelled on gbagate's
-  layout and provides:
-  - the SLIP+CRC link service;
-  - FAT on the SD card;
-  - commands to list, read, write and checksum files;
-  - an installer that copies add-ins and paks into calculator storage;
-  - save backup and restore.
-- **Calculator side:**
-  - a link client library and the launcher/file-browser add-in, both in
-    CasioMini3D;
-  - Picori's own use of the client in `port/fxcg/`, in this repository.
-- **Emulation before hardware:** a "SuperMini + SD" board in qemu_esp32, its
-  serial port bridged to the calculator side. First that is the host build of
-  the link client; later casio-emu, if it gains a serial model (its serial
-  support is *unknown*).
-- Exit: on hardware, install Picori's paks from SD and boot them with the
-  calculator's storage memory empty beforehand.
+- Exit: logic at a steady 60 ticks per second and a published render rate.
 
 ### Phase 4: audio offload
 
 - Calculator: emit m4a events with frame stamps over the link.
 - ESP32: run agbplay with I2S output and a jitter buffer.
-- Exit: music and sound effects stay in sync over a 30-minute session, and the
-  game is unchanged with the ESP32 unplugged.
+- Exit: music and sound effects stay in sync over a 30-minute session.
 
 ### Phase 5: Wi-Fi file transfer
 
 - On the ESP32: an access point or station mode with a small HTTP/WebDAV server
-  for the SD card, so add-ins, paks and saves can be exchanged with a phone or PC.
-- Exit: upload a pak over Wi-Fi and install it from the calculator.
+  for the SD card, so applications, paks and saves can be exchanged with a
+  phone or PC.
 
-### Phase 6: streaming
+### Phase 6 (later, a separate plan): Emerald and online multiplayer
 
-- Only if the Phase 0 baud rate allows it: room-level prefetch over the link,
-  so the full game runs with only a resident core in storage memory.
-- Exit: a room transition costs less than the GBA's own fade.
-
-### Phase 7 (later, a separate plan): Emerald and online multiplayer
-
-- Pokémon Emerald (from pokeemerald) as the second port, reusing the platform
-  layer, the pager and the link service.
-- The calculator's serial I/O registers map to the link service. The ESP32 runs
-  the GB-Link-compatible firmware from gbagate, which acts as the parent and
+- Pokémon Emerald (from pokeemerald) as the second application, using the same
+  launcher, pager and link service.
+- The game's serial I/O maps to the link service. The ESP32 runs the
+  GB-Link-compatible firmware from gbagate, which acts as the parent and
   absorbs network latency as gbagate's README describes, and bridges to Celio
   or the netplay bridge.
 - Test partner: mGBA running the US ROM. The ROM supplied for testing has
@@ -312,10 +394,13 @@ numbers, and the D1 decision, all written into this file.
    Phase 0 and Phase 2 measure it before anything else depends on it.
 2. **The D1 MMU spike** depends on how much of the exception path gint lets an
    add-in own. The fallback costs a large mechanical edit but is safe.
-3. **2.5 mm throughput and levels.** These decide whether streaming (Phase 6)
-   is possible at all. USB OTG is the escape hatch.
-4. **Add-in size and RAM limits** are not yet measured (Phase 0).
-5. **Licensing.**
+3. **2.5 mm throughput and levels.** These decide how seamless preloading can
+   be. USB host mode on the ESP32-S3 is the escape hatch.
+4. **RAM.** The launcher, the application's code (D7), the page cache and the
+   game state share the calculator's RAM, none of which is measured yet
+   (Phase 0).
+5. **Running code from RAM** under gint is unproven (Phase 0 spike).
+6. **Licensing.**
    - The decomp tooling never ships ROM data.
    - Paks are built by the player from their own ROM.
    - The PPU is GPL-3.0, and the calculator build must keep that license's
@@ -326,7 +411,7 @@ numbers, and the D1 decision, all written into this file.
 | Part | Repository |
 |---|---|
 | The Picori port (`port/fxcg/`, paks, build) | HelaFaye/tmc, `fx-cg50` branch |
-| The launcher add-in, the calculator link client, the ESP32 firmware | HelaFaye/CasioMini3D |
+| The launcher (link client, page cache, preloader, application loader), the ESP32 firmware | HelaFaye/CasioMini3D |
 | GB-Link compatibility on the fx-CG50 | HelaFaye/CasioMini3D for now, moved to its own repository later |
 
 ## Decided
@@ -334,6 +419,9 @@ numbers, and the D1 decision, all written into this file.
 - **Module:** ESP32-S3FH4R2 (4 MB flash, 2 MB PSRAM).
 - **No level shifter:** see "Wiring without a level shifter".
 - **Repositories:** as in the table above.
+- **One launcher** owns the ESP32 link and runs everything loaded from it (D7).
+- **Internal storage is kept to a minimum:** the launcher only; data is
+  compressed and preloaded from the ESP32 (D4, D6).
 
 ## Still open
 
