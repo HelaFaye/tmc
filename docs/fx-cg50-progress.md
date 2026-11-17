@@ -8,8 +8,8 @@ step that changes what is known.
 
 | Phase | State |
 |---|---|
-| 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked (fxGLMark builds); code size next; device measurements and spikes not started |
-| 1. The game on the calculator | **Current focus.** Port surface mapped; code not started |
+| 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked; first code-size estimate (about 0.8 MB of game code); device measurements and spikes not started |
+| 1. The game on the calculator | **Current focus.** Port surface mapped; 537 of 625 game files compile for the SH-4; fixing the rest next |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
 | 3-6 | Not started |
 
@@ -33,6 +33,34 @@ So the calculator platform layer is small: BIOS, saves, audio hooks, assets,
 presentation and settings, plus stubs for the PC-only features.
 
 ## Log
+
+### 2026-11-17: first SH-4 compile of the game code
+
+`sh-elf-gcc -m4-nofpu -mb -Os` over `src/` and the generated data stubs,
+with the PC defines plus `TMC_N64` (its 32-bit big-endian guards): 537 of 625
+files compile. Per-file objects, not linked, so sizes are upper bounds.
+
+| | Size |
+|---|---|
+| Code and read-only data, all compiled files | 1.81 MB |
+| of which `data_const_stubs.c` (constant ROM tables) | 0.99 MB |
+| So game code and its own read-only data | about 0.8 MB (from 86% of the files) |
+| Zero-initialised RAM (bss) | 1.62 MB, almost all in `port_linked_stubs.c`: `gMapData` 1 MB, `gFrameObjLists` 200 KB, `gCollisionMtx` 70 KB, `gMapTop` 48 KB |
+
+What this means:
+- Game code fits comfortably in RAM next to a page cache (D7).
+- The constant ROM tables (about 1 MB) are data, not code: they can come
+  from the page pak instead of the executable.
+- `gMapData` and `gFrameObjLists` are copies the PC port makes of ROM data;
+  on the calculator they should read through the page cache instead of
+  occupying 1.2 MB of fixed RAM.
+
+The 88 failures are Phase 1's first list:
+- generated headers the PC build creates (`assets/gfx_offsets.h`,
+  `assets/map_offsets.h`), to generate for the calculator build too;
+- static assertions on entity layouts that encode the PC's 64-bit pointer
+  padding ("Enemy::child +4 pad"); they need a 32-bit variant;
+- the rest are to be triaged.
 
 ### 2026-11-17: repositories split, toolchain working
 
