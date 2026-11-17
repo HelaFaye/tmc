@@ -188,6 +188,9 @@ Each phase ends with something measured or running, not just written.
 
 ### Phase 0: measure and set up (no calculator code yet)
 
+A USA ROM matching `tmc.sha1` (`b4bd50e4…`) is available to the development
+session for these measurements. It is kept outside every repository.
+
 1. **ROM working set.** Run PC builds headless with `TMC_AUTOPLAY` and the repro
    harness through as much of the game as the scripted inputs cover.
    - Dump the touched-page bitmap.
