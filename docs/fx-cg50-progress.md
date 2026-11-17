@@ -8,9 +8,9 @@ step that changes what is known.
 
 | Phase | State |
 |---|---|
-| 0. Measure and set up | ROM working set done; SH-4 toolchain being built; device measurements, code size and spikes not started |
-| 1. The game on the calculator | **Current focus.** Not started: waits for the toolchain |
-| 2. Launcher and ESP32 preloading | Link library and preload simulation done (CasioMini3D `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
+| 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked (fxGLMark builds); code size next; device measurements and spikes not started |
+| 1. The game on the calculator | **Current focus.** Port surface mapped; code not started |
+| 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
 | 3-6 | Not started |
 
 ## Phase 1: what the game code needs from the port layer
@@ -34,10 +34,24 @@ presentation and settings, plus stubs for the PC-only features.
 
 ## Log
 
+### 2026-11-17: repositories split, toolchain working
+
+- The graphics and launcher work is now split into repositories:
+  HelaFaye/fxOGL (renamed from CasioMini3D), fxGLMark, fxglxgears, fxSDL and
+  fxLauncher (launcher, `lib/cglink` link library, ESP32 firmware). The
+  Picori port stays here.
+- The SH-4 toolchain is verified: fxGLMark builds for the fx-CG50 (536 KB
+  `.g3a`). That surfaced two fxOGL bugs, now fixed: fxGLMark's add-in was
+  missing a source file and did not link, and fxOGL's CMake leaked the
+  calculator's C headers into host builds on machines with fxSDK installed.
+- libprof's GiteaPC recipe also builds for the ClassPad (`fxCP`), which gint
+  was not built for; install it with `fxsdk build-cg install` from its
+  GiteaPC directory instead.
+
 ### 2026-11-17: toolchain, final working-set numbers
 
 - The SH-4 toolchain (fxSDK, `sh-elf-gcc` 14.1.0, binutils 2.42, OpenLibm,
-  fxlibc, gint) is built from the GiteaPC recipes. The development environment
+  fxlibc, gint, libprof) is built from the GiteaPC recipes. The development environment
   needed `gitea.planet-casio.com`, `git.planet-casio.com` and `ftp.gnu.org`
   allowed. The recipes download from `ftpmirror.gnu.org`, which redirects to
   arbitrary mirrors, so the archives are fetched from `ftp.gnu.org` first and
@@ -56,7 +70,7 @@ presentation and settings, plus stubs for the PC-only features.
   deflated on its own, a resident baseline, a manifest per room. Compressors
   compared on per-room chunks: LZMA 32%, zstd 37%, deflate 39%, LZ4 51%.
   Deflate chosen for its small, fast decoder.
-- CasioMini3D `lib/cglink`: framing, pak reader, deflate decoder, page cache
+- `lib/cglink` (now in HelaFaye/fxLauncher): framing, pak reader, deflate decoder, page cache
   and page streaming, host-tested; `cglink_sim` showed that prefetching the
   next room leaves only the launch preload as a stall, even at 115,200 baud.
 

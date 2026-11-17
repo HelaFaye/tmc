@@ -58,7 +58,7 @@ Values marked *measure* are not known well enough to design around yet.
 - **CPU:** SH-4A (SH7305), 32-bit big-endian, about 118 MHz stock. Overclocking
   is possible with Ptune-style tools; *measure* whether it is stable for long
   play.
-- **No FPU.** fxOGL's measurements in CasioMini3D show what that costs.
+- **No FPU.** fxOGL's measurements (HelaFaye/fxOGL) show what that costs.
 - **RAM:** 8 MB in total. The amount gint can give an add-in is *measure*. The
   plan assumes at most 3 MB for the ROM cache plus game state.
 - **Display:** 396×224, RGB565, sent with gint's `dupdate`. Full-frame transfer
@@ -207,7 +207,7 @@ link works, a development build may keep its page pak in storage memory.)
   loop, video, keyboard, timers and the calls into the launcher's services.
 - The `TMC_N64` guards become `TMC_EMBEDDED` (32-bit, no SDL) plus `TMC_BE`
   (big-endian ROM reads). The calculator sets `TMC_FXCG` on top.
-- The build follows CasioMini3D's fxGLMark CMake (`fxsdk build-cg`).
+- The build follows HelaFaye/fxGLMark's CMake (`fxsdk build-cg`).
 
 **D6. Data: a compressed page pak plus baked asset paks.**
 
@@ -256,7 +256,7 @@ session for these measurements. It is kept outside every repository.
 2. **Endianness and 32-bit.** Build the game core (no SDL, a null platform) as
    32-bit big-endian and run it under `qemu-user` (for example `qemu-mips` or
    `qemu-ppc`). Compare frame hashes with the 64-bit PC build over the same
-   input script, as CasioMini3D's golden frames do.
+   input script, as fxGLMark's golden frames do.
 3. **Toolchain.** fxSDK, gint and `sh-elf-gcc` in CI; a "hello" g3a booting in
    casio-emu.
 4. **Code size.** Build the game core with `sh-elf-gcc` and measure its code
@@ -286,7 +286,7 @@ the harness confirmed reaching it.
 
 So the game reads well under 2 MB of its 16 MB ROM while playing these rooms.
 
-Preload simulation (`lib/cglink/tools/cglink_sim` in CasioMini3D, using the
+Preload simulation (`lib/cglink/tools/cglink_sim` in HelaFaye/fxLauncher, using the
 real link code; a 16-room route from Hyrule Town to Deepwood Shrine):
 
 | Baud | Prefetch the next room | Fetch on arrival only |
@@ -326,10 +326,10 @@ Limits of the measurement:
 
 ### Phase 2: the launcher and preloading from the ESP32
 
-- **ESP32 firmware** (ESP-IDF, in CasioMini3D): the SLIP+CRC link service, FAT
+- **ESP32 firmware** (ESP-IDF, in HelaFaye/fxLauncher): the SLIP+CRC link service, FAT
   on SD, file commands, a page server that streams compressed pages from a
   pak, and save storage.
-- **Launcher** (CasioMini3D): link client, page cache, preloader, deflate
+- **Launcher** (HelaFaye/fxLauncher): link client, page cache, preloader, deflate
   decoder, the D7 application loader, and a file browser for the SD card.
 - **Preload tests, in order:**
   1. Host simulation: the link client against a host build of the page
@@ -345,7 +345,7 @@ Limits of the measurement:
 
 ### Phase 3: performance
 
-- Profile on the device. Test whether the CasioMini3D host cost model carries
+- Profile on the device. Test whether fxGLMark's host cost model carries
   over to the game core.
 - Optimise the PPU for the SH-4A, keeping output byte-exact with
   `tools/ppu_parity_check.sh`.
@@ -411,8 +411,9 @@ Limits of the measurement:
 | Part | Repository |
 |---|---|
 | The Picori port (`port/fxcg/`, paks, build) | HelaFaye/tmc, `fx-cg50` branch |
-| The launcher (link client, page cache, preloader, application loader), the ESP32 firmware | HelaFaye/CasioMini3D |
-| GB-Link compatibility on the fx-CG50 | HelaFaye/CasioMini3D for now, moved to its own repository later |
+| The launcher (link client, page cache, preloader, application loader), the link library, the ESP32 firmware | HelaFaye/fxLauncher |
+| GB-Link compatibility on the fx-CG50 | its own repository, when started |
+| An SDL-compatible layer that ports may use | HelaFaye/fxSDL |
 
 ## Decided
 
