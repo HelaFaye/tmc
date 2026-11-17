@@ -1,7 +1,12 @@
 #ifndef PORT_PPU_H
 #define PORT_PPU_H
 
+#include "port_target.h"
+#ifndef TMC_EMBEDDED
 #include <SDL3/SDL.h>
+#else
+typedef struct SDL_Window SDL_Window; /* only named in prototypes */
+#endif
 #include <stdbool.h>
 
 #ifdef __cplusplus

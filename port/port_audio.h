@@ -1,9 +1,10 @@
 #ifndef PORT_AUDIO_H
 #define PORT_AUDIO_H
 
+#include "port_target.h"
 #include <stdbool.h>
 #include <stdint.h>
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
 #include <SDL3/SDL.h>
 #endif
 

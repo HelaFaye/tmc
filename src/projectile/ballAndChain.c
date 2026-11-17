@@ -11,7 +11,7 @@
 
 typedef struct {
     /*0x00*/ Entity base;
-#ifdef PC_PORT
+#if PORT_PTR64
     /*0x68*/ u8 unused1[19 + 4];
 #else
     /*0x68*/ u8 unused1[19];

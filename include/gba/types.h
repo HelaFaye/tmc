@@ -1,11 +1,12 @@
 #ifndef TYPES_H
 #define TYPES_H
+#include "port_target.h"
 
 #include <stdint.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 /* mips64-newlib makes uint32_t 'unsigned long' — a type distinct from 'unsigned int'
  * and from enum underlying types, which breaks function-prototype/enum compatibility
  * the decomp relies on (it holds on x86 where uint32_t == unsigned int). Use plain
@@ -17,7 +18,7 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 typedef int8_t s8;
 typedef int16_t s16;
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 typedef int s32;
 #else
 typedef int32_t s32;

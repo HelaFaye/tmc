@@ -14,7 +14,7 @@
 typedef struct {
     /*0x00*/ Entity base;
     /*0x68*/ u8 unused1[4];
-#ifdef PC_PORT
+#if PORT_PTR64
     /* GBA aliases AcroBandit fields onto Enemy at the same absolute offsets:
      *   unk_6c → Enemy.idx (0x6c)
      *   unk_6e/6f → Enemy.rangeX/rangeY (0x6e/0x6f)

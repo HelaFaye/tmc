@@ -7,6 +7,7 @@
  * rom_data/ so the game can run without the full ROM after first boot.
  */
 
+#include "port_target.h"
 #include "port_rom.h"
 #include "port_rom_touch.h"
 #include "area.h"
@@ -20,7 +21,7 @@
 #include "structures.h"
 #include "main.h"
 #include "tileMap.h"
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
 #include <SDL3/SDL.h>
 #endif
 #include <stdio.h>
@@ -37,7 +38,7 @@
 #include <mach-o/dyld.h>
 #include <stdlib.h> /* realpath */
 #include <sys/stat.h>
-#elif !defined(TMC_N64)
+#elif !defined(TMC_EMBEDDED)
 #include <dirent.h>
 #include <sys/stat.h>
 /* Forward-declare readlink to avoid pulling in _POSIX_C_SOURCE feature test
@@ -45,7 +46,7 @@
 extern long readlink(const char* path, char* buf, unsigned long bufsiz);
 #endif
 
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 /* N64/newlib lacks <dirent.h> and several POSIX FS calls. The host ROM
  * file-finding functions that use them are never called on N64 (Port_LoadRom
  * skips file I/O) and are dropped by --gc-sections, but must still COMPILE,
@@ -120,7 +121,7 @@ static FILE* TryOpenRom(const char** paths, int count, char* foundPath, int foun
 void Port_FatalRomError(const char* title, const char* message) {
     fprintf(stderr, "ERROR: %s\n", message);
     fflush(stderr);
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, message, NULL);
     SDL_Quit();
 #else
@@ -900,7 +901,7 @@ static inline u32 RomLE32(const void* p) {
      * (odd 16-bit halfwords dropped), but 32-bit loads (lw) work. The lw returns
      * the GBA little-endian bytes in big-endian order on N64, so byte-swap. */
     u32 v = *(const u32*)p;
-#ifdef TMC_N64
+#ifdef TMC_BE
     v = __builtin_bswap32(v);
 #endif
     return v;
@@ -1312,7 +1313,7 @@ static FILE* TryOpenRom(const char** paths, int count, char* foundPath, int foun
 
 void Port_LoadRom(const char* path) {
     sLoadedRomPath[0] = '\0';
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
     memset(sExtractedPages, 0, sizeof(sExtractedPages));
 
     /* ---- Step 1: try loading from rom_data/ extracted pages ---- */
@@ -1475,7 +1476,7 @@ void Port_LoadRom(const char* path) {
                                           : "USA",
             R->gameCode);
 
-#ifdef TMC_N64
+#ifdef TMC_BE
     { /* Byte-order / alignment probe: compare against known GBA header bytes.
        * Logo@0x04 is the fixed sequence 24 FF AE 51 69 9A A2 21; gamecode@0xAC
        * is 'BZME' = 42 5A 4D 45. Mismatch => cart CPU byte reads are swapped or
@@ -1706,7 +1707,7 @@ void Port_LoadRom(const char* path) {
      * guarantees mapDataBase < gRomSize for every known offset table. */
     {
         u32 mapDataSize = gRomSize - R->mapDataBase;
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
         if (mapDataSize > 0x100000u)
             mapDataSize = 0x100000u; /* gMapData is a 1 MB placeholder on N64 */
         memcpy(gMapData, &gRomData[R->mapDataBase], mapDataSize);

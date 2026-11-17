@@ -1,4 +1,5 @@
 #pragma once
+#include "port_target.h"
 #include <string.h>
 #include "port_types.h"
 #include "port_config.h"
@@ -12,7 +13,7 @@ extern u32 gRomSize;
 /* gMapData — the ~14 MB map/asset blob (gAreaRoomMap_None on GBA). Immutable
  * ROM content, so on PC it is a pointer into gRomData set by Port_LoadRom()
  * rather than a second copy. Readers only do gMapData + offset. */
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 extern u8 gMapData[];
 #else
 extern u8* gMapData;

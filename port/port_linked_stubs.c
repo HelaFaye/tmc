@@ -1,4 +1,5 @@
 
+#include "port_target.h"
 #include "area.h"
 #include "backgroundAnimations.h"
 #include "beanstalkSubtask.h"
@@ -162,7 +163,7 @@ u32 gFrameObjLists[50016];
 // On GBA this is a label in .rodata at gAreaRoomMap_None (~14MB region).
 // On PC it points into gRomData (set in Port_LoadRom()); source files only
 // compute gMapData + offset, so a pointer is sufficient and avoids a 14 MB copy.
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 /* #N64: the ~14 MB ROM map-data window can't live in 8 MB RDRAM. Temporary 1 MB
  * placeholder so the binary links and boots to the title (which doesn't read map
  * data). Phase 3 backs &gMapData with the embedded cart ROM (PI/DFS), not a RAM copy. */

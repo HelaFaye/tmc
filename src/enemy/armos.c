@@ -22,7 +22,7 @@
 
 typedef struct {
     /*0x00*/ Entity base;
-#ifdef PC_PORT
+#if PORT_PTR64
     u8 unk_68[0x10 + 4]; /* #98/#99 pattern: +4 for Enemy::child PC growth */
 #else
     /*0x68*/ u8 unk_68[0x10];

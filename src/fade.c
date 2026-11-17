@@ -1,3 +1,4 @@
+#include "port_target.h"
 #include "common.h"
 #include "functions.h"
 #include "global.h"
@@ -47,7 +48,7 @@ static const u32 sFadeTableOffsets[NUM_FADE_BRIGHTNESS][3] = {
     { 0x1104, 0x1144, 0x1184 }, /* brightness 2 */
 };
 
-#ifdef TMC_N64
+#ifdef TMC_BE
 /* 16-bit cart reads (lhu) are broken on N64's strict PI bus; read the containing
  * 32-bit-aligned word (lw is fine) and extract the halfword (big-endian: the
  * lower address is the high half). Returns the same value the GBA's lhu would. */
@@ -86,7 +87,7 @@ static void Port_MakeFadeBuff256(u8* src, u8* dest, u16 intensity, u8 color) {
     if (!dstPtr)
         return; // Safety check
 
-#ifdef TMC_N64
+#ifdef TMC_BE
     /* The fade tables live in the cart; the tableR[r>>1] loads below are 16-bit
      * cart reads (lhu) that return garbage on N64's strict PI bus -> wrong faded
      * colors every frame (the ares "wrong colours" bug). Cache the 3 tables

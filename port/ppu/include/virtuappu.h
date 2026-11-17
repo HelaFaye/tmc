@@ -14,13 +14,14 @@
 #include <stdint.h>
 
 #include "ppu_memory.h"
+#include "../../../include/port_target.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 enum {
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
     /* N64: only the native 240x160 frame is needed; mode1 binds the engine's
      * gVram, so the 4 MB scratch vram shrinks to the GBA size. Keeps RDRAM use low. */
     VIRTUAPPU_MAX_FRAME_WIDTH = 240,

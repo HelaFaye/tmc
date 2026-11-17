@@ -8,8 +8,8 @@ step that changes what is known.
 
 | Phase | State |
 |---|---|
-| 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked; first code-size estimate (about 0.8 MB of game code); device measurements and spikes not started |
-| 1. The game on the calculator | **Current focus.** Port surface mapped; 537 of 625 game files compile for the SH-4; fixing the rest next |
+| 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked; code size measured (about 1.0 MB of game code); device measurements and spikes not started |
+| 1. The game on the calculator | **Current focus.** All 623 game files compile for the SH-4; linking against `port/fxcg/` next |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
 | 3-6 | Not started |
 
@@ -33,6 +33,43 @@ So the calculator platform layer is small: BIOS, saves, audio hooks, assets,
 presentation and settings, plus stubs for the PC-only features.
 
 ## Log
+
+### 2026-11-18: the whole game code compiles for the fx-CG50
+
+`scripts/fxcg/sh_compile_check.sh` compiles every file of the game build
+(the PC build's own `src/` list, 619 files, plus the 4 generated data-stub
+files) with `sh-elf-gcc -m4-nofpu -mb -Os -DTMC_FXCG`: **623 of 623 compile**.
+
+| | Size (per-file objects, not linked) |
+|---|---|
+| Code and read-only data | 2.03 MB |
+| of which `data_const_stubs.c` (constant ROM tables) | 0.99 MB |
+| So game code and its own read-only data | about 1.0 MB |
+| Zero-initialised RAM (bss) | 1.63 MB, mostly `gMapData` (1 MB) and `gFrameObjLists` (200 KB) |
+
+What changed to get there:
+- `PORT_PTR64` in `include/global.h`: 88 padding blocks across 83 files that
+  added 4 or 8 bytes under `PC_PORT` to make room for 64-bit pointers now
+  depend on pointer size. On 32-bit targets the structs keep the GBA layout,
+  and the existing layout asserts check exactly that.
+- `include/port_target.h`: `TMC_FXCG` implies `TMC_EMBEDDED` (no SDL,
+  threads or OpenMP; 32-bit types) and `TMC_BE` (big-endian data swaps). The
+  `TMC_N64` guards were split between them; the N64 boot markers in
+  `src/main.c` stay N64-only. `fade.c`'s halfword reads go under `TMC_BE`,
+  since they also fix byte order.
+- `port/port_ppu.h` no longer needs SDL on embedded targets.
+
+The 64-bit PC build is unchanged: all 736 of its object files compile to
+identical code before and after (disassembly compared), and Hyrule Town
+touches the same 80 ROM pages during play.
+
+Correction: the load-phase figure from the room sweep (2277 pages, 8.9 MB)
+came from the `rom_data/` page cache the sweep's run directories reused. A
+clean run touches 116 pages (464 KB) while loading.
+
+Next: link. The undefined symbols are the port layer `port/fxcg/` provides
+(BIOS, saves, m4a hooks, assets, presentation, settings) plus stubs for the
+PC-only features; see "Phase 1: what the game code needs" above.
 
 ### 2026-11-17: first SH-4 compile of the game code
 

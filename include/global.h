@@ -93,6 +93,16 @@
 #endif
 #endif
 
+/* 1 on 64-bit PC builds, whose 8-byte pointers grow the entity structs; 0 on
+ * 32-bit targets (the GBA, the fx-CG50), whose structs keep the GBA layout.
+ * Padding that exists only to make room for 8-byte pointers uses this, not
+ * PC_PORT. */
+#if defined(PC_PORT) && (__SIZEOF_POINTER__ == 8)
+#define PORT_PTR64 1
+#else
+#define PORT_PTR64 0
+#endif
+
 #if defined(PC_PORT) && (__SIZEOF_POINTER__ == 8)
 #define PORT_STATIC_ASSERT_SIZE(type, gba_size, pc_size, msg) static_assert(sizeof(type) == (pc_size), msg)
 #define PORT_STATIC_ASSERT_EXPR(expr, gba_size, pc_size, msg) static_assert((expr) == (pc_size), msg)

@@ -1,3 +1,4 @@
+#include "port_target.h"
 #include "common.h"
 
 #ifdef PC_PORT
@@ -71,7 +72,7 @@ typedef struct {
     u32 unk8;
 } GfxItem;
 
-#ifdef TMC_N64
+#ifdef TMC_BE
 /* GBA ROM structs are little-endian; on the big-endian N64 a native multi-byte
  * read byte-swaps them. Convert ROM-sourced u16/u32 struct fields to host order.
  * (u8 fields are byte reads and need no conversion.) */
@@ -130,7 +131,7 @@ enum DungeonMapObjectTypes {
 #define COMMON_AREA_TABLE_COUNT 0x90
 
 static void Common_AbortMissingAssetGroup(const char* kind, u32 group) {
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
     /* #N64: graphics/palettes come from the embedded ROM via the GBA-original
      * path *below* the PC `assets/` block, not from a PC asset tree. Returning
      * here lets the caller (LoadGfxGroup / LoadPaletteGroup) fall through to
@@ -457,7 +458,7 @@ void LoadPalettes(const u8* src, s32 destPaletteNum, s32 numPalettes) {
     gUsedPalettes |= usedPalettesMask;
     dest = &gPaletteBuffer[destPaletteNum * 16];
     DmaCopy32(3, src, dest, size);
-#ifdef TMC_N64
+#ifdef TMC_BE
     /* DmaCopy32 byte-preserves the GBA little-endian colors; a native u16 read
      * on the big-endian N64 would byte-swap each BGR555 color. Swap in place so
      * the engine and ViruaPPU see correct colors. */

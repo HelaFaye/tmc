@@ -1,4 +1,5 @@
 #pragma once
+#include "port_target.h"
 #include "port_types.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -56,7 +57,7 @@ static inline void* gba_TryMemPtr(uint32_t addr) {
     return NULL;
 }
 
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 extern volatile uint32_t g_n64_last_bad_addr;
 extern volatile uint32_t g_n64_bad_count;
 #endif
@@ -65,7 +66,7 @@ static inline void* gba_MemPtr(uint32_t addr) {
     void* ptr = gba_TryMemPtr(addr);
     if (ptr)
         return ptr;
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
     /* #N64: never abort on a stray GBA address (libdragon abort() draws the
      * CPU-exception inspector and halts). Record it (surfaced on-screen by
      * Port_N64_VBlank) and return a shared scratch page so the engine limps. */

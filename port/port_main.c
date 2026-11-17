@@ -1,3 +1,4 @@
+#include "port_target.h"
 #include "gba/io_reg.h"
 #include "main.h"
 #include <stdbool.h>
@@ -892,7 +893,7 @@ int main(int argc, char* argv[]) {
                          compiledName, detectedName, compiledName);
                 fprintf(stderr, "WARNING: %s\n", msg);
                 fflush(stderr);
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
                 SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Minish Cap PC Port - region mismatch", msg, window);
 #endif
             }

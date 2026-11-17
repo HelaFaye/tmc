@@ -17,7 +17,7 @@
 
 typedef struct {
     Entity base;
-    #ifdef PC_PORT
+    #if PORT_PTR64
     u8 filler[0x18 + 4];
 #else
     u8 filler[0x18];

@@ -9,6 +9,7 @@
  * Maintained here directly — not kept in sync with upstream.
  */
 
+#include "../../../include/port_target.h"
 #include "cpu/mode1.h"
 
 #include <stddef.h>
@@ -341,7 +342,7 @@ void virtuappu_mode1_get_bound_gba_memory(VirtuaPPUMode1GbaMemory* memory) {
  * threads while still seeing the correct HDMA-mutated register state
  * (BG SCROLL, BLDY, etc.) for that scanline. NULL on the main / setup
  * thread keeps the existing single-threaded behavior intact. */
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 /* N64: single-threaded (no OpenMP) and bare-metal (no TLS). __thread compiles to
  * RDHWR $29, which the VR4300 (MIPS III) doesn't implement -> Reserved Instruction.
  * Single-threaded rendering makes plain file-scope storage correct here. */
@@ -377,7 +378,7 @@ int virtuappu_mode1_obj_clip_enable;
 
 uint16_t virtuappu_mode1_io_read16(uint16_t offset) {
     const uint8_t* src = virtuappu_mode1_io_thread_override ? virtuappu_mode1_io_thread_override : mode1_memory.io_mem;
-#ifdef TMC_N64
+#ifdef TMC_BE
     return *(const uint16_t*)(src + offset); /* native: engine stores IO regs in host order (BE on N64) */
 #else
     return (uint16_t)src[offset] | ((uint16_t)src[offset + 1u] << 8u);
@@ -1475,7 +1476,7 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
             virtuappu_mode1_pre_line_callback(line);
             memcpy(io_snapshots[line], mode1_memory.io_mem, MODE1_IO_MEM_SIZE);
             per_line_dispcnt[line] =
-#ifdef TMC_N64
+#ifdef TMC_BE
                 *(const uint16_t*)&io_snapshots[line][MODE1_IO_DISPCNT];
 #else
                 (uint16_t)io_snapshots[line][MODE1_IO_DISPCNT] |

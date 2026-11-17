@@ -1,7 +1,8 @@
 #pragma once
 
+#include "port_target.h"
 #include "port_types.h"
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
 #include <SDL3/SDL.h>
 #endif
 #include <stdbool.h>
@@ -290,7 +291,7 @@ const char* Port_Config_GetRaToken(void);
 void Port_Config_SetRaToken(const char* v);
 
 void Port_Config_OpenGamepads(void);
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
 void Port_Config_HandleEvent(const SDL_Event* e);
 /* True when an SDL event is a fresh press bound to `input` (see .cpp). */
 bool Port_Config_EventIsInputDown(const SDL_Event* e, PortInput input);

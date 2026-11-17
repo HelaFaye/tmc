@@ -1,5 +1,6 @@
 #ifndef PORT_TYPES_H
 #define PORT_TYPES_H
+#include "port_target.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -12,7 +13,7 @@
 // Type definitions for GBA-style fixed-width types
 typedef uint8_t u8;
 typedef uint16_t u16;
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 typedef unsigned int u32; /* match gba/types.h: mips-newlib uint32_t is 'unsigned long' */
 #else
 typedef uint32_t u32;
@@ -21,7 +22,7 @@ typedef uint64_t u64;
 
 typedef int8_t s8;
 typedef int16_t s16;
-#ifdef TMC_N64
+#ifdef TMC_EMBEDDED
 typedef int s32;
 #else
 typedef int32_t s32;
@@ -44,7 +45,7 @@ PORT_STATIC_ASSERT(sizeof(s32) == 4, "s32 must be 4 bytes");
 PORT_STATIC_ASSERT(sizeof(s64) == 8, "s64 must be 8 bytes");
 // Pointer assertions — the PC port targets 64-bit systems only. The N64
 // target is the lone 32-bit-pointer consumer of this header.
-#ifndef TMC_N64
+#ifndef TMC_EMBEDDED
 PORT_STATIC_ASSERT(sizeof(void*) == 8, "PC port targets 64-bit systems only");
 #endif
 

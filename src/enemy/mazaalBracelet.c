@@ -21,7 +21,7 @@
 
 typedef struct MazaalBraceletEntity_ {
     /*0x00*/ Entity base;
-#ifdef PC_PORT
+#if PORT_PTR64
     /* #99 fix: same #98 pattern. Pad 4 bytes after Entity base so the
        unk_74 / unk_78 union slots below land at PC 0xA0 / 0xA4, matching
        the GBA layout the C decomp assumes. mazaalHead.c type-puns these

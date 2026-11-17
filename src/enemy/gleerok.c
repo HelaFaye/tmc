@@ -54,7 +54,7 @@ PORT_STATIC_ASSERT_EXPR(offsetof(Gleerok_HeapStruct, unk_30), 0x30, 0x30,
 
 typedef struct {
     Entity base;
-#ifdef PC_PORT
+#if PORT_PTR64
     u8 filler[0xc + 4];
 #else
     u8 filler[0xc];

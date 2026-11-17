@@ -11,13 +11,13 @@
 
 typedef struct {
     /*0x00*/ Entity base;
-#ifdef PC_PORT
+#if PORT_PTR64
     /*0x68*/ u8 unused1[20 + 4];
 #else
     /*0x68*/ u8 unused1[20];
 #endif
     /*0x7c*/ u8 unk_7c;
-#ifdef PC_PORT
+#if PORT_PTR64
     /*0x7d*/ u8 unused2[3 + 4];
 #else
     /*0x7d*/ u8 unused2[3];

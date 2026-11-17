@@ -205,8 +205,12 @@ link works, a development build may keep its page pak in storage memory.)
 
 - `port/fxcg/` in this repository holds Picori's calculator platform: main
   loop, video, keyboard, timers and the calls into the launcher's services.
-- The `TMC_N64` guards become `TMC_EMBEDDED` (32-bit, no SDL) plus `TMC_BE`
-  (big-endian ROM reads). The calculator sets `TMC_FXCG` on top.
+- `include/port_target.h`: the build defines `TMC_FXCG`, which implies
+  `TMC_EMBEDDED` (32-bit, no SDL, threads or OpenMP) and `TMC_BE` (big-endian:
+  GBA little-endian data is swapped). The old `TMC_N64` guards were split
+  into these; N64-only bus quirks keep `TMC_N64`.
+- `PORT_PTR64` (in `include/global.h`) marks padding that exists only for
+  8-byte pointers, so 32-bit builds keep the GBA struct layouts.
 - The build follows HelaFaye/fxGLMark's CMake (`fxsdk build-cg`).
 
 **D6. Data: a compressed page pak plus baked asset paks.**
@@ -220,7 +224,7 @@ link works, a development build may keep its page pak in storage memory.)
 - Deflate comes first: its decoder is small and fast without an FPU. LZMA saves
   another sixth of the link time, if the SH-4A has the cycles to spare.
 - Pointer tables the PC port resolves at load time are resolved by the build
-  tools instead and shipped baked, so the calculator does not need the 8.9 MB
+  tools instead and shipped baked, so the calculator does not need the pages
   the PC port touches while loading.
 - The calculator never parses JSON.
 
@@ -282,7 +286,7 @@ the harness confirmed reaching it.
 | Pages per room during play | median 21, maximum 80 (Hyrule Town, 320 KB) |
 | Per room beyond the baseline, compressed | median 11 KB, 90th percentile 25 KB, maximum 104 KB |
 | All rooms together | 478 pages, 1.87 MB raw; the page pak is 0.74 MB (39%) with an 18 KB index |
-| Touched while the PC port loads | 2277 pages (8.9 MB): table resolution and asset overlays, not shipped (D6) |
+| Touched while the PC port loads | 116 pages (464 KB) in a clean run; the sweep's 2277 came from the `rom_data/` page cache its run directories reused, so treat it as an artifact |
 
 So the game reads well under 2 MB of its 16 MB ROM while playing these rooms.
 
@@ -307,8 +311,8 @@ Limits of the measurement:
   catch those.
 - Music and sound data are not counted (audio was off); they stay on the
   ESP32 (D2).
-- The load phase (8.9 MB touched by the PC port) is not shipped: the tools
-  bake what it computes (D6).
+- The load phase (116 pages in a clean run) is not shipped: the tools bake
+  what it computes (D6).
 
 ### Phase 1: the compressed game on the calculator
 

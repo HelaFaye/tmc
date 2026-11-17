@@ -13,7 +13,7 @@
 
 typedef struct {
     /* 0x00 */ Entity base;
-    /* 0x68 */ #ifdef PC_PORT
+    /* 0x68 */ #if PORT_PTR64
     u8 filler[0x10 + 4];
 #else
     u8 filler[0x10];
