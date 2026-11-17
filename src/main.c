@@ -15,6 +15,7 @@
 #include "fade.h"
 #ifdef PC_PORT
 #include "port_hdma.h"
+#include "port_rom_touch.h"
 #include "port_widescreen.h"
 #include <setjmp.h>
 #endif
@@ -113,6 +114,9 @@ void AgbMain(void) {
                 }
 
                 gMain.ticks++;
+#ifdef PC_PORT
+                Port_RomTouch_Frame();
+#endif
                 sTaskHandlers[gMain.task]();
 #ifdef TMC_N64
                 {

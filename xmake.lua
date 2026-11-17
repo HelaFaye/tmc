@@ -690,6 +690,7 @@ target("tmc_pc")
     end
 
     add_files("port/port_main.c")
+    add_files("port/port_rom_touch.c")  -- opt-in ROM working-set log (TMC_ROM_TOUCH_LOG)
     add_files("port/port_android_log.c") -- stderr->logcat bridge (no-op off Android)
     add_files("port/port_audio.c")
     add_files("port/port_shm_framebuffer.c")  -- publishes GBA framebuffer to shm (opt-in)

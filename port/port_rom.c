@@ -8,6 +8,7 @@
  */
 
 #include "port_rom.h"
+#include "port_rom_touch.h"
 #include "area.h"
 #include "entity.h"
 #include "map.h"
@@ -261,7 +262,9 @@ static int LoadExtractedPagesFrom(const char* dir) {
     /* Allocate gRomData if not yet done */
     if (!gRomData) {
         gRomSize = ROM_EXPECTED_SIZE;
-        gRomData = (u8*)calloc(1, gRomSize);
+        gRomData = (u8*)Port_RomTouch_Alloc(gRomSize);
+        if (!gRomData)
+            gRomData = (u8*)calloc(1, gRomSize);
         if (!gRomData) {
             fprintf(stderr, "ERROR: Failed to allocate %u bytes for ROM buffer\n", gRomSize);
             return 0;
@@ -1378,7 +1381,9 @@ void Port_LoadRom(const char* path) {
             int allocatedHere = 0;
             if (!gRomData) {
                 gRomSize = fileSize;
-                gRomData = (u8*)malloc(gRomSize);
+                gRomData = (u8*)Port_RomTouch_Alloc(gRomSize);
+                if (!gRomData)
+                    gRomData = (u8*)malloc(gRomSize);
                 allocatedHere = 1;
                 if (!gRomData) {
                     char msg[160];
@@ -1405,13 +1410,15 @@ void Port_LoadRom(const char* path) {
                 fprintf(stderr, "ERROR: short read on ROM %s (%zu/%u bytes); ignoring ROM file\n", usedPath, got,
                         fileSize);
                 if (allocatedHere) {
-                    free(gRomData);
+                    if (!Port_RomTouch_Free(gRomData))
+                        free(gRomData);
                     gRomData = NULL;
                     gRomSize = 0;
                 }
             }
             fclose(f);
             if (romLoaded) {
+                Port_RomTouch_BeginLoad();
                 snprintf(sLoadedRomPath, sizeof(sLoadedRomPath), "%s", usedPath);
                 fprintf(stderr, "ROM loaded: %u bytes (0x%X) from %s\n", gRomSize, gRomSize, usedPath);
             }
