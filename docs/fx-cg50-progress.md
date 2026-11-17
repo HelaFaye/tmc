@@ -13,6 +13,25 @@ step that changes what is known.
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (CasioMini3D `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
 | 3-6 | Not started |
 
+## Phase 1: what the game code needs from the port layer
+
+Linking the PC build's `src/` objects alone leaves 1,357 undefined symbols,
+all provided by `port/`. Grouped by what the calculator build does with them:
+
+| Group | Files | Symbols | Calculator build |
+|---|---|---|---|
+| ROM data tables (generated) | `data_stubs_autogen.c`, `data_const_stubs.c`, `port_linked_stubs.c`, `stubs_autogen.c` | about 1,140 | compile unchanged |
+| ROM, memory and game helpers | `port_rom.c`, `port_gba_mem.c`, `port_gameplay_stubs.c`, `port_draw.c`, `port_animation.c`, `port_text_render.c`, `port_math.c`, `port_hdma.c`, offset/region/script/room tables, `port_stubs.c` | about 120 | compile, with `port_rom.c` reading pages through the pager instead of a 16 MB buffer |
+| GBA BIOS | `port_bios.c`: `VBlankIntrWait`, `CpuSet`, `LZ77UnComp*`, `Div`, affine set-up, `SoftReset` | 12 | reimplement in `port/fxcg/`: VBlank waits on a gint timer, the rest is plain C |
+| Saves | `port_save.c`: `EEPROM*` and save-profile calls | 9 | reimplement: EEPROM image in RAM, written back through the launcher (storage memory during bring-up) |
+| Sound engine entry points | `port_m4a_stubs.c`: `m4aSongNumStart`, `m4aSoundMain` and friends | 12 | the D2 hook: send audio events to the ESP32; no-ops without it |
+| Assets | `port_asset_loader.cpp`: gfx and palette groups, map data | 6 | reimplement in C over the baked paks (D6) |
+| Presentation and settings | `port_ppu.cpp`, `port_runtime_config.cpp` | 11 | reimplement: the D3 scaler to `dupdate`; fixed settings |
+| PC-only features | randomizer, Reborn, TTS, level editor, debug actions, soft slots, `port_m4a_backend.cpp` | about 50 | stub (randomizer and soft slots could return later) |
+
+So the calculator platform layer is small: BIOS, saves, audio hooks, assets,
+presentation and settings, plus stubs for the PC-only features.
+
 ## Log
 
 ### 2026-11-17: toolchain, final working-set numbers
