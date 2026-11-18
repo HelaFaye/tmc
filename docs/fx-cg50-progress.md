@@ -9,7 +9,7 @@ step that changes what is known.
 | Phase | State |
 |---|---|
 | 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked; code size measured (about 1.0 MB of game code); device measurements and spikes not started |
-| 1. The game on the calculator | **Current focus.** All 623 game files compile for the SH-4; linking against `port/fxcg/` next |
+| 1. The game on the calculator | **Current focus.** `port/fxcg/` written; `Picori.g3a` builds and links (1.15 MB, no ROM data inside). Next: the D1 ROM window, so the add-in can read ROM pages |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
 | 3-6 | Not started |
 
@@ -20,19 +20,99 @@ all provided by `port/`. Grouped by what the calculator build does with them:
 
 | Group | Files | Symbols | Calculator build |
 |---|---|---|---|
-| ROM data tables (generated) | `data_stubs_autogen.c`, `data_const_stubs.c`, `port_linked_stubs.c`, `stubs_autogen.c` | about 1,140 | compile unchanged |
-| ROM, memory and game helpers | `port_rom.c`, `port_gba_mem.c`, `port_gameplay_stubs.c`, `port_draw.c`, `port_animation.c`, `port_text_render.c`, `port_math.c`, `port_hdma.c`, offset/region/script/room tables, `port_stubs.c` | about 120 | compile, with `port_rom.c` reading pages through the pager instead of a 16 MB buffer |
-| GBA BIOS | `port_bios.c`: `VBlankIntrWait`, `CpuSet`, `LZ77UnComp*`, `Div`, affine set-up, `SoftReset` | 12 | reimplement in `port/fxcg/`: VBlank waits on a gint timer, the rest is plain C |
-| Saves | `port_save.c`: `EEPROM*` and save-profile calls | 9 | reimplement: EEPROM image in RAM, written back through the launcher (storage memory during bring-up) |
-| Sound engine entry points | `port_m4a_stubs.c`: `m4aSongNumStart`, `m4aSoundMain` and friends | 12 | the D2 hook: send audio events to the ESP32; no-ops without it |
-| Assets | `port_asset_loader.cpp`: gfx and palette groups, map data | 6 | reimplement in C over the baked paks (D6) |
-| Presentation and settings | `port_ppu.cpp`, `port_runtime_config.cpp` | 11 | reimplement: the D3 scaler to `dupdate`; fixed settings |
-| PC-only features | randomizer, Reborn, TTS, level editor, debug actions, soft slots, `port_m4a_backend.cpp` | about 50 | stub (randomizer and soft slots could return later) |
+| ROM data tables (generated) | `data_stubs_autogen.c`, `data_const_stubs.c`, `port_linked_stubs.c`, `stubs_autogen.c` | about 1,140 | compile, except `data_const_stubs.c`: its symbols point into the ROM window |
+| ROM, memory and game helpers | `port_rom.c`, `port_gba_mem.c`, `port_gameplay_stubs.c`, `port_draw.c`, `port_animation.c`, `port_text_render.c`, `port_math.c`, `port_hdma.c`, offset/region/script/room tables, `port_stubs.c` | about 120 | compile; `port_rom.c` reads the ROM through the D1 window (`TMC_ROM_WINDOW`) |
+| GBA BIOS | `port_bios.c`: `VBlankIntrWait`, `CpuSet`, `LZ77UnComp*`, `Div`, affine set-up, `SoftReset` | 12 | **done**: `VBlankIntrWait` in `port/fxcg/fxcg_main.c` on a gint timer; the rest compiles from `port_bios.c` |
+| Saves | `port_save.c`: `EEPROM*` and save-profile calls | 9 | **compiles** from `port_save.c` (file in storage memory); later through the launcher |
+| Sound engine entry points | `port_m4a_stubs.c`: `m4aSongNumStart`, `m4aSoundMain` and friends | 12 | **silent** for now (`fxcg_stubs.c`); the D2 hook to the ESP32 later |
+| Assets | `port_asset_loader.cpp`: gfx and palette groups, map data | 6 | **stubbed**: every call site falls back to the ROM, so no asset paks are needed |
+| Presentation and settings | `port_ppu.cpp`, `port_runtime_config.cpp` | 11 | **done**: the D3 scaler in `fxcg_main.c`; fixed settings in `fxcg_stubs.c` |
+| PC-only features | randomizer, Reborn, TTS, level editor, debug actions, soft slots, `port_m4a_backend.cpp` | about 50 | **stubbed** in `fxcg_stubs.c` (randomizer and soft slots could return later) |
 
 So the calculator platform layer is small: BIOS, saves, audio hooks, assets,
 presentation and settings, plus stubs for the PC-only features.
 
 ## Log
+
+### 2026-11-18: Picori.g3a links
+
+`cd port/fxcg && fxsdk build-cg` builds `Picori.g3a` with fxSDK and gint:
+the 619 game files, 31 files of the PC port's portable layer compiled
+unchanged, and the new calculator platform in `port/fxcg/`.
+
+| Section | Size | Where it goes |
+|---|---|---|
+| Code (`.text`) | 845 KB | add-in ROM mapping (2 MB limit) |
+| Read-only data | 303 KB | add-in ROM mapping |
+| So the add-in file | 1.15 MB | storage memory (later: the launcher loads it from SD, D7) |
+| Game BSS | 1.54 MB | `sysram`, see below |
+| gint's static RAM (491 KB) | almost all free | page cache and heap |
+
+`port/fxcg/`:
+- `fxcg_sys.c` is the gint side: keyboard (D-pad on the arrows, A = SHIFT,
+  B = ALPHA, L = F1, R = F2, Select = F5, Start = F6 or EXE; MENU visits the
+  main menu), a 60 Hz timer for VBlank, `dupdate`, and `main()`.
+  `fxcg_main.c` is the game side: `VBlankIntrWait` (buttons into KEYINPUT,
+  render, the D3 scaler 240x160 -> 336x224 into RGB565 VRAM, wait for the
+  tick, `VBlankIntr`) and the start-up. They are split because gint's `u32`
+  is `unsigned long` and the game's is `unsigned int`; no file includes
+  both, and `fxcg_sys.h` uses only standard types.
+- `fxcg_stubs.c` switches off the PC-only features with the values the PC
+  port uses when they are off: asset loader (every call site falls back to
+  the ROM), randomizer, Reborn, TTS, soft slots, level editor, bug reporter,
+  window settings, analog stick, debug menu. Sound (the m4a backend) is
+  silent until the ESP32 plays it (D2).
+- `fxcg_libc.c`: `getenv` (no environment: every `TMC_*` switch is off) and
+  `readlink`, the only C library functions fxlibc lacks.
+- `fxcg_rom.c` is a placeholder: the add-in shows "ROM window (plan D1) not
+  built yet" and waits for a key. The D1 window is the next step.
+- `fxcg.ld`, `rom_symbols.ld`, `CMakeLists.txt`, `sources.cmake` (from
+  `scripts/fxcg/gen_sources.sh`), and two plain icons.
+
+Shared files, all guarded so the PC build is unchanged (three objects
+byte-identical, `port_bios.o` the same functions in a different order):
+- `port_bios.c`: its SDL frontend half is under `#ifndef TMC_EMBEDDED`; the
+  BIOS half (`CpuSet`, `LZ77UnComp*`, `Div`, `Sqrt`, affine set-up,
+  `SoftReset`, `RegisterRamReset`) compiles for the calculator as it is.
+- `port_save.c`: no `fsync` on embedded targets. On big-endian targets the
+  save-image checks read the game's structs natively, as `src/save.c` does,
+  so calculator saves are big-endian and not interchangeable with PC saves.
+- `include/port_target.h`: `TMC_FXCG` also implies `TMC_ROM_WINDOW`: the
+  ROM sits at a fixed address and the linker places ROM-resident symbols in
+  it. `port_rom.c` and `port_linked_stubs.c` then neither copy `gMapData`
+  into RAM nor fall back to compiled-in ROM tables.
+
+**ROM tables stay out of the add-in.** The PC build compiles
+`port/data_const_stubs.c`, 400 tables copied from the ROM (0.99 MB). The
+calculator build leaves it out; `scripts/fxcg/gen_rom_symbols.py` writes
+`rom_symbols.ld`, which defines each of those symbols, and `gMapData`, at
+`FXCG_ROM_WINDOW` (0x20000000) plus its ROM offset. The tables are read
+through the same paged window as the rest of the ROM, the add-in shrinks by
+1 MB, and it contains no ROM data: only names and offsets. The two remaining
+compiled-in fallbacks (`kFrameObjListsData`, `kExtraFrameOffsetsData`) are
+unreferenced on the calculator and dropped by the linker.
+
+**sysram is an assumption.** The game's own BSS (GBA EWRAM 256 KB, VRAM
+96 KB, `gFrameObjLists` 200 KB, the PPU's frame and line snapshots 310 KB,
+map buffers) is 1.54 MB, three times gint's static RAM. `fxcg.ld` puts it in
+a `sysram` region at 0x8c200000, 3 MB, which the calculator's OS is assumed
+to leave unused, and `fxcg_main.c` clears it at start. That address is not
+measured: it is Phase 0 item 5 on a real fx-CG50, and the first thing to
+check when the add-in runs. Moving it is a one-line change in `fxcg.ld`.
+
+Open risks found while linking:
+- **Byte order of ROM structures read in place.** Code that reads ROM data
+  through typed pointers (for example `gFrameObjLists[i]` as a `u32` in
+  `port_draw.c`) gets little-endian values on a big-endian CPU unless a
+  `TMC_BE` swap exists on that path. Phase 0 item 2 (a big-endian build
+  under qemu, frame hashes against the PC) finds these.
+- **Frame time.** VirtuaPPU renders 32-bit pixels that are then converted
+  to RGB565; rendering straight to RGB565 is the first optimisation once the
+  game runs.
+
+Next: the D1 window in `fxcg_rom.c`: a TLB-miss handler chained in front of
+gint's, a page cache in gint's static RAM, and pages read from the page pak
+in storage memory.
 
 ### 2026-11-18: the whole game code compiles for the fx-CG50
 

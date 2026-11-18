@@ -124,6 +124,11 @@ void Port_FatalRomError(const char* title, const char* message) {
 #ifndef TMC_EMBEDDED
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, message, NULL);
     SDL_Quit();
+#elif defined(TMC_FXCG)
+    {
+        extern void Fxcg_ShowMessage(const char* line1, const char* line2);
+        Fxcg_ShowMessage(title, message);
+    }
 #else
     (void)title;
 #endif
@@ -1537,8 +1542,12 @@ void Port_LoadRom(const char* path) {
         memcpy(gFrameObjLists, &gRomData[R->frameObjLists], R->frameObjListsSize);
         fprintf(stderr, "gFrameObjLists loaded (%u bytes from ROM 0x%X).\n", R->frameObjListsSize, R->frameObjLists);
     } else {
+#ifdef TMC_ROM_WINDOW
+        Port_FatalRomError("Minish Cap", "gFrameObjLists is outside the ROM.");
+#else
         memcpy(gFrameObjLists, kFrameObjListsData, R->frameObjListsSize);
         fprintf(stderr, "WARNING: gFrameObjLists ROM range invalid; using compile-time fallback.\n");
+#endif
     }
 
     /* gExtraFrameOffsets — self-relative offset table for multi-part sprite
@@ -1550,8 +1559,12 @@ void Port_LoadRom(const char* path) {
             memcpy(gExtraFrameOffsets, &gRomData[R->extraFrameOffsets], 4352);
             fprintf(stderr, "gExtraFrameOffsets loaded (4352 bytes from ROM 0x%X).\n", R->extraFrameOffsets);
         } else {
+#ifdef TMC_ROM_WINDOW
+            Port_FatalRomError("Minish Cap", "gExtraFrameOffsets is outside the ROM.");
+#else
             memcpy(gExtraFrameOffsets, kExtraFrameOffsetsData, 4352);
             fprintf(stderr, "WARNING: gExtraFrameOffsets unavailable; using compile-time fallback.\n");
+#endif
         }
     }
 
@@ -1707,7 +1720,11 @@ void Port_LoadRom(const char* path) {
      * guarantees mapDataBase < gRomSize for every known offset table. */
     {
         u32 mapDataSize = gRomSize - R->mapDataBase;
-#ifdef TMC_EMBEDDED
+#if defined(TMC_ROM_WINDOW)
+        /* The linker placed gMapData in the window at the USA offset. */
+        if (gMapData != &gRomData[R->mapDataBase])
+            Port_FatalRomError("Minish Cap", "This build reads the USA ROM only.");
+#elif defined(TMC_EMBEDDED)
         if (mapDataSize > 0x100000u)
             mapDataSize = 0x100000u; /* gMapData is a 1 MB placeholder on N64 */
         memcpy(gMapData, &gRomData[R->mapDataBase], mapDataSize);

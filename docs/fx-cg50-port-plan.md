@@ -157,6 +157,17 @@ link works, a development build may keep its page pak in storage memory.)
 - **Fallback:** if gint's exception handling makes this impractical, convert
   the 121 sites to an accessor macro. The PC build can check that the
   converted code is exactly equivalent.
+- The window is at virtual address 0x20000000 (`FXCG_ROM_WINDOW` in
+  `port/fxcg/fxcg.ld`). ROM-resident symbols (the 400 constant ROM tables
+  the PC build compiles in, and `gMapData`) are linker-defined inside it
+  (`TMC_ROM_WINDOW`, `rom_symbols.ld`), so they cost no RAM, are not part of
+  the add-in, and are read through the same page cache.
+
+**Memory on the calculator (from the first link, 2026-11-18).** The add-in
+is 1.15 MB of code and read-only data, inside the 2 MB add-in mapping. The
+game's BSS is 1.54 MB and goes to a `sysram` region of the calculator's
+8 MB RAM (assumed 0x8c200000, 3 MB, to be measured in Phase 0 item 5), which
+leaves gint's 491 KB static RAM for the page cache and the heap.
 
 **D2. Audio runs on the ESP32.**
 

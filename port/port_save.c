@@ -38,6 +38,7 @@
  * Plus a small profile-management API consumed by port_debug_menu.cpp.
  */
 
+#include "port_target.h"
 #include "port_types.h"
 #include "region.h"
 #include <errno.h>
@@ -125,12 +126,24 @@ static int EepromSignatureKindAt(const u8* ramImage, u32 offset) {
     return 0;
 }
 
+/* The image holds the game's save structs as the CPU stored them, and
+ * src/save.c reads them natively; so do these. Little-endian on the PC (and
+ * the GBA); big-endian on TMC_BE targets, whose save files are therefore not
+ * interchangeable with the PC's. */
 static u16 ReadU16LE(const u8* data) {
+#ifdef TMC_BE
+    return (u16)(((u16)data[0] << 8) | (u16)data[1]);
+#else
     return (u16)((u16)data[0] | ((u16)data[1] << 8));
+#endif
 }
 
 static u32 ReadU32LE(const u8* data) {
+#ifdef TMC_BE
+    return ((u32)data[0] << 24) | ((u32)data[1] << 16) | ((u32)data[2] << 8) | (u32)data[3];
+#else
     return (u32)data[0] | ((u32)data[1] << 8) | ((u32)data[2] << 16) | ((u32)data[3] << 24);
+#endif
 }
 
 /* Mirrors src/save.c CalculateChecksum over a byte image. */
@@ -360,7 +373,7 @@ static int WriteEepromAtomic(const char* path) {
 #ifdef _WIN32
         if (ok)
             ok = _commit(_fileno(f)) == 0;
-#else
+#elif !defined(TMC_EMBEDDED) /* the calculator's fclose commits the file */
         if (ok)
             ok = fsync(fileno(f)) == 0;
 #endif

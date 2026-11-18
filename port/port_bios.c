@@ -1,3 +1,4 @@
+#include "port_target.h"
 #include "gba/io_reg.h"
 #include "save.h" /* gSave for Discord-RPC stat reads */
 #include "main.h"
@@ -11,7 +12,9 @@
 #include "port_discord_rpc.h"
 #include "port_gba_mem.h"
 #include "port_hdma.h"
+#ifndef TMC_EMBEDDED
 #include "port_imgui_menu.h"
+#endif
 #include "port_ppu.h"
 #include "port_rom.h"
 #ifdef TMC_RA
@@ -21,11 +24,15 @@
 #include "port_runtime_config.h"
 #include "port_roll_attack_macro.h"
 #include "port_softslots.h"
+#ifndef TMC_EMBEDDED
 #include "port_touch_controls.h"
+#endif
 #include "port_tts.h"
 #include "rando/rando_file_menu.h"
 #include "port_level_editor.h"
+#ifndef TMC_EMBEDDED
 #include <SDL3/SDL.h>
+#endif
 #include <math.h>
 #include <setjmp.h>
 #include "port_repro.h"
@@ -49,6 +56,7 @@ static const void* Port_ResolveCopySrc(const void* src, u32 size) {
     return port_resolve_addr((uintptr_t)src);
 }
 
+#ifndef TMC_EMBEDDED /* the SDL frontend; the fx-CG50 one is port/fxcg/ */
 typedef struct {
     PortInput input;
     u16 gbaMask;
@@ -64,17 +72,6 @@ static const PortInputMapEntry sInputMap[] = {
 extern Main gMain;
 extern void VBlankIntr(void);
 
-u64 DivAndModCombined(s32 num, s32 denom) {
-    s32 quotient;
-    s32 remainder;
-
-    if (denom == 0)
-        return 0;
-
-    quotient = num / denom;
-    remainder = num % denom;
-    return ((u64)(u32)remainder << 32) | (u32)quotient;
-}
 
 static void Port_UpdateInput(void) {
     Port_ApplyLanguage();
@@ -1088,6 +1085,20 @@ void VBlankIntrWait(void) {
 #endif
 
     VBlankIntr();
+}
+
+#endif /* !TMC_EMBEDDED */
+
+u64 DivAndModCombined(s32 num, s32 denom) {
+    s32 quotient;
+    s32 remainder;
+
+    if (denom == 0)
+        return 0;
+
+    quotient = num / denom;
+    remainder = num % denom;
+    return ((u64)(u32)remainder << 32) | (u32)quotient;
 }
 
 /* ---- BIOS functions ---- */
