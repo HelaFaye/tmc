@@ -13,6 +13,7 @@ on:
       - "build/USA/assets/**"
       - "scripts/fxcg/**"
       - "tests/fxcg50-emulator/**"
+      - "tests/fxcg50-tlb-probe/**"
       - ".github/workflows/fxcg50-emulator.yml"
   pull_request:
     paths:
@@ -23,6 +24,7 @@ on:
       - "build/USA/assets/**"
       - "scripts/fxcg/**"
       - "tests/fxcg50-emulator/**"
+      - "tests/fxcg50-tlb-probe/**"
       - ".github/workflows/fxcg50-emulator.yml"
   workflow_dispatch:
     inputs:
@@ -83,7 +85,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work/port/fxcg \
             fxsdk-ci:latest \
-            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON && fxsdk build-cg'
+            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON -DTMC_FXCG_TLB_STATE_PROBE=ON && fxsdk build-cg'
 
           G3A="$(find port/fxcg -type f -name 'Picori.g3a' -print -quit)"
           test -n "$G3A"
@@ -99,6 +101,17 @@ jobs:
           PROBE_G3A="$(find port/fxcg -type f -name 'TLBH-LINK-PROBE-DO-NOT-RUN.g3a' -print -quit)"
           test -n "$PROBE_G3A"
           echo "Built link-only probe $PROBE_G3A (not executed)"
+          TLB_STATE_PROBE_G3A="$(find port/fxcg -type f -name 'TLB-STATE-PROBE.g3a' -print -quit)"
+          test -n "$TLB_STATE_PROBE_G3A"
+          printf 'FXCG_TLB_STATE_PROBE_G3A=%s\n' "$TLB_STATE_PROBE_G3A" >> "$GITHUB_ENV"
+          echo "Built read-only UTLB state probe $TLB_STATE_PROBE_G3A"
+
+      - name: Upload read-only UTLB state probe add-in
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxcg50-tlb-state-probe
+          path: ${{ env.FXCG_TLB_STATE_PROBE_G3A }}
+          if-no-files-found: error
 
       - name: Check out Casio CG50 emulator
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

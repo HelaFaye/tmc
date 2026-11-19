@@ -19,6 +19,8 @@ option(TMC_FXCG_PPU_BENCH
     "Build the on-device PPU timing overlay (no clock changes)" OFF)
 option(TMC_FXCG_TLBH_LINK_PROBE
     "Build a non-runnable link-only probe for overriding Gint's TLB-miss handler" OFF)
+option(TMC_FXCG_TLB_STATE_PROBE
+    "Build a read-only fx-CG50 UTLB state probe for hardware diagnostics" OFF)
 if(TMC_FXCG_PPU_BENCH)
     find_package(LibProf 2.1 REQUIRED)
 endif()
@@ -128,5 +130,22 @@ if(TMC_FXCG_TLBH_LINK_PROBE)
     generate_g3a(TARGET fxcg_tlbh_link_probe
         OUTPUT "TLBH-LINK-PROBE-DO-NOT-RUN.g3a"
         NAME "TLBH Link Probe - DO NOT RUN"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Read-only target-hardware snapshot of MMUCR/PTEH/PTEL and all UTLB entries.
+# It uses Gint's default TLB handler and never modifies MMU state.
+if(TMC_FXCG_TLB_STATE_PROBE)
+    add_executable(fxcg_tlb_state_probe
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.c)
+    target_compile_options(fxcg_tlb_state_probe PRIVATE
+        -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_tlb_state_probe PRIVATE Gint::Gint)
+    # Preserve the linker-script libc _errno placement assertion.
+    target_link_options(fxcg_tlb_state_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_tlb_state_probe
+        OUTPUT "TLB-STATE-PROBE.g3a"
+        NAME "TLB State Probe"
         ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()
