@@ -119,7 +119,12 @@ if(TMC_FXCG_TLBH_LINK_PROBE)
     target_compile_options(fxcg_tlbh_link_probe PRIVATE
         -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
     target_link_libraries(fxcg_tlbh_link_probe PRIVATE Gint::Gint)
-    target_link_options(fxcg_tlbh_link_probe PRIVATE -Wl,--gc-sections)
+    # Keep the fxcg.ld _errno placement canary active in this minimal target.
+    # The probe does not otherwise use malloc(), so force libc's _errno object
+    # into the link instead of letting the linker-script assertion see it as
+    # an unresolved symbol. This does not change the TLB-handler test itself.
+    target_link_options(fxcg_tlbh_link_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
     generate_g3a(TARGET fxcg_tlbh_link_probe
         OUTPUT "TLBH-LINK-PROBE-DO-NOT-RUN.g3a"
         NAME "TLBH Link Probe - DO NOT RUN"
