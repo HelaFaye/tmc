@@ -84,7 +84,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work/port/fxcg \
             fxsdk-ci:latest \
-            sh -lc 'fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON && fxsdk build-cg'
+            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON && fxsdk build-cg'
 
           G3A="$(find port/fxcg -type f -name 'Picori.g3a' -print -quit)"
           test -n "$G3A"
