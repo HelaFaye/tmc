@@ -119,6 +119,7 @@ release/
 # Regenerable diagnostic capture (TMC_ROOMCAP harness default output). Contains a
 # rendered copyrighted ROM frame; never commit. The harness recreates it on demand.
 roomcap.png
+emulated-screen.ppm
 
 # Discord Rich Presence application ID — per-developer/release secret-by-policy
 # (technically public-by-design, but we don't want forks to inherit our app).

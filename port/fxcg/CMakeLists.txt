@@ -13,6 +13,8 @@ project(Picori C)
 include(GenerateG3A)
 find_package(Gint 2.11 REQUIRED)
 
+option(TMC_FXCG_EMULATOR_TEST
+    "Build the fail-closed boot screen for the headless fx-CG50 emulator" OFF)
 option(TMC_FXCG_PPU_BENCH
     "Build the on-device PPU timing overlay (no clock changes)" OFF)
 if(TMC_FXCG_PPU_BENCH)
@@ -78,6 +80,9 @@ add_executable(picori ${PICORI_GAME_SOURCES} ${PICORI_PORT_SOURCES})
 target_compile_options(picori PRIVATE -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
 target_compile_definitions(picori PRIVATE
     PC_PORT NON_MATCHING USA ENGLISH REVISION=0 MULTI_REGION TMC_FXCG)
+if(TMC_FXCG_EMULATOR_TEST)
+    target_compile_definitions(picori PRIVATE TMC_FXCG_EMULATOR_TEST=1)
+endif()
 if(TMC_FXCG_PPU_BENCH)
     target_compile_definitions(picori PRIVATE TMC_FXCG_PPU_BENCH=1)
 endif()

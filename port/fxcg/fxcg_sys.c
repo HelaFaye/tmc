@@ -49,8 +49,18 @@ void Fxcg_ShowMessage(const char* line1, const char* line2) {
     dtext(4, 4, C_WHITE, line1);
     if (line2)
         dtext(4, 20, C_WHITE, line2);
+#ifdef TMC_FXCG_EMULATOR_TEST
+    /* Reserved framebuffer sentinel: the headless emulator oracle
+     * verifies that this fail-closed message path was reached. */
+    Fxcg_Vram()[0] = 0x07e0;
+#endif
     dupdate();
+#ifdef TMC_FXCG_EMULATOR_TEST
+    /* Hold the rendered screen; the emulator has no physical key. */
+    for (;;) __asm__ volatile("nop");
+#else
     getkey();
+#endif
 }
 
 static volatile int sTicks;

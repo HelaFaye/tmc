@@ -1,0 +1,121 @@
+name: fx-CG50 emulator smoke test
+
+on:
+  push:
+    branches:
+      - master
+      - fx-cg50
+    paths:
+      - "port/fxcg/**"
+      - "port/port_*.c"
+      - "src/**"
+      - "include/**"
+      - "build/USA/assets/**"
+      - "scripts/fxcg/**"
+      - "tests/fxcg50-emulator/**"
+      - ".github/workflows/fxcg50-emulator.yml"
+  pull_request:
+    paths:
+      - "port/fxcg/**"
+      - "port/port_*.c"
+      - "src/**"
+      - "include/**"
+      - "build/USA/assets/**"
+      - "scripts/fxcg/**"
+      - "tests/fxcg50-emulator/**"
+      - ".github/workflows/fxcg50-emulator.yml"
+  workflow_dispatch:
+    inputs:
+      refresh_toolchain:
+        description: "Ignore the cached fxSDK/SH-4A toolchain layers and rebuild them"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fxcg50-emulator:
+    name: Build and boot Picori in Casio emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out Picori
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out fxSDK toolchain recipe
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: hexbinoct/casio-cg50
+          ref: deeaa627cd7e1aeb14339b14eb4f3a1f0375f07a
+          path: .cache/fxsdk-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build fxSDK and SH-4A toolchain image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .cache/fxsdk-source/tools/fxsdk-docker
+          file: .cache/fxsdk-source/tools/fxsdk-docker/Dockerfile
+          tags: fxsdk-ci:latest
+          load: true
+          push: false
+          cache-from: type=gha,scope=fxsdk-sh4a-deeaa627
+          cache-to: type=gha,mode=max,scope=fxsdk-sh4a-deeaa627
+          no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
+
+      - name: Build Picori fx-CG50 emulator-test add-in
+        shell: bash
+        run: |
+          # This is the real port target and linker script. The only test-only
+          # define suppresses getkey() after the current fail-closed ROM error
+          # screen and paints a one-pixel framebuffer sentinel for the oracle.
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work/port/fxcg \
+            fxsdk-ci:latest \
+            sh -lc 'fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON && fxsdk build-cg'
+
+          G3A="$(find port/fxcg -type f -name 'Picori.g3a' -print -quit)"
+          test -n "$G3A"
+          printf 'FXSDK_G3A=%s\n' "$G3A" >> "$GITHUB_ENV"
+          echo "Built $G3A"
+
+      - name: Check out Casio CG50 emulator
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: Heath123/casio-emu
+          # Same pinned emulator revision used by fxOGL's hardware-independent
+          # regression workflow; bump deliberately when the emulator changes.
+          ref: 5d34e298b94be65f7ab0505d3c0f9b9ed802ac4b
+          path: .cache/casio-emu
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build headless Casio emulator
+        run: |
+          cmake -S tests/fxcg50-emulator/casio-emu-headless \
+            -B build/casio-emu-headless \
+            -DCASIO_EMU_SOURCE="$GITHUB_WORKSPACE/.cache/casio-emu"
+          cmake --build build/casio-emu-headless --parallel 2
+
+      - name: Run Picori add-in in Casio emulator
+        run: timeout 120 build/casio-emu-headless/casio-emu-headless "$FXSDK_G3A"
+
+      - name: Upload emulated calculator screen
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: picori-fxcg50-emulated-screen
+          path: emulated-screen.ppm
+          if-no-files-found: ignore
