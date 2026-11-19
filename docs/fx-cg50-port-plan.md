@@ -240,9 +240,7 @@ that another OS version or future lifecycle will behave identically. Gint's
   page granularity costs almost nothing.
 - Deflate comes first: its decoder is small and fast without an FPU. LZMA saves
   another sixth of the link time, if the SH-4A has the cycles to spare.
-- Pointer tables the PC port resolves at load time are resolved by the build
-  tools instead and shipped baked, so the calculator does not need the pages
-  the PC port touches while loading.
+- The intended D6 output bakes pointer tables that the PC port currently resolves at load time. The TMC_FXCG startup code still contains direct `gRomData` reads for the ROM header, region and pointer tables, so those measured load-phase pages remain in the PCPK resident baseline until generated data demonstrably replaces every such read.
 - The calculator never parses JSON.
 
 **D7. The launcher runs applications from RAM.**

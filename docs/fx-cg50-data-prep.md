@@ -30,10 +30,17 @@ scripts/fxcg/prepare_calculator_data.sh \
 ```
 
 The packer checks the exact ROM size and SHA-1 expected by the current USA
-linker symbols. It collects the distinct 4 KiB pages observed by completed
-room runs, stores each page once, and independently raw-DEFLATE-compresses
-it (storing an incompressible page raw). Every page is decompressed again and
-byte-compared against the source ROM before the output is accepted.
+linker symbols. It accepts only room runs with a zero process exit status,
+post-intro seed evidence, a complete ROM-touch summary matching the touch log,
+and a confirmed requested destination. Expected unreachable/redirected rooms
+are excluded; missing or inconsistent run evidence aborts packaging. It collects
+both `load` and `play` records from accepted runs. The union of load-phase pages is promoted into the common resident
+baseline, so the game can resolve its ROM header and pointer tables before
+room-specific paging starts. Repeated captures of one room are unioned across
+all supplied directories. Each distinct 4 KiB page is stored once and
+independently raw-DEFLATE-compressed (or stored raw when compression expands
+it). Every page is decompressed again and byte-compared against the source
+ROM before the output is accepted.
 
 Three files are produced:
 
@@ -55,8 +62,10 @@ prepared input, not yet a loadable runtime resource. Do not remove that
 fail-closed behaviour or claim the game boots until the TLB-backed page
 reader (or the documented accessor fallback) has been implemented and tested.
 
-The game BSS placement is separate from ROM paging. It now targets the
-upper DRAM range described in `fxcg.ld`; the repository CI also checks that
-linker range and capacity assertion. The memory map is verified on fx-CG50
-hardware, but the exact OS 3.20.0202 target still needs a write/read smoke
-test. This does not make ROM data available by itself.
+The game BSS placement is separate from ROM paging. It targets the upper
+DRAM range described in `fxcg.ld`, and CI checks the measured origin,
+capacity, and BSS placement. RAMCheck v2 passed the entire 3,200 KiB range
+through its uncached P2 alias on the target fx-CG50 running OS 3.20.0202
+(800 blocks, 12,001 checks, zero failures or restore failures). This confirms
+read/write access and restoration during that test session; it does not test
+Picori startup, runtime coexistence with the OS, or ROM paging.

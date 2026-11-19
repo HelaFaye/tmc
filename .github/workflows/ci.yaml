@@ -50,6 +50,8 @@ jobs:
           persist-credentials: false
       - name: Check upper-DRAM BSS placement
         run: python3 scripts/fxcg/check_memory_layout.py
+      - name: Test fx-CG50 host validation tools
+        run: python3 -m unittest discover -s scripts/fxcg -p 'test_*.py' -v
 
   meta:
     runs-on: ubuntu-latest

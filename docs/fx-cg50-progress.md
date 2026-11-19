@@ -1,8 +1,10 @@
 # fx-CG50 port: progress log
 
 What has been done, measured and decided, newest first. The plan is in
-[`fx-cg50-port-plan.md`](fx-cg50-port-plan.md). Update this file with every
-step that changes what is known.
+[`fx-cg50-port-plan.md`](fx-cg50-port-plan.md). The D1 refill constraints,
+startup working-set finding and test sequence are in
+[`fx-cg50-d1-paging-spike.md`](fx-cg50-d1-paging-spike.md). Update this file
+with every step that changes what is known.
 
 ## Status
 

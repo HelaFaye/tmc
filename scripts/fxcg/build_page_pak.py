@@ -22,14 +22,14 @@ PCPK v1 layout (all integers little-endian):
 The room-touch logs must come from completed room runs (the harness prints
 "warp -> 1" after successfully reaching its target room).
 """
-import glob
 import hashlib
 import json
 import os
-import re
 import struct
 import sys
 import zlib
+
+from rom_touch_validation import discover_tags, validate_run
 
 PAGE_SHIFT = 12
 PAGE = 1 << PAGE_SHIFT
@@ -45,41 +45,33 @@ def deflate(data):
 
 
 def load_rooms(directories):
+    """Collect only runs that pass the shared sweep evidence validator.
+
+    Fatal/incomplete captures stop packaging. Expected but unreachable or
+    redirected destinations are excluded without contaminating the pak.
+    """
     rooms = {}
+    load_pages = set()
     for directory in directories:
-        for path in sorted(glob.glob(os.path.join(directory, "touch-*.txt"))):
-            tag = os.path.basename(path)[len("touch-"):-len(".txt")]
-            log = os.path.join(directory, "log-%s.txt" % tag)
-            try:
-                with open(log, encoding="utf-8", errors="replace") as stream:
-                    completed = "warp -> 1" in stream.read()
-            except OSError:
-                continue
-            if not completed:
+        for tag in discover_tags(directory):
+            result, reason, fatal = validate_run(directory, tag)
+            if reason:
+                if fatal:
+                    raise ValueError("invalid ROM-touch run %s/%s: %s" % (directory, tag, reason))
                 continue
 
-            match = re.fullmatch(r"(?:0[xX])?([0-9A-Fa-f]{1,2})-(?:0[xX])?([0-9A-Fa-f]{1,2})", tag)
-            if not match:
-                raise ValueError("invalid room-touch filename: " + path)
-            area, room = (int(part, 16) for part in match.groups())
-            pages = set()
-            with open(path, encoding="utf-8", errors="strict") as stream:
-                for line_number, line in enumerate(stream, 1):
-                    if not line.startswith("play "):
-                        continue
-                    fields = line.split()
-                    if len(fields) < 2:
-                        raise ValueError("malformed page record at %s:%d" % (path, line_number))
-                    try:
-                        page = int(fields[1], 10)
-                    except ValueError as exc:
-                        raise ValueError("invalid page number at %s:%d" % (path, line_number)) from exc
-                    if not 0 <= page < ROM_SIZE // PAGE:
-                        raise ValueError("ROM page out of range at %s:%d: %s" % (path, line_number, page))
-                    pages.add(page)
-            if pages:
-                rooms[(area, room)] = pages
-    return rooms
+            key = (result["area"], result["room"])
+            # Repeated captures of the same room are accumulated, not replaced.
+            rooms.setdefault(key, set()).update(result["play"])
+            load_pages.update(result["load"])
+
+    # Port_LoadRom() still reads ROM-window pages during startup (header,
+    # region tables and pointer tables). Until every such path is replaced by
+    # generated/baked data, keep the union of measured load pages resident.
+    # Adding it to every room makes it part of the PCPK v1 common baseline.
+    for pages in rooms.values():
+        pages.update(load_pages)
+    return rooms, load_pages
 
 
 def decode_page(blob, stored_size, page_number):
@@ -109,7 +101,7 @@ def main(argv):
     if rom_sha1 != USA_SHA1:
         raise SystemExit("ROM SHA-1 mismatch: this fx-CG50 build's linker symbols target the supported USA ROM; got %s" % rom_sha1)
 
-    rooms = load_rooms(argv[3:])
+    rooms, load_pages = load_rooms(argv[3:])
     if not rooms:
         raise SystemExit("no completed room runs found; run rom_touch_sweep.sh first")
 
@@ -185,7 +177,7 @@ def main(argv):
         "format": "PCPK", "version": 1, "codec": "raw-deflate-per-4KiB-page",
         "rom_region": "USA", "rom_size": len(rom), "rom_sha1": rom_sha1,
         "page_size": PAGE, "unique_pages": len(all_pages), "rooms": len(keys),
-        "baseline_pages": len(baseline), "raw_pages": raw_count,
+        "baseline_pages": len(baseline), "load_pages": len(load_pages), "raw_pages": raw_count,
         "pak_size": len(out), "pak_sha256": pak_sha256,
         "note": "Personal-use ROM-derived data. Do not commit or redistribute."
     }
@@ -203,6 +195,7 @@ def main(argv):
     print("Rooms %d; unique pages %d (%.2f MiB raw) -> pak %.2f MiB (%.1f%% payload ratio)" % (
         len(keys), len(all_pages), raw_total / 2**20, len(out) / 2**20,
         100.0 * compressed_total / raw_total))
+    print("Load-phase pages in resident baseline: %d (%.1f KiB raw)" % (len(load_pages), len(load_pages) * PAGE / 1024))
     print("Baseline %d pages; %.1f KiB compressed; %d pages stored raw" % (
         len(baseline), sum(len(blobs[index_of[p]]) for p in baseline) / 1024, raw_count))
     print("Per-room beyond baseline: median %.1f KiB, p90 %.1f KiB, max %.1f KiB" % (

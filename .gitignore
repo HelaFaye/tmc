@@ -187,3 +187,8 @@ objects/
 room.png
 rebuild.tgz
 vrdump/
+
+# Keep fx-CG50 CI validation scripts versioned.
+!scripts/fxcg/check_memory_layout.py
+!scripts/fxcg/test_fxcg_validation.py
+!scripts/fxcg/rom_touch_validation.py

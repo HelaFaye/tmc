@@ -401,6 +401,7 @@ static int LoadExtractedPages(void) {
 /*  ROM access logging — now also extracts the touched page           */
 /* ------------------------------------------------------------------ */
 void Port_LogRomAccess(u32 gba_addr, const char* caller) {
+#ifndef TMC_EMBEDDED
     if (gba_addr < 0x08000000u)
         return;
     u32 offset = gba_addr - 0x08000000u;
@@ -410,9 +411,14 @@ void Port_LogRomAccess(u32 gba_addr, const char* caller) {
         fflush(stderr);
     }
     ExtractPage(page);
+#else
+    (void)gba_addr;
+    (void)caller;
+#endif
 }
 
 void Port_PrintRomAccessSummary(void) {
+#ifndef TMC_EMBEDDED
     int count = 0;
     for (u32 p = 0; p < ROM_MAX_PAGES; p++) {
         if (IsPageExtracted(p))
@@ -421,6 +427,7 @@ void Port_PrintRomAccessSummary(void) {
     fprintf(stderr, "\n[ROM] Summary: %d pages (4 KB each, %d KB total) extracted to " ROM_EXTRACT_DIR "/\n", count,
             count * 4);
     fflush(stderr);
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -1852,6 +1859,7 @@ void Port_LoadRom(const char* path) {
         Port_InitDataStubs();
     }
 
+#ifndef TMC_EMBEDDED
     /* ---- Extract all known ROM regions to rom_data/ ---- */
     EnsureExtractDir();
 
@@ -1924,6 +1932,7 @@ void Port_LoadRom(const char* path) {
     }
 
     Port_PrintRomAccessSummary();
+#endif /* !TMC_EMBEDDED: host-side ROM-page extraction */
 }
 
 void Port_ApplyLanguage(void) {
