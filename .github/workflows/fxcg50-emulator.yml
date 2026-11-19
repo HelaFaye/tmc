@@ -74,22 +74,31 @@ jobs:
           cache-to: type=gha,mode=max,scope=fxsdk-sh4a-deeaa627
           no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
 
-      - name: Build Picori fx-CG50 emulator-test add-in
+      - name: Build Picori and the Gint TLB-hook link probe
         shell: bash
         run: |
-          # This is the real port target and linker script. The only test-only
-          # define suppresses getkey() after the current fail-closed ROM error
-          # screen and paints a one-pixel framebuffer sentinel for the oracle.
+          # Picori keeps Gint's default TLB handler. The second target is a
+          # link-only symbol-resolution probe whose stub is never executed.
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work/port/fxcg \
             fxsdk-ci:latest \
-            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON && fxsdk build-cg'
+            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON && fxsdk build-cg'
 
           G3A="$(find port/fxcg -type f -name 'Picori.g3a' -print -quit)"
           test -n "$G3A"
           printf 'FXSDK_G3A=%s\n' "$G3A" >> "$GITHUB_ENV"
           echo "Built $G3A"
+          PROBE_ELF="$(find port/fxcg/build-cg -maxdepth 2 -type f -name 'fxcg_tlbh_link_probe' -print -quit)"
+          test -n "$PROBE_ELF"
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            fxsdk-ci:latest \
+            sh -c 'python3 tests/fxcg50-tlb-probe/verify_link.py "$1"' sh "$PROBE_ELF"
+          PROBE_G3A="$(find port/fxcg -type f -name 'TLBH-LINK-PROBE-DO-NOT-RUN.g3a' -print -quit)"
+          test -n "$PROBE_G3A"
+          echo "Built link-only probe $PROBE_G3A (not executed)"
 
       - name: Check out Casio CG50 emulator
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

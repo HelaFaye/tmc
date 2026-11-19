@@ -17,6 +17,8 @@ option(TMC_FXCG_EMULATOR_TEST
     "Build the fail-closed boot screen for the headless fx-CG50 emulator" OFF)
 option(TMC_FXCG_PPU_BENCH
     "Build the on-device PPU timing overlay (no clock changes)" OFF)
+option(TMC_FXCG_TLBH_LINK_PROBE
+    "Build a non-runnable link-only probe for overriding Gint's TLB-miss handler" OFF)
 if(TMC_FXCG_PPU_BENCH)
     find_package(LibProf 2.1 REQUIRED)
 endif()
@@ -102,3 +104,24 @@ target_link_options(picori PRIVATE -Wl,--gc-sections)
 
 generate_g3a(TARGET picori OUTPUT "Picori.g3a" NAME "Picori"
     ICONS assets/icon-uns.png assets/icon-sel.png)
+
+# A separate tiny target verifies that an application object can provide
+# Gint's .gint.tlbh entry point under this exact toolchain and linker script.
+# Its handler is a deliberately nonfunctional `rte; nop` stub: build and
+# inspect its ELF only; NEVER execute the generated add-in.
+if(TMC_FXCG_TLBH_LINK_PROBE)
+    # CMake otherwise ignores the .S input when only C is enabled.
+    # Since C is already enabled, ASM uses the same SH cross-compiler.
+    enable_language(ASM)
+    add_executable(fxcg_tlbh_link_probe
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlbh_link_probe.c
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlbh_link_probe.S)
+    target_compile_options(fxcg_tlbh_link_probe PRIVATE
+        -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_tlbh_link_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_tlbh_link_probe PRIVATE -Wl,--gc-sections)
+    generate_g3a(TARGET fxcg_tlbh_link_probe
+        OUTPUT "TLBH-LINK-PROBE-DO-NOT-RUN.g3a"
+        NAME "TLBH Link Probe - DO NOT RUN"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()

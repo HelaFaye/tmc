@@ -193,3 +193,6 @@ vrdump/
 !scripts/fxcg/check_memory_layout.py
 !scripts/fxcg/test_fxcg_validation.py
 !scripts/fxcg/rom_touch_validation.py
+
+# fx-CG50 TLB-handler link-probe verifier
+!tests/fxcg50-tlb-probe/verify_link.py
