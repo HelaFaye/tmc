@@ -8,7 +8,7 @@ step that changes what is known.
 
 | Phase | State |
 |---|---|
-| 0. Measure and set up | ROM working set done; SH-4 toolchain built and checked; code size measured (about 1.0 MB of game code); device measurements and spikes not started |
+| 0. Measure and set up | ROM working set measured (590 validated rooms); SH-4 toolchain built and checked; code size measured (about 1.0 MB); upper 3,200 KiB DRAM passed RAMCheck v2 on OS 3.20.0202; D1 ROM-window spike remains outstanding |
 | 1. The game on the calculator | **Current focus.** `port/fxcg/` written; `Picori.g3a` builds and links (1.15 MB, no ROM data inside). Next: the D1 ROM window, so the add-in can read ROM pages |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
 | 3-6 | Not started |
@@ -33,6 +33,47 @@ So the calculator platform layer is small: BIOS, saves, audio hooks, assets,
 presentation and settings, plus stubs for the PC-only features.
 
 ## Log
+
+### 2026-11-18: corrected post-intro ROM working-set sweep
+
+The full corrected sweep attempted 592 area/room pairs from 74 named areas.
+The harness validated 590 destinations after settling; two attempts were
+rejected (`0x49/0x00` did not arm its warp, and `0x89/0x06` redirected to
+`0x88/0x1a`). The 590 validated runs touched 506 unique play pages
+(2,072,576 bytes; 1.98 MiB), with 15 minimum, 21 median and 79 maximum
+pages per room (Hyrule Town `0x02/0x01`, 316 KiB). The clean load-phase
+union remains 116 pages (464 KiB). The earlier 478-page / 0.74 MB pak
+figures came from the prior sweep and are superseded. The page pak, common
+baseline and compressed-size figures have not yet been rebuilt from this
+corrected dataset; rerun the host packer before using those figures for
+calculator storage or preload budgeting.
+
+### 2026-11-18: upper DRAM validated on fx-CG50 OS 3.20.0202
+
+`tools/fxcg50-ramcheck/RAMCheck.g3a` v2 ran on the target calculator and
+passed the complete candidate region through the uncached P2 alias. The
+saved report recorded:
+
+| Measure | Result |
+|---|---:|
+| P1 range used by Picori `.xbss` | `0x8c4e0000..0x8c800000` |
+| P2 alias used by RAMCheck | `0xac4e0000..0xac800000` |
+| Physical range / capacity | `0x0c4e0000..0x0c800000` / 3,200 KiB |
+| 4 KiB blocks | 800 / 800 |
+| Checks passed | 12,001 |
+| Failed checks | 0 |
+| Restore failures | 0 |
+| Result | **PASS** |
+
+The probe tested byte, halfword and word patterns, within-block address
+patterns, walking data bits and distinct cross-block page signatures. It
+saved and verified the original contents. The linked `.xbss` is 1,539,760
+bytes, ending at `0x8c657eb0`, leaving 1,737,040 bytes in the configured
+region. This validates read/write access and restoration on this calculator
+and OS version during the test session; it is not a guarantee about every
+OS version or future lifecycle. The physical DRAM backing Picori's P1
+linker region is hardware-tested on the target OS 3.20.0202 through P2.
+
 
 ### 2026-11-18: Picori.g3a links
 
@@ -92,13 +133,20 @@ through the same paged window as the rest of the ROM, the add-in shrinks by
 compiled-in fallbacks (`kFrameObjListsData`, `kExtraFrameOffsetsData`) are
 unreferenced on the calculator and dropped by the linker.
 
-**sysram is an assumption.** The game's own BSS (GBA EWRAM 256 KB, VRAM
-96 KB, `gFrameObjLists` 200 KB, the PPU's frame and line snapshots 310 KB,
-map buffers) is 1.54 MB, three times gint's static RAM. `fxcg.ld` puts it in
-a `sysram` region at 0x8c200000, 3 MB, which the calculator's OS is assumed
-to leave unused, and `fxcg_main.c` clears it at start. That address is not
-measured: it is Phase 0 item 5 on a real fx-CG50, and the first thing to
-check when the add-in runs. Moving it is a one-line change in `fxcg.ld`.
+**sysram placement corrected from the hardware memory map.** The game's own BSS
+(GBA EWRAM 256 KB, VRAM 96 KB, `gFrameObjLists` 200 KB, PPU frame/line
+snapshots and map buffers) is about 1.54 MB. The old `0x8c200000` placement
+is unsafe on newer OS versions: that DRAM area is cleared/used by the OS.
+`fxcg.ld` now places the BSS at `0x8c4e0000`, the P1 alias of physical
+`0x0c4e0000`, in the upper 3,200 KiB that the fx-CG50 memory investigation
+found untouched by the OS. The linker asserts that `.xbss` fits. RAMCheck v2 passed the complete
+3,200 KiB range through the uncached P2 alias on the target fx-CG50 running
+OS 3.20.0202: 800/800 4 KiB blocks, 12,001 checks, zero failed checks and
+zero restore failures. The linked `.xbss` ends at `0x8c657eb0`, leaving
+1,737,040 bytes in the configured region. This validates read/write access
+and restoration on this calculator and OS during the test session; it does
+not guarantee the same behavior on other OS versions or future lifecycles.
+`fxcg_main.c` clears this region at startup.
 
 Open risks found while linking:
 - **Byte order of ROM structures read in place.** Code that reads ROM data

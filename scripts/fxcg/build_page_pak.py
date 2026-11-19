@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
-"""Build the page pak the fx-CG50 port streams from the ESP32 (see
-docs/fx-cg50-port-plan.md, "Preloading over the ESP32 link").
+"""Build a compact, page-addressable ROM pak for the fx-CG50.
 
-usage: build_page_pak.py <baserom.gba> <out.pak> <touch-dir> [<touch-dir> ...]
+usage: build_page_pak.py <USA-baserom.gba> <out.pak> <touch-dir> [<touch-dir> ...]
 
-The touch directories come from rom_touch_sweep.sh. Every ROM page any room
-touched during play is stored once, deflate-compressed on its own, so the
-calculator can cache and fetch single pages. Pages every room touches form
-the resident baseline. Each room gets a manifest: the pages it needs.
+The calculator target currently links the USA ROM symbol map. This tool
+therefore accepts only the exact supported USA ROM image. It stores each
+4 KiB page observed by the room-touch sweeps once, compressed independently
+with raw DEFLATE (or verbatim when compression would expand it). The output
+is a derived personal-use data file; do not commit or distribute it.
 
-Layout (all integers little-endian):
-  header      magic "PCPK", u16 version=1, u8 codec (1 = raw deflate),
-              u8 page_shift (12), u32 rom_size, u32 page_count,
+PCPK v1 layout (all integers little-endian):
+  header      magic "PCPK", u16 version=1, u8 codec=1 (raw DEFLATE),
+              u8 page_shift=12, u32 rom_size, u32 page_count,
               u32 room_count, u32 baseline_count, u32 manifest_entries
   page table  page_count x { u16 rom_page, u16 stored_size, u32 data_offset }
-              sorted by rom_page; data_offset is from the start of the data
-              blob; stored_size == 4096 means stored uncompressed
   baseline    baseline_count x u16 index into the page table
   rooms       room_count x { u8 area, u8 room, u16 page_count, u32 first }
-              first indexes the manifest list
   manifests   manifest_entries x u16 index into the page table
-  data        the compressed pages
-A room is listed only if its run reached it (the harness logged "warp -> 1").
-The pak holds ROM data: build it from your own ROM and do not distribute it.
+  data        independent page blobs; stored_size == 4096 means raw bytes
+
+The room-touch logs must come from completed room runs (the harness prints
+"warp -> 1" after successfully reaching its target room).
 """
 import glob
 import hashlib
+import json
 import os
 import re
 import struct
@@ -34,7 +33,10 @@ import zlib
 
 PAGE_SHIFT = 12
 PAGE = 1 << PAGE_SHIFT
+ROM_SIZE = 0x1000000
 USA_SHA1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+HEADER_SIZE = 28
+PAGE_ENTRY_SIZE = 8
 
 
 def deflate(data):
@@ -45,48 +47,101 @@ def deflate(data):
 def load_rooms(directories):
     rooms = {}
     for directory in directories:
-        for path in glob.glob(os.path.join(directory, "touch-*.txt")):
+        for path in sorted(glob.glob(os.path.join(directory, "touch-*.txt"))):
             tag = os.path.basename(path)[len("touch-"):-len(".txt")]
             log = os.path.join(directory, "log-%s.txt" % tag)
             try:
-                if "warp -> 1" not in open(log, errors="replace").read():
-                    continue
+                with open(log, encoding="utf-8", errors="replace") as stream:
+                    completed = "warp -> 1" in stream.read()
             except OSError:
                 continue
-            area, room = (int(part, 16) for part in tag.split("-"))
-            pages = {int(line.split()[1]) for line in open(path) if line.startswith("play ")}
-            rooms[(area, room)] = pages
+            if not completed:
+                continue
+
+            match = re.fullmatch(r"(?:0[xX])?([0-9A-Fa-f]{1,2})-(?:0[xX])?([0-9A-Fa-f]{1,2})", tag)
+            if not match:
+                raise ValueError("invalid room-touch filename: " + path)
+            area, room = (int(part, 16) for part in match.groups())
+            pages = set()
+            with open(path, encoding="utf-8", errors="strict") as stream:
+                for line_number, line in enumerate(stream, 1):
+                    if not line.startswith("play "):
+                        continue
+                    fields = line.split()
+                    if len(fields) < 2:
+                        raise ValueError("malformed page record at %s:%d" % (path, line_number))
+                    try:
+                        page = int(fields[1], 10)
+                    except ValueError as exc:
+                        raise ValueError("invalid page number at %s:%d" % (path, line_number)) from exc
+                    if not 0 <= page < ROM_SIZE // PAGE:
+                        raise ValueError("ROM page out of range at %s:%d: %s" % (path, line_number, page))
+                    pages.add(page)
+            if pages:
+                rooms[(area, room)] = pages
     return rooms
+
+
+def decode_page(blob, stored_size, page_number):
+    if stored_size == PAGE:
+        decoded = blob
+    else:
+        decoder = zlib.decompressobj(-15)
+        decoded = decoder.decompress(blob) + decoder.flush()
+        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError("invalid DEFLATE stream for ROM page %d" % page_number)
+    if len(decoded) != PAGE:
+        raise ValueError("wrong decoded length for ROM page %d: %d" % (page_number, len(decoded)))
+    return decoded
 
 
 def main(argv):
     if len(argv) < 4:
         print(__doc__)
         return 2
-    rom = open(argv[1], "rb").read()
-    if hashlib.sha1(rom).hexdigest() != USA_SHA1:
-        print("warning: ROM is not the USA release tmc.sha1 names", file=sys.stderr)
+
+    rom_path, output_path = argv[1], argv[2]
+    with open(rom_path, "rb") as stream:
+        rom = stream.read()
+    if len(rom) != ROM_SIZE:
+        raise SystemExit("unsupported ROM size: expected exactly 16 MiB, got %d bytes" % len(rom))
+    rom_sha1 = hashlib.sha1(rom).hexdigest()
+    if rom_sha1 != USA_SHA1:
+        raise SystemExit("ROM SHA-1 mismatch: this fx-CG50 build's linker symbols target the supported USA ROM; got %s" % rom_sha1)
+
     rooms = load_rooms(argv[3:])
     if not rooms:
-        print("no completed room runs found", file=sys.stderr)
-        return 1
+        raise SystemExit("no completed room runs found; run rom_touch_sweep.sh first")
 
     all_pages = sorted(set().union(*rooms.values()))
     baseline = set.intersection(*rooms.values())
-    index_of = {page: i for i, page in enumerate(all_pages)}
+    if not all_pages:
+        raise SystemExit("room sweeps contained no ROM pages")
+    if len(all_pages) > 0xFFFF:
+        raise SystemExit("too many unique ROM pages for PCPK v1")
 
+    index_of = {page: i for i, page in enumerate(all_pages)}
     blobs = []
+    raw_count = 0
     for page in all_pages:
         raw = rom[page * PAGE:(page + 1) * PAGE]
+        if len(raw) != PAGE:
+            raise ValueError("ROM page %d is incomplete" % page)
         packed = deflate(raw)
-        blobs.append(packed if len(packed) < PAGE else raw)
+        if len(packed) < PAGE:
+            blobs.append(packed)
+        else:
+            blobs.append(raw)
+            raw_count += 1
 
     keys = sorted(rooms)
     manifests = []
     room_table = []
-    for key in keys:
-        pages = sorted(rooms[key] - baseline)
-        room_table.append((key[0], key[1], len(pages), len(manifests)))
+    for area, room in keys:
+        pages = sorted(rooms[(area, room)] - baseline)
+        if len(pages) > 0xFFFF:
+            raise ValueError("room %02x-%02x has too many pages" % (area, room))
+        room_table.append((area, room, len(pages), len(manifests)))
         manifests.extend(index_of[page] for page in pages)
 
     out = bytearray()
@@ -100,35 +155,68 @@ def main(argv):
     for area, room, count, first in room_table:
         out += struct.pack("<BBHI", area, room, count, first)
     out += b"".join(struct.pack("<H", i) for i in manifests)
-    header_size = len(out)
+    data_offset_in_file = len(out)
     out += b"".join(blobs)
-    open(argv[2], "wb").write(out)
 
-    # Round trip: every stored page must decode to the ROM's bytes.
-    data = out[header_size:]
-    for i, page in enumerate(all_pages):
-        _, size, start = struct.unpack_from("<HHI", out, 28 + 8 * i)
-        blob = bytes(data[start:start + size])
-        decoded = blob if size == PAGE else zlib.decompressobj(-15).decompress(blob)
-        assert decoded == rom[page * PAGE:(page + 1) * PAGE], "page %d" % page
+    # Round-trip every page and ensure the emitted index points to the right bytes.
+    for index, page in enumerate(all_pages):
+        table_pos = HEADER_SIZE + PAGE_ENTRY_SIZE * index
+        stored_page, stored_size, data_offset = struct.unpack_from("<HHI", out, table_pos)
+        if stored_page != page:
+            raise AssertionError("page table ordering mismatch at index %d" % index)
+        blob = bytes(out[data_offset_in_file + data_offset:data_offset_in_file + data_offset + stored_size])
+        decoded = decode_page(blob, stored_size, page)
+        if decoded != rom[page * PAGE:(page + 1) * PAGE]:
+            raise AssertionError("round-trip mismatch for ROM page %d" % page)
+
+    out_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(out_dir, exist_ok=True)
+    temporary_path = output_path + ".tmp"
+    with open(temporary_path, "wb") as stream:
+        stream.write(out)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary_path, output_path)
+
+    pak_sha256 = hashlib.sha256(out).hexdigest()
+    with open(output_path + ".sha256", "w", encoding="ascii") as stream:
+        stream.write("%s  %s\n" % (pak_sha256, os.path.basename(output_path)))
+    metadata = {
+        "format": "PCPK", "version": 1, "codec": "raw-deflate-per-4KiB-page",
+        "rom_region": "USA", "rom_size": len(rom), "rom_sha1": rom_sha1,
+        "page_size": PAGE, "unique_pages": len(all_pages), "rooms": len(keys),
+        "baseline_pages": len(baseline), "raw_pages": raw_count,
+        "pak_size": len(out), "pak_sha256": pak_sha256,
+        "note": "Personal-use ROM-derived data. Do not commit or redistribute."
+    }
+    with open(output_path + ".json", "w", encoding="utf-8") as stream:
+        json.dump(metadata, stream, indent=2, sort_keys=True)
+        stream.write("\n")
 
     raw_total = len(all_pages) * PAGE
-    per_room = sorted(sum(len(blobs[index_of[p]]) for p in rooms[k] - baseline) for k in keys)
-    baseline_bytes = sum(len(blobs[index_of[p]]) for p in baseline)
-    print("rooms %d, pages %d (%.2f MB raw) -> pak %.2f MB (%.0f%%), index %d B" % (
+    compressed_total = sum(len(blob) for blob in blobs)
+    per_room = sorted(sum(len(blobs[index_of[p]]) for p in rooms[key] - baseline) for key in keys)
+    median_room = per_room[len(per_room) // 2] if per_room else 0
+    p90_room = per_room[min(len(per_room) - 1, int(len(per_room) * 0.9))] if per_room else 0
+    max_room = per_room[-1] if per_room else 0
+    print("ROM: USA 16 MiB; SHA-1 %s" % rom_sha1)
+    print("Rooms %d; unique pages %d (%.2f MiB raw) -> pak %.2f MiB (%.1f%% payload ratio)" % (
         len(keys), len(all_pages), raw_total / 2**20, len(out) / 2**20,
-        100 * (len(out) - header_size) / raw_total, header_size))
-    print("baseline %d pages, %.0f KB compressed" % (len(baseline), baseline_bytes / 1024))
-    print("per-room compressed: median %.0f KB, p90 %.0f KB, max %.0f KB" % (
-        per_room[len(per_room) // 2] / 1024, per_room[int(len(per_room) * 0.9)] / 1024,
-        per_room[-1] / 1024))
-    for baud in (115200, 460800, 921600):
-        rate = baud / 10.0  # 8N1: ten bits per byte, before protocol overhead
-        print("  at %6d baud: median room %.2f s, p90 %.2f s, max %.2f s, whole pak %.0f s" % (
-            baud, per_room[len(per_room) // 2] / rate, per_room[int(len(per_room) * 0.9)] / rate,
-            per_room[-1] / rate, len(out) / rate))
+        100.0 * compressed_total / raw_total))
+    print("Baseline %d pages; %.1f KiB compressed; %d pages stored raw" % (
+        len(baseline), sum(len(blobs[index_of[p]]) for p in baseline) / 1024, raw_count))
+    print("Per-room beyond baseline: median %.1f KiB, p90 %.1f KiB, max %.1f KiB" % (
+        median_room / 1024, p90_room / 1024, max_room / 1024))
+    print("Pak SHA-256 %s" % pak_sha256)
+    print("Wrote %s (metadata: %s.json; checksum: %s.sha256)" % (
+        output_path, output_path, output_path))
+    print("Only the .pak is intended for calculator transfer; the runtime page reader is not implemented yet.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except (OSError, ValueError, struct.error) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        sys.exit(1)

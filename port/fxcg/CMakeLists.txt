@@ -13,6 +13,12 @@ project(Picori C)
 include(GenerateG3A)
 find_package(Gint 2.11 REQUIRED)
 
+option(TMC_FXCG_PPU_BENCH
+    "Build the on-device PPU timing overlay (no clock changes)" OFF)
+if(TMC_FXCG_PPU_BENCH)
+    find_package(LibProf 2.1 REQUIRED)
+endif()
+
 get_filename_component(TMC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(TMC_GENERATED "${TMC_ROOT}/build/USA" CACHE PATH "Generated headers (gfx_offsets.h, map_offsets.h)")
 if(NOT EXISTS "${TMC_GENERATED}/assets/gfx_offsets.h")
@@ -64,14 +70,24 @@ set(PICORI_PORT_SOURCES
 # port/data_const_stubs.c (copies of ROM tables) is left out on purpose:
 # fxcg.ld places those symbols in the ROM window (rom_symbols.ld).
 
+if(TMC_FXCG_PPU_BENCH)
+    list(APPEND PICORI_PORT_SOURCES fxcg_ppu_bench.c)
+endif()
+
 add_executable(picori ${PICORI_GAME_SOURCES} ${PICORI_PORT_SOURCES})
 target_compile_options(picori PRIVATE -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
 target_compile_definitions(picori PRIVATE
     PC_PORT NON_MATCHING USA ENGLISH REVISION=0 MULTI_REGION TMC_FXCG)
+if(TMC_FXCG_PPU_BENCH)
+    target_compile_definitions(picori PRIVATE TMC_FXCG_PPU_BENCH=1)
+endif()
 target_include_directories(picori PRIVATE
     ${TMC_ROOT}/include ${TMC_GENERATED} ${TMC_ROOT}/port ${TMC_ROOT}
     ${TMC_ROOT}/port/ppu/include ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(picori PRIVATE Gint::Gint)
+if(TMC_FXCG_PPU_BENCH)
+    target_link_libraries(picori PRIVATE LibProf::LibProf)
+endif()
 # Replace gint's linker script with ours (gint's plus the ROM window and
 # sysram); -L lets it INCLUDE rom_symbols.ld.
 set_target_properties(Gint::Gint PROPERTIES

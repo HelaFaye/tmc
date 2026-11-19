@@ -6,6 +6,7 @@ on:
       - 'master'
       - 'sync-matheo-release'
       - 'CI-Test'
+      - 'fx-cg50'
   pull_request:
   # Manual trigger to validate / build a specific slice. Push/PR runs leave
   # os_filter empty, so _build.yaml's default "all" builds all six native
@@ -39,6 +40,17 @@ permissions:
   contents: read
 
 jobs:
+  validate-fxcg-memory:
+    name: Validate fx-CG50 memory layout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Check upper-DRAM BSS placement
+        run: python3 scripts/fxcg/check_memory_layout.py
+
   meta:
     runs-on: ubuntu-latest
     outputs:

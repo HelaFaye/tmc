@@ -18,6 +18,10 @@
 #include <string.h>
 
 #include "virtuappu.h"
+#ifdef TMC_FXCG_PPU_BENCH
+#include <libprof.h>
+#include "fxcg_ppu_bench.h"
+#endif
 
 virtuappu_mode1_pre_line_fn virtuappu_mode1_pre_line_callback = NULL;
 
@@ -1417,6 +1421,16 @@ int virtuappu_mode1_prepare_frame(const PPUMemory* ppu, uint8_t* io_per_line, ui
 }
 
 void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
+#ifdef TMC_FXCG_PPU_BENCH
+    const int bench_active = FxcgPpuBench_Active();
+    prof_t bench_setup = prof_make();
+    prof_t bench_palette = prof_make();
+    prof_t bench_bg = prof_make();
+    prof_t bench_obj = prof_make();
+    prof_t bench_composite = prof_make();
+    if (bench_active)
+        prof_enter_norec(bench_setup);
+#endif
     uint16_t dispcnt;
     int line;
     /* VPPU mode 2 = GBA affine (BG2 is rotation/scaling); mode 1 = all-tiled.
@@ -1434,6 +1448,12 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
             memset(&virtuappu_frame_buffer[(size_t)line * (size_t)mode1_frame_pitch], 0xFF,
                    (size_t)mode1_frame_width * sizeof(uint32_t));
         }
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active) {
+            prof_leave_norec(bench_setup);
+            FxcgPpuBench_RecordPpuStages(prof_time(bench_setup), 0, 0, 0, 0);
+        }
+#endif
         return;
     }
 
@@ -1499,12 +1519,22 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
                                           aff_pb, aff_pd, virtuappu_mode1_bg2x_hdma_strobe,
                                           virtuappu_mode1_bg2y_hdma_strobe, aff_ref_x, aff_ref_y);
     }
+#ifdef TMC_FXCG_PPU_BENCH
+    if (bench_active) {
+        prof_leave_norec(bench_setup);
+        prof_enter_norec(bench_palette);
+    }
+#endif
 
     /* Palette RAM is final for the frame here (fade engine wrote it before this
      * render; the pre-line callback above only touches IO regs). Convert it to
      * the ABGR LUTs once so the parallel per-pixel loops below do a single table
      * load instead of the rgb555->ABGR math. */
     virtuappu_mode1_publish_palette_luts();
+#ifdef TMC_FXCG_PPU_BENCH
+    if (bench_active)
+        prof_leave_norec(bench_palette);
+#endif
 
 #pragma omp parallel for schedule(static)
     for (line = 0; line < MODE1_GBA_HEIGHT; ++line) {
@@ -1520,13 +1550,25 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
 
         virtuappu_mode1_io_thread_override = per_line_io ? io_snapshots[line] : mode1_memory.io_mem;
 
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active)
+            prof_enter_norec(bench_obj);
+#endif
         memset(obj_layer, 0, (size_t)mode1_frame_width * sizeof(uint32_t));
         memset(obj_priority, 0xFF, (size_t)mode1_frame_width);
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active)
+            prof_leave_norec(bench_obj);
+#endif
 
         /* Clear + render only ENABLED BGs: composite reads bg_layers[b][x] only
          * where bg_enabled[b] (same line_dispcnt), so a disabled BG's buffer is
          * never touched — clearing all four every line was wasted bandwidth.
          * BG priority buffers stay NULL (composite resolves order from BGCNT). */
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active)
+            prof_enter_norec(bench_bg);
+#endif
         if ((line_dispcnt & MODE1_DISP_BG0_ON) != 0u) {
             memset(bg_layers[0], 0, (size_t)mode1_frame_width * sizeof(uint32_t));
             virtuappu_mode1_render_text_bg_line(0, line, bg_layers[0], NULL);
@@ -1552,6 +1594,12 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
                 virtuappu_mode1_render_text_bg_line(3, line, bg_layers[3], NULL);
             }
         }
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active) {
+            prof_leave_norec(bench_bg);
+            prof_enter_norec(bench_obj);
+        }
+#endif
         if ((line_dispcnt & MODE1_DISP_OBJ_ON) != 0u) {
             virtuappu_mode1_render_obj_line(line, obj_1d, obj_layer, obj_priority);
         } else {
@@ -1563,9 +1611,26 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
             memset(virtuappu_mode1_obj_window, 0, (size_t)mode1_frame_width);
             memset(virtuappu_mode1_obj_semitrans, 0, (size_t)mode1_frame_width);
         }
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active) {
+            prof_leave_norec(bench_obj);
+            prof_enter_norec(bench_composite);
+        }
+#endif
 
         virtuappu_mode1_composite_line(line, bg_layers, NULL, obj_layer, obj_priority, line_dispcnt);
+#ifdef TMC_FXCG_PPU_BENCH
+        if (bench_active)
+            prof_leave_norec(bench_composite);
+#endif
 
         virtuappu_mode1_io_thread_override = prev_override;
     }
+#ifdef TMC_FXCG_PPU_BENCH
+    if (bench_active) {
+        FxcgPpuBench_RecordPpuStages(prof_time(bench_setup),
+            prof_time(bench_palette), prof_time(bench_bg),
+            prof_time(bench_obj), prof_time(bench_composite));
+    }
+#endif
 }

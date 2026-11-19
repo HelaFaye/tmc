@@ -177,3 +177,13 @@ android/app/build/
 
 !tools/enemy_home_regression_test.py
 !tools/npc_context_regression_test.py
+
+# fx-CG50 RAMCheck generated build outputs
+/tools/fxcg50-ramcheck/build-cg/
+/tools/fxcg50-ramcheck/RAMCheck.g3a
+
+geom/
+objects/
+room.png
+rebuild.tgz
+vrdump/

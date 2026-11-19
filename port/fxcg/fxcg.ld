@@ -5,12 +5,12 @@
 	1. The ROM window (D1). FXCG_ROM_WINDOW is the virtual address where the
 	   16 MB ROM appears; port/fxcg/fxcg_rom.c maps its pages on demand.
 	   rom_symbols.ld places the ROM-resident tables inside it.
-	2. sysram: the game's own BSS (2.5 MB: GBA memories, map buffers, the PPU
-	   frame) does not fit gint's 491 KB static RAM. It goes to a block of
-	   the calculator's 8 MB RAM that the OS leaves unused.
-	   ASSUMPTION, not yet measured: 0x8c200000, 3 MB. Phase 0 item 5
-	   measures the RAM an add-in can use on a real fx-CG50; change
-	   the sysram region here once it is known. fxcg_main.c clears it at start.
+	2. sysram: the game's own BSS (about 1.54 MB) does not fit gint's 491 KB
+	   add-in RAM. It goes in the upper 3,200 KiB of DRAM, starting at
+	   0x8c4e0000 (P1 alias of physical 0x0c4e0000). This range is outside
+	   the 3 MB that the OS clears at add-in launch and is not used by the
+	   OS in the measured fx-CG50 memory map. Keep the linker ASSERT below:
+	   it prevents a future BSS increase from silently overrunning the range.
 */
 /* All fxcg50 have SH4 processors (finally rid of compatibility issues) */
 OUTPUT_ARCH(sh4)
@@ -32,8 +32,9 @@ MEMORY
 	ilram (rwx):  o = 0xe5200000, l = 4k
 	/* On-chip X and Y memory */
 	xyram (rwx):  o = 0xe500e000, l = 16k
-	/* Unused system RAM for the game's BSS (see the note at the top) */
-	sysram (rw):  o = 0x8c200000, l = 3M
+	/* Upper DRAM, unused by the OS: physical 0x0c4e0000-0x0c7fffff.
+	   P1 alias 0x8c4e0000-0x8c7fffff, 0x320000 bytes = 3,200 KiB. */
+	sysram (rw):  o = 0x8c4e0000, l = 0x320000
 }
 
 FXCG_ROM_WINDOW = 0x20000000;
@@ -85,8 +86,8 @@ SECTIONS
 	} > rom
 
 	/* Exposed driver interfaces (.gint.drivers)
-	   The driver information is required to start and configure the
-	   driver, even if the symbols are not referenced */
+	   The driver information is required to start and configure the driver,
+	   even if the symbols are not referenced */
 	.gint.drivers : {
 		_gint_drivers = . ;
 		KEEP(*(SORT_BY_NAME(.gint.drivers.*)));
@@ -113,11 +114,25 @@ SECTIONS
 	   static RAM, which gint needs before main() runs. */
 	.xbss (NOLOAD) : {
 		_rxbss = . ;
-		*(EXCLUDE_FILE(*libgint-cg.a:* *libc.a:* *libopenlibm.a:* *libgcc.a:*) .bss .bss.* COMMON)
+		/* Keep Gint and C-library runtime state in internal user RAM. The
+		   EXCLUDE_FILE selector must wrap the input-file wildcard (not sit
+		   inside *()), otherwise archive-member BSS can leak into this NOLOAD
+		   game-BSS region and remain uninitialized when kinit() runs. */
+		/* Keep BSS from every archive member in internal user RAM. The game
+             * translation units are linked as direct .obj inputs; runtime and
+             * support-library objects arrive as archive members. The single-*
+             * archive selector also matches archives supplied by absolute path. */
+            /* GCC LTO may merge archive-member BSS into temporary ...ltrans*.o inputs. */
+            EXCLUDE_FILE (
+                *:*
+                *ltrans*.o
+            ) *(.bss .bss.* COMMON)
 		. = ALIGN(16);
 	} > sysram :NONE
 
 	_sxbss = SIZEOF(.xbss);
+	ASSERT(SIZEOF(.xbss) <= LENGTH(sysram),
+	       "fx-CG50 game BSS exceeds the measured upper-DRAM region")
 
 	. = ORIGIN(ram);
 
@@ -215,3 +230,9 @@ SECTIONS
 		*(.comment)
 	}
 }
+
+/* libc's errno is referenced by malloc(); keep this link-time canary so a
+   future linker-script edit cannot silently move runtime BSS into NOLOAD
+   external game RAM again. */
+ASSERT(_errno >= ORIGIN(ram) && _errno < ORIGIN(ram) + LENGTH(ram),
+       "fx-CG50: libc _errno escaped internal RAM; check .xbss EXCLUDE_FILE")

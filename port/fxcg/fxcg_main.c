@@ -12,6 +12,9 @@
 #include "fxcg_rom.h"
 #include "fxcg_sys.h"
 #include <string.h>
+#ifdef TMC_FXCG_PPU_BENCH
+#include "fxcg_ppu_bench.h"
+#endif
 
 extern void AgbMain(void);
 extern void VBlankIntr(void);
@@ -39,6 +42,9 @@ static inline u16 ToRgb565(u32 abgr) {
 }
 
 static void Present(void) {
+#ifdef TMC_FXCG_PPU_BENCH
+    FxcgPpuBench_FrameBegin();
+#endif
     u16 dispcnt = (u16)(gIoMem[0x00] | (gIoMem[0x01] << 8));
     virtuappu_registers.frame_width = MODE1_GBA_WIDTH;
     virtuappu_registers.frame_pitch = MODE1_GBA_WIDTH;
@@ -48,7 +54,14 @@ static void Present(void) {
     virtuappu_mode1_pre_line_callback = port_hdma_has_active_channels() ? port_hdma_step_line : NULL;
     virtuappu_mode1_bg2x_hdma_strobe = port_hdma_dest_overlaps(gIoMem + 0x28, gIoMem + 0x2C) != 0;
     virtuappu_mode1_bg2y_hdma_strobe = port_hdma_dest_overlaps(gIoMem + 0x2C, gIoMem + 0x30) != 0;
+#ifdef TMC_FXCG_PPU_BENCH
+    FxcgPpuBench_PpuBegin();
+#endif
     virtuappu_render_frame();
+#ifdef TMC_FXCG_PPU_BENCH
+    FxcgPpuBench_PpuEnd();
+    FxcgPpuBench_ScaleBegin();
+#endif
 
     const uint32_t* src = virtuappu_frame_buffer;
     u16* vram = Fxcg_Vram();
@@ -66,7 +79,16 @@ static void Present(void) {
         for (int x = 0; x < OUT_W; x++)
             dst[x] = ToRgb565(row[sSrcX[x]]);
     }
+#ifdef TMC_FXCG_PPU_BENCH
+    FxcgPpuBench_ScaleEnd();
+    FxcgPpuBench_DrawOverlay();
+    FxcgPpuBench_LcdBegin();
+#endif
     Fxcg_Update();
+#ifdef TMC_FXCG_PPU_BENCH
+    FxcgPpuBench_LcdEnd();
+    FxcgPpuBench_FrameEnd();
+#endif
 }
 
 /* The game calls this once per frame. */
@@ -90,7 +112,14 @@ int Fxcg_GameMain(void) {
         return 1;
     }
     Port_LoadRom(NULL);
+#ifdef TMC_FXCG_PPU_BENCH
+    /* Reserve libprof's TMU before the VBlank timer requests one. */
+    FxcgPpuBench_Init();
+#endif
     Fxcg_StartVBlank();
     AgbMain();
+#ifdef TMC_FXCG_PPU_BENCH
+    FxcgPpuBench_Quit();
+#endif
     return 0;
 }

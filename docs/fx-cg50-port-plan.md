@@ -163,11 +163,17 @@ link works, a development build may keep its page pak in storage memory.)
   (`TMC_ROM_WINDOW`, `rom_symbols.ld`), so they cost no RAM, are not part of
   the add-in, and are read through the same page cache.
 
-**Memory on the calculator (from the first link, 2026-11-18).** The add-in
-is 1.15 MB of code and read-only data, inside the 2 MB add-in mapping. The
-game's BSS is 1.54 MB and goes to a `sysram` region of the calculator's
-8 MB RAM (assumed 0x8c200000, 3 MB, to be measured in Phase 0 item 5), which
-leaves gint's 491 KB static RAM for the page cache and the heap.
+**Memory on the calculator (hardware-tested 2026-11-18).** The add-in is
+1.15 MB of code and read-only data, inside the 2 MB add-in mapping. The
+game's 1,539,760-byte BSS is placed at P1 `0x8c4e0000`, the alias of physical
+DRAM `0x0c4e0000`, within the 3,200 KiB range ending at `0x0c800000`. RAMCheck
+v2 passed on the target fx-CG50 running OS 3.20.0202: all 800 4 KiB blocks,
+12,001 checks, zero failures and zero restore failures, tested through the
+uncached P2 alias `0xac4e0000..0xac800000`. The linked `.xbss` ends at
+`0x8c657eb0`, leaving 1,737,040 bytes of capacity. This validates the tested
+range on this device and OS during the test session; it does not guarantee
+that another OS version or future lifecycle will behave identically. Gint's
+491 KB static RAM remains separate for its own heap/cache.
 
 **D2. Audio runs on the ESP32.**
 
@@ -277,7 +283,7 @@ session for these measurements. It is kept outside every repository.
 4. **Code size.** Build the game core with `sh-elf-gcc` and measure its code
    and data size: this sizes D7.
 5. **Device measurements** on a real fx-CG50:
-   - the RAM gint can give an add-in;
+   - upper 3,200 KiB DRAM range passed RAMCheck v2 on the target fx-CG50 OS 3.20.0202;
    - `dupdate` time;
    - 2.5 mm logic levels (before connecting the ESP32), then the highest
      reliable SCIF baud rate.
@@ -287,19 +293,19 @@ session for these measurements. It is kept outside every repository.
 #### Results: ROM working set
 
 Method: each run boots a fresh game headless, starts in the target room and
-plays for 13 to 20 seconds of game time with audio off. A room counts only if
-the harness confirmed reaching it.
+plays for 13 to 20 seconds of game time with audio off. A room counts only when the harness confirms that the settled area and room
+match the requested target.
 
 | Measure | Value |
 |---|---|
-| Rooms measured | 592 (room 0 of all 74 named areas, rooms 1-7 of each) |
-| Pages every room touches (resident baseline) | 13 (52 KB; 21 KB compressed) |
-| Pages per room during play | median 21, maximum 80 (Hyrule Town, 320 KB) |
-| Per room beyond the baseline, compressed | median 11 KB, 90th percentile 25 KB, maximum 104 KB |
-| All rooms together | 478 pages, 1.87 MB raw; the page pak is 0.74 MB (39%) with an 18 KB index |
+| Room attempts / validated | 592 / 590 (74 named areas × 8 room IDs; 2 rejected) |
+| Common pages across validated rooms | pending recomputation from corrected post-intro data |
+| Play pages per validated room | min 15; median 21; max 79 (Hyrule Town `0x02/0x01`, 316 KiB) |
+| Per-room compressed sizes | pending rebuild of corrected page pak |
+| Union of validated play pages | 506 pages; 2,072,576 bytes (1.98 MiB); corrected pak not yet rebuilt |
 | Touched while the PC port loads | 116 pages (464 KB) in a clean run; the sweep's 2277 came from the `rom_data/` page cache its run directories reused, so treat it as an artifact |
 
-So the game reads well under 2 MB of its 16 MB ROM while playing these rooms.
+The corrected sweep's measured union is 1.98 MiB across the 590 validated destinations; the rebuilt pak size is still pending.
 
 Preload simulation (`lib/cglink/tools/cglink_sim` in HelaFaye/fxLauncher, using the
 real link code; a 16-room route from Hyrule Town to Deepwood Shrine):
@@ -312,9 +318,11 @@ real link code; a 16-room route from Hyrule Town to Deepwood Shrine):
 The same holds at a rushed five seconds per room. The launch stall is the
 preload before the game starts: the baseline plus Hyrule Town.
 
-The harness counts any armed warp as reached, so some high room numbers may
-not be real rooms; their manifests are still valid page sets, but 592 is an
-upper bound on distinct rooms.
+The corrected harness counts a run only when its settled area and room match
+   the requested target. Two of 592 attempts were rejected: `0x49/0x00` did not arm
+   its warp; `0x89/0x06` redirected to `0x88/0x1a`. The result includes only the
+   590 confirmed destinations. Compressed pak size and preload simulation must be
+   recomputed after rebuilding the page pak from this corrected dataset.
 
 Limits of the measurement:
 - Rooms are visited briefly, standing at the entrance. Enemies, items and
@@ -411,10 +419,11 @@ Limits of the measurement:
    add-in own. The fallback costs a large mechanical edit but is safe.
 3. **2.5 mm throughput and levels.** These decide how seamless preloading can
    be. USB host mode on the ESP32-S3 is the escape hatch.
-4. **RAM.** The launcher, the application's code (D7), the page cache and the
-   game state share the calculator's RAM, none of which is measured yet
-   (Phase 0).
-5. **Running code from RAM** under gint is unproven (Phase 0 spike).
+4. **RAM.** The upper 3,200 KiB DRAM window passed RAMCheck v2 on the
+   target fx-CG50 running OS 3.20.0202. Picori's `.xbss` uses 1,539,760 bytes
+   of that region. The complete shared RAM budget still needs to account for
+   gint, the application, page cache, stack and launcher services before
+   Phase 2.5. **Running code from RAM** under gint is unproven (Phase 0 spike).
 6. **Licensing.**
    - The decomp tooling never ships ROM data.
    - Paks are built by the player from their own ROM.

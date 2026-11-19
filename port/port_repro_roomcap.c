@@ -55,6 +55,7 @@ static void RoomCap_DumpPpu(const char* path) {
 void Port_ReproRoomCap_Tick(unsigned int frame) {
     static int active = -1;
     static int booted = 0, warp_done = 0, cap_frame = 0, settle = 300;
+    static int settle_check_frame = 0, settle_logged = 0;
     static unsigned int a = 0x03, r = 0x08, x = 0x1d8, y = 0x138, l = 0;
 
     if (active < 0) {
@@ -190,6 +191,12 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
         sv->saved_status.layer = (u8)l;
         gFileSelectState.saveStatus[0] = 1; /* SAVE_VALID */
         SetActiveSave(0);
+        const char* postintro = getenv("TMC_ROOMCAP_POSTINTRO");
+        if (postintro && *postintro && strcmp(postintro, "0") != 0) {
+            extern void SetGlobalFlag(u32 flag);
+            SetGlobalFlag(0x15); /* TABIDACHI: do not redirect Hyrule Town to festival state */
+            fprintf(stderr, "[roomcap] post-intro seed: TABIDACHI=1\n");
+        }
         SetTask(TASK_GAME);
         booted = 1;
         fprintf(stderr, "[roomcap] frame %u: bootstrapped new game -> TASK_GAME (start 0x%02x/0x%02x)\n", frame, a, r);
@@ -204,7 +211,17 @@ void Port_ReproRoomCap_Tick(unsigned int frame) {
         if (rc == 1) {
             warp_done = 1;
             cap_frame = (int)(frame + settle);
+            settle_check_frame = (int)frame + 90;
         }
+    }
+
+    /* Confirm the destination after the transition has had time to finish.
+     * warp -> 1 only means DoExitTransition() was armed; it is not proof that
+     * the requested area/room is the one now loaded. */
+    if (warp_done && !settle_logged && (int)frame >= settle_check_frame) {
+        fprintf(stderr, "[roomcap] settled requested=0x%02x/0x%02x actual=0x%02x/0x%02x\n", a, r,
+                (unsigned)gRoomControls.area, (unsigned)gRoomControls.room);
+        settle_logged = 1;
     }
 
     /* ---- TMC_ROOMCAP_COF_PROBE: issue #159 repro -----------------------
