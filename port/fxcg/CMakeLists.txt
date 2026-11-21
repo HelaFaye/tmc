@@ -29,7 +29,9 @@ option(TMC_FXCG_P2_BL_RB_PROBE
     "Build an isolated P2 probe with synthetic TLB-miss MD/RB/BL state" OFF)
 option(TMC_FXCG_D1_MAP_PROBE
     "Build hardware-only D1 alias proof using the OS 4 KiB mapper" OFF)
-if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE OR TMC_FXCG_D1_MAP_PROBE)
+option(TMC_FXCG_COLD_DATA_TLB_MISS_PROBE
+    "Build a hardware-only controlled cold data-TLB miss/refill probe" OFF)
+if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE OR TMC_FXCG_D1_MAP_PROBE OR TMC_FXCG_COLD_DATA_TLB_MISS_PROBE)
     enable_language(ASM)
 endif()
 if(TMC_FXCG_PPU_BENCH)
@@ -261,5 +263,25 @@ if(TMC_FXCG_D1_MAP_PROBE)
     generate_g3a(TARGET fxcg_d1_map_probe
         OUTPUT "D1-MAP-PROBE.g3a"
         NAME "D1 OS Mapper Proof"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+
+# One controlled data-side miss in a valid add-in page. The existing Gint/OS
+# handler must refill it; this target does not install or replace .gint.tlbh.
+if(TMC_FXCG_COLD_DATA_TLB_MISS_PROBE)
+    add_executable(fxcg_cold_data_tlb_miss_probe
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/cold_data_tlb_miss_probe.c
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/cold_data_tlb_miss_probe.S
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.S)
+    target_compile_options(fxcg_cold_data_tlb_miss_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding
+        -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_cold_data_tlb_miss_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_cold_data_tlb_miss_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_cold_data_tlb_miss_probe
+        OUTPUT "COLD-DATA-TLB-MISS-PROBE.g3a"
+        NAME "Cold Data TLB Miss Probe"
         ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()

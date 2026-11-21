@@ -89,7 +89,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work/port/fxcg \
             fxsdk-ci:latest \
-            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON -DTMC_FXCG_TLB_STATE_PROBE=ON -DTMC_FXCG_OS_PAGING_PROBE=ON -DTMC_FXCG_D1_MAP_PROBE=ON -DTMC_FXCG_P2_EXEC_PROBE=ON -DTMC_FXCG_P2_BL_RB_PROBE=ON && fxsdk build-cg'
+            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON -DTMC_FXCG_TLB_STATE_PROBE=ON -DTMC_FXCG_OS_PAGING_PROBE=ON -DTMC_FXCG_D1_MAP_PROBE=ON -DTMC_FXCG_COLD_DATA_TLB_MISS_PROBE=ON -DTMC_FXCG_P2_EXEC_PROBE=ON -DTMC_FXCG_P2_BL_RB_PROBE=ON && fxsdk build-cg'
 
           G3A="$(find port/fxcg -type f -name 'Picori.g3a' -print -quit)"
           test -n "$G3A"
@@ -117,6 +117,10 @@ jobs:
           test -n "$D1_MAP_PROBE_G3A"
           printf 'D1_MAP_PROBE_G3A=%s\n' "$D1_MAP_PROBE_G3A" >> "$GITHUB_ENV"
           echo "Built hardware-only D1 OS mapper proof probe $D1_MAP_PROBE_G3A"
+          COLD_DATA_TLB_MISS_PROBE_G3A="$(find port/fxcg -type f -name 'COLD-DATA-TLB-MISS-PROBE.g3a' -print -quit)"
+          test -n "$COLD_DATA_TLB_MISS_PROBE_G3A"
+          printf 'COLD_DATA_TLB_MISS_PROBE_G3A=%s\n' "$COLD_DATA_TLB_MISS_PROBE_G3A" >> "$GITHUB_ENV"
+          echo "Built hardware-only cold data-TLB miss probe $COLD_DATA_TLB_MISS_PROBE_G3A (not executed)"
           P2_EXEC_PROBE_G3A="$(find port/fxcg -type f -name 'P2-EXEC-PROBE.g3a' -print -quit)"
           test -n "$P2_EXEC_PROBE_G3A"
           printf 'FXCG_P2_EXEC_PROBE_G3A=%s\n' "$P2_EXEC_PROBE_G3A" >> "$GITHUB_ENV"
@@ -138,6 +142,14 @@ jobs:
         with:
           name: fxcg50-d1-os-mapper-proof-probe
           path: ${{ env.D1_MAP_PROBE_G3A }}
+          if-no-files-found: error
+
+
+      - name: Upload cold data-TLB miss probe add-in (hardware test only)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxcg50-cold-data-tlb-miss-probe
+          path: ${{ env.COLD_DATA_TLB_MISS_PROBE_G3A }}
           if-no-files-found: error
 
       - name: Upload read-only UTLB state probe add-in
