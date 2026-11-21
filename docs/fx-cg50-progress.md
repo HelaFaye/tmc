@@ -10,9 +10,9 @@ with every step that changes what is known.
 
 | Phase | State |
 |---|---|
-| 0. Measure and set up | ROM working set measured (590 validated rooms); SH-4 toolchain built and checked; code size measured (about 1.0 MB); upper 3,200 KiB DRAM passed RAMCheck v2 on OS 3.20.0202; D1 ROM-window spike remains outstanding |
-| 1. The game on the calculator | **Current focus.** `port/fxcg/` written; `Picori.g3a` builds and links (1.15 MB, no ROM data inside). Next: the D1 ROM window, so the add-in can read ROM pages |
-| 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, and deliberately wait for Phase 1 |
+| 0. Measure and set up | ROM working set measured (590 validated rooms); SH-4 toolchain and 623/623 source compile verified; code size measured (about 1.0 MB); upper 3,200 KiB DRAM passed RAMCheck v2 on OS 3.20.0202. Device I/O/baud measurements and the D7 RAM-loader spike remain open; corrected PCPK rebuild remains pending |
+| 1. The game on the calculator | **Current focus.** `port/fxcg/` and `Picori.g3a` (1.15 MB) build; headless emulator smoke test passes. Gint `.gint.tlbh` link override is verified by a link-only probe. The original read-only UTLB probe builds but is **blocked from hardware use** because its P4 array reads execute in P0. ROM paging is **not implemented** and `Fxcg_RomInit()` remains fail-closed. Next: validate P2 instruction execution, build a corrected P2 UTLB snapshot, then run the isolated resident-page refill test |
+| 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, deliberately deferred until Phase 1 is playable |
 | 3-6 | Not started |
 
 ## Phase 1: what the game code needs from the port layer
@@ -34,7 +34,172 @@ all provided by `port/`. Grouped by what the calculator build does with them:
 So the calculator platform layer is small: BIOS, saves, audio hooks, assets,
 presentation and settings, plus stubs for the PC-only features.
 
+### 2026-11-20: SH4AL-DSP memory-mapped TLB execution constraint
+
+The Renesas [SH4AL-DSP Software Manual, Rev. 1.50](https://www.renesas.com/en/document/mas/sh4al-dsp-software-manual) resolves the execution-context question:
+
+- §7.6 (printed page 235): software reads/writes the memory-mapped ITLB/UTLB only from a privileged program executing in P2. Access issued from another area is explicitly not guaranteed. After the access, execute `RTE` or `ICBI` before returning to an area outside P2; the `IRMCR.MT=0` shortcut is not the portable choice.
+- §7.4.3 (printed pages 226–227): `LDTLB` must execute from P1 or P2, selects the destination entry through `MMUCR.URC`, and requires `RTE` or `ICBI` before accessing a TLB-translated area again.
+
+Consequences for D1:
+
+- The exception catcher runs in the normal add-in mapping (P0). It may classify the exception and select an already-resident frame, but it cannot directly access the memory-mapped UTLB arrays or execute `LDTLB` from that callback.
+- A small assembly trampoline is required. Use P2 for memory-mapped UTLB array access, or P1/P2 for an `LDTLB` implementation. The trampoline must obey the post-access `ICBI`/`RTE` rule and avoid P0 stack/buffer accesses after the TLB operation until that transition has occurred.
+- The existing `tlb_state_probe.c::snapshot()` reads UTLB arrays from ordinary C/P0 code. Its artifact is build-verified only and must not be run as the hardware snapshot until those reads are moved into a P2 trampoline.
+- Gint's exact local `src/mmu/mmu.c` also reads UTLB arrays through ordinary C. `GINLINE` is `always_inline inline`, not a P2 placement annotation. Its object is LTO IR, so the empty `.text` section and unhelpful `objdump -dr` output do not reveal the final instruction address. Inspect the final Picori ELF and section map; reconcile this source path with the manual before relying on it.
+
+No UTLB entries have been written, no replacement policy has been selected, and `Fxcg_RomInit()` remains fail-closed. Hardware snapshot and refill experiments remain outstanding.
+
+### 2026-11-20: SH4AL-DSP UTLB access rule versus final ELF placement
+
+The target-specific [Renesas SH4AL-DSP Software Manual, Rev. 1.50](https://www.renesas.com/en/document/mas/sh4al-dsp-software-manual)
+is now the primary reference. It matches the SH4AL-DSP MMU family named in
+Gint's `include/gint/mpu/mmu.h`:
+
+- §7.6 (printed page 235): memory-mapped ITLB/UTLB arrays may be read or
+  written only by a privileged program executing in P2; access from another
+  area is not guaranteed. After the access, software must perform the
+  prescribed transition before accessing/fetching outside P2.
+- §7.4.3 (printed pages 226–227): `LDTLB` must execute from P1 or P2, selects
+  an entry using `MMUCR.URC`, and requires a post-operation transition before
+  returning to code using TLB-translated addresses.
+
+The local Gint checkout is identified as version `2.11.0`, commit
+`badbd0fd2bd8ac796fd55d49b93691741bd8a139` (`GINT_HASH 0xbadbd0f`). The final
+Picori ELF, built with LTO, places `utlb_translate` at `0x003c457c` and
+`mmu_uram` at `0x003c45f8`; both are in `.text` at `0x00300000` (P0), not in
+P2. Gint's `mmu_uram()` calls `mmu_translate()`/`utlb_translate()` for the
+SH4AL path, and `kinit()` uses `mmu_uram()` to determine the VBR location.
+
+This exposes a specification/implementation discrepancy in the existing
+Gint startup path. It is not by itself evidence of a hardware failure: the
+manual says the behavior is not guaranteed, while the ELF establishes only
+placement. Verify the actual call path on the OS 3.20.0202 calculator before
+deciding whether Gint startup needs a P2 reader. The old LTO object was
+insufficient for this audit; final linked ELF placement is now established.
+
+The existing `TLB-STATE-PROBE.g3a` reads the P4 UTLB arrays from P0 C code and
+must not be run on hardware. Replace that snapshot with a P2 routine. The
+upper-DRAM P2 alias has only been data-tested; instruction fetch/execute from
+that alias needs a separate probe. For D1, keep both installation options open:
+direct UTLB array access in P2, or `LDTLB` from P1/P2. No entries have been
+written, no `URB`/`URC` policy has been selected, and `Fxcg_RomInit()` remains
+fail-closed.
+
+### 2026-11-20: final-ELF instructions confirm P0 UTLB reads
+
+The final linked `port/fxcg/build-cg/picori` ELF was disassembled around
+`_utlb_translate` (`0x003c457c`) and `_mmu_uram` (`0x003c45f8`):
+
+- `_utlb_translate` loads the UTLB array bases `0xf6000000` and `0xf7000000`.
+- Its instructions at `0x003c458a` (`mov.l @r1,r1`) and `0x003c4596`
+  (`mov.l @r2,r2`) directly read those P4 arrays while executing in the P0
+  `.text` section. The code scans 64 entries with a `0x100`-byte stride.
+- `_mmu_uram` calls `_utlb_translate(0x08100000, NULL)` and ORs the result
+  with `0x80000000` to produce the P1 alias used by Gint's URAM/VBR setup.
+
+This is instruction-level confirmation of the P0/P2 specification discrepancy,
+not evidence of a runtime failure. The ELF establishes the call and placement;
+it cannot establish whether the access succeeds on OS 3.20.0202 hardware. Since
+Gint calls `mmu_uram()` during `kinit()`, a successful launch of this exact
+Picori image to its application UI on the physical calculator would be useful
+empirical evidence for this particular target configuration. Record the
+`.g3a` SHA-256 and result. It would not change the architectural constraint for
+a new TLB handler or make P0 access portable.
+
+`TLB-STATE-PROBE.g3a` is still unsafe to run: its snapshot also performs P0
+P4-array reads. A corrected snapshot must move those reads to P2 and pass a
+separate P2 instruction-execution probe. No UTLB entries have been written,
+no `URB`/`URC` policy has been selected, and `Fxcg_RomInit()` remains fail-closed.
+
 ## Log
+
+### 2026-11-20: exact Picori artifact for the Gint startup check
+
+Candidate hardware-test image: `port/fxcg/Picori.g3a`. The local `sha256sum` output on 2026-11-20 reported SHA-256 `ee0b7692fc77e39f168aa026a77f9c82bd51c4e29c7dd3847a70197c2f086d0d`. This identifies the image to test; it is **not** a recorded hardware result.
+
+Because `port/fxcg/fxcg_rom.c::Fxcg_RomInit()` intentionally returns `false`, the expected screen after successful Gint startup and entry into `Fxcg_GameMain()` is:
+
+- `Picori: cannot open the ROM pages.`
+- `ROM window (plan D1) not built yet.`
+
+Reaching this diagnostic establishes that execution passed Gint startup and reached Picori's fail-closed ROM-initialization path. It does **not** mean ROM paging works or that the game booted. Record the observed result against this exact hash. A hang, reset, blank screen, or different message is a different result. **Do not run `TLB-STATE-PROBE.g3a`.**
+
+### 2026-11-20: Picori startup diagnostic confirmed on hardware
+
+On the fx-CG50 running OS 3.20.0202, the user confirmed that Picori rendered
+its expected fail-closed diagnostic (`Picori: cannot open the ROM pages.` /
+`ROM window (plan D1) not built yet.`). Pressing EXE dismissed the screen and
+returned from the add-in. The earlier report that no key closed it was not
+reproduced on the subsequent run.
+
+This confirms Gint startup, entry into `Fxcg_GameMain()`, the intentional
+`Fxcg_RomInit()` failure path, and the normal key-wait/return path. It does not
+validate ROM paging or game startup. The candidate SHA-256 in the preceding
+startup-artifact record was not re-read alongside this observation, so the
+hardware result is recorded without claiming a newly verified hash binding.
+
+### 2026-11-20: ordinary P2 execute/return hardware gate passed
+
+On the fx-CG50 running OS 3.20.0202, the user ran the exact
+`P2-EXEC-PROBE.g3a` artifact and confirmed `P2 execute + return: PASS` with
+`0x00000035`. The artifact SHA-256 was
+`10e0cc372bfd215e46467ee184ebf542e4f705c84ea2bd39321c67ff212adfb4`.
+The result validates the tested six-byte P2 instruction fetch, `RTS` return,
+and resume in P0 on this calculator. It does not validate the TLB-miss
+exception vector or `SR.BL=1` execution. The next separate diagnostic is the
+synthetic MD/RB/BL P2 probe; see `docs/fx-cg50-p2-bl-rb-probe.md`.
+
+### 2026-11-20: D1 gate audit and CI state
+
+The current `fx-cg50` HEAD is `c2357c913eb180abdcc37946c848d759ffdc916d`
+(`fx-cg50: add read-only UTLB state probe`).
+
+- The fx-CG50 emulator workflow run
+  [44501057061](https://github.com/HelaFaye/tmc/actions/runs/44501057061)
+  passed. It built and linked `Picori.g3a`, built the Gint TLB-hook link probe
+  and checked its ELF, built/uploaded `TLB-STATE-PROBE.g3a`, and booted Picori
+  in the headless emulator. The read-only probe artifact is
+  [14517202532](https://github.com/HelaFaye/tmc/actions/runs/44501057061).
+  This is a build/emulator result, not evidence that the UTLB snapshot has
+  been read on hardware or that a custom handler can refill a ROM page.
+- The general CI run
+  [44501057235](https://github.com/HelaFaye/tmc/actions/runs/44501057235)
+  passed the fx-CG50 memory-layout validator and host validation tests. Its
+  Android arm64/x86_64 job failed after `libmain.so` compiled and linked:
+  the subsequent `xmake build -y tmc_pc` process exited with SIGSEGV (139).
+  This is an unresolved CI/tooling failure, not a reported SH-4 compile or
+  emulator failure. A job retry was rejected by GitHub with HTTP 403, so it
+  has not been rerun.
+- CI's CMake configure log found Gint 2.11.0 (minimum 2.11). The
+  `.gint.tlbh` link probe verifies that the application-provided `_gint_tlbh`
+  is the first byte of a four-byte handler section, replacing the archive
+  member at link time. The workflow pins the `casio-cg50` recipe commit, but
+  its Dockerfile installs Gint through GiteaPC without pinning a source
+  commit. In the recorded run, both GiteaPC install layers were Docker-cache
+  hits, so the exact Gint source commit used by CI is not recorded. The
+  `rte; nop` stub is nonfunctional and must never be executed.
+- A public Gint source mirror whose CMake project declares version 2.11.0
+  shows `kinit()` copying the `.gint.tlbh` bytes to `VBR + 0x400` before
+  switching VBR. Its stock CG miss handler checks the fault address and
+  services the normal add-in code window (`0x00300000` through
+  `0x00300000 + _srom`) through syscall 12 at `0x80020070`; faults outside
+  that range are forwarded to `VBR + 0x100`. This is a source-level
+  cross-check, not proof that the mirror is the exact commit in the local
+  or CI-installed archive. See the source links in the D1 spike document.
+- The original `TLB-STATE-PROBE.g3a` was built to record MMUCR, PTEH, PTEL,
+  VBR and all 64 UTLB address/data entries, but its current implementation
+  reads the P4 arrays from P0. **Do not run this artifact on hardware.**
+  First validate instruction execution from the upper-DRAM P2 alias; then
+  move the snapshot reads into a P2 routine, rebuild, and only then capture
+  all four display pages and the register summary on OS 3.20.0202.
+- D1 remains blocked until the exact Gint 2.11.0 hook/exception behavior and
+  the target UTLB allocation/replacement policy are understood. Next order:
+  hardware snapshot; isolated two-resident-page mapping/boundary-read test;
+  repeated refill and eviction; cache exhaustion and unmapped-page failure.
+  The exception path may map only an already-resident frame: file I/O and
+  DEFLATE stay outside TLB-miss context. PCPK/game integration follows only
+  after those tests pass. `Fxcg_RomInit()` remains fail-closed.
 
 ### 2026-11-18: corrected post-intro ROM working-set sweep
 
@@ -288,3 +453,46 @@ The 88 failures are Phase 1's first list:
   calculator's TX level must be measured before wiring.
 - A USA ROM matching `tmc.sha1` is available to the development session and
   kept out of every repository.
+
+### 2026-11-20: synthetic BL/RB probe stalled; simplified follow-up
+
+The staged `P2-BL-RB-PROBE.g3a` reached its final `8/8: Executing P2 wrapper` screen but did not return. The calculator was recovered with RESTART. The result is failed/inconclusive; the original nested-call test must not be run again. A replacement removes the nested P2 call/return and performs only register operations during the synthetic `SR.RB|SR.BL` interval. It remains unapproved for hardware until the new linked assembly is reviewed.
+
+### 2026-11-20: preserve banked R0 in synthetic BL/RB probe
+
+A review of the straight-line template found that `mov #53,r0` executed with
+`SR.RB=1`, so it modified `R0_BANK1`. Although the normal C register bank was
+restored before returning, the alternate bank was not preserved. The corrected
+template writes the test value to unbanked `R9` instead; the second instruction
+slot is a `nop`, preserving the 60-byte copy size. No banked GPR is modified
+while `RB=1`. The protected interval still has no memory loads/stores, calls,
+branches, stack operations, or literal loads. Instruction fetches from the copied P2 template necessarily continue; they are not data-memory loads or stores. The C progress
+text now says “No data-memory loads/stores while BL=1” to distinguish data-memory
+accesses from register/control-register operations and instruction fetches.
+
+This is a preservation correction, not an explanation for the earlier stage-8
+stall. The prior straight-line artifact is superseded and must not be run.
+Rebuild and review the new linked template before any further hardware test.
+
+## BL=1 data-memory wording clarification
+
+The synthetic P2 BL/RB probe has **no data-memory loads or stores while
+`SR.BL=1`**. The protected interval also contains no stack accesses,
+literal-pool loads, calls, branches, or returns. Instruction fetches from the
+copied P2 template necessarily continue; they are not data-memory loads or
+stores. `STC SR,Rn` and `LDC Rn,SR` are CPU-register/status-register transfers,
+not data-memory accesses. The exact guarantee is that no data-memory loads or stores occur during the protected BL=1 interval. Instruction fetches from the copied P2 template necessarily continue; they are not data-memory accesses.
+
+### 2026-11-20: combined synthetic RB/BL hardware probe required restart
+
+The latest straight-line `P2-BL-RB-PROBE.g3a` reached its final stage-8 screen
+and required a physical calculator restart; it did not return to the result
+screen. Inspection of the linked template exposed a concrete bug: the code
+modified R8 with the test mask, then loaded that same modified R8 into SR at
+the purported restore point. The wrapper never restored the original SR and
+left RB/BL asserted through its epilogue and return. The run is therefore
+invalid as a test of the protected interval. A distinctly named
+`P2-FLAG-ISOLATION-PROBE.g3a` now separates RB-only from BL-only and preserves
+the original SR in R8 while constructing the temporary SR in R10. The new
+binary must be built and disassembled before any hardware run. Do not rerun the
+old combined probe; D1 remains fail-closed.

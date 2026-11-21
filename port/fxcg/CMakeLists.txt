@@ -21,11 +21,13 @@ option(TMC_FXCG_TLBH_LINK_PROBE
     "Build a non-runnable link-only probe for overriding Gint's TLB-miss handler" OFF)
 option(TMC_FXCG_TLB_STATE_PROBE
     "Build a read-only fx-CG50 UTLB state probe for hardware diagnostics" OFF)
+option(TMC_FXCG_TLB_SLOT_SWEEP_PROBE
+    "Build a hardware probe that walks add-in ROM pages to observe OS TLB slot allocation" OFF)
 option(TMC_FXCG_P2_EXEC_PROBE
     "Build an isolated SH-4A P2 instruction-fetch/return probe" OFF)
 option(TMC_FXCG_P2_BL_RB_PROBE
     "Build an isolated P2 probe with synthetic TLB-miss MD/RB/BL state" OFF)
-if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE)
+if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE)
     enable_language(ASM)
 endif()
 if(TMC_FXCG_PPU_BENCH)
@@ -144,9 +146,10 @@ endif()
 # It uses Gint's default TLB handler and never modifies MMU state.
 if(TMC_FXCG_TLB_STATE_PROBE)
     add_executable(fxcg_tlb_state_probe
-        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.c)
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.c
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.S)
     target_compile_options(fxcg_tlb_state_probe PRIVATE
-        -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
     target_link_libraries(fxcg_tlb_state_probe PRIVATE Gint::Gint)
     # Preserve the linker-script libc _errno placement assertion.
     target_link_options(fxcg_tlb_state_probe PRIVATE
@@ -196,5 +199,45 @@ if(TMC_FXCG_P2_BL_RB_PROBE)
     generate_g3a(TARGET fxcg_p2_bl_rb_probe
         OUTPUT "P2-FLAG-ISOLATION-PROBE.g3a"
         NAME "P2 Flag Isolation"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Read-only hardware diagnostic for the OS-managed add-in page-mapping pool.
+# It touches one word per mapped add-in ROM page using normal loads, allowing
+# Gint's stock handler and the OS to resolve the resulting data-side TLB misses.
+# The final UTLB/ITLB snapshot is read through the existing P2 helper.
+if(TMC_FXCG_TLB_SLOT_SWEEP_PROBE)
+    add_executable(fxcg_tlb_slot_sweep_probe
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.c
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.S)
+    target_compile_options(fxcg_tlb_slot_sweep_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+    target_compile_definitions(fxcg_tlb_slot_sweep_probe PRIVATE
+        TMC_FXCG_TLB_SLOT_SWEEP=1)
+    target_link_libraries(fxcg_tlb_slot_sweep_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_tlb_slot_sweep_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_tlb_slot_sweep_probe
+        OUTPUT "TLB-SLOT-SWEEP-PROBE.g3a"
+        NAME "TLB Slot Sweep Probe"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Read-only capture of the OS add-in page table and paging allocator state.
+# Candidate OS RAM offsets are version-sensitive and are labelled unverified
+# in the output; this target does not modify MMU or OS paging state.
+option(TMC_FXCG_OS_PAGING_PROBE
+    "Build read-only fx-CG50 OS paging-state diagnostic" OFF)
+if(TMC_FXCG_OS_PAGING_PROBE)
+    add_executable(fxcg_os_paging_probe
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/os_paging_state_probe.c)
+    target_compile_options(fxcg_os_paging_probe PRIVATE
+        -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_os_paging_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_os_paging_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_os_paging_probe
+        OUTPUT "OS-PAGING-PROBE.g3a"
+        NAME "OS Paging State Probe"
         ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()

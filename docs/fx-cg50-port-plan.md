@@ -1,11 +1,15 @@
 # Project Picori on the Casio fx-CG50: port plan
 
-Status: plan, November 2026. Nothing below is implemented yet. When this plan
-was written, the `fx-cg50` branch pointed at the same commit as `master`
-(`08f3ada`).
+Status: active port, 2026-11-20. Phase 0 measurements and the Phase 1
+calculator build scaffold are in place: all 623 game/generated C files compile
+for SH-4A, `Picori.g3a` links at about 1.15 MB, the fx-CG50 emulator smoke test
+passes, and the upper 3,200 KiB DRAM range passed RAMCheck on the tested
+OS 3.20.0202 device. This is not yet a playable port: `Fxcg_RomInit()` still
+fails closed because D1's TLB-backed ROM window has not been proven.
 
-Progress, measurements and decisions as they happen are logged in
-[`fx-cg50-progress.md`](fx-cg50-progress.md).
+Progress, measurements, CI results and decisions are logged in
+[`fx-cg50-progress.md`](fx-cg50-progress.md); D1's safety gate is tracked in
+[`fx-cg50-d1-paging-spike.md`](fx-cg50-d1-paging-spike.md).
 
 ## Goal
 
@@ -149,14 +153,18 @@ link works, a development build may keep its page pak in storage memory.)
 
 - `gRomData` points at a virtual 16 MB range, so the 121 direct pointer sites
   keep working unchanged.
-- A TLB-miss handler maps each 4 KB ROM page to its copy in the RAM page
-  cache. The SH-4 UTLB has only 64 entries, so a software refill from a page
-  table is needed anyway.
-- A page that is not cached is a miss: the game waits while the launcher
-  fetches it. Preloading (D4) exists to make misses rare.
-- **Fallback:** if gint's exception handling makes this impractical, convert
-  the 121 sites to an accessor macro. The PC build can check that the
-  converted code is exactly equivalent.
+- The intended TLB-miss handler maps a 4 KB ROM page only when its
+  decompressed frame is already resident in the RAM page cache. The SH-4 UTLB
+  has 64 entries, so its replacement and ownership rules must be established
+  before choosing slots or changing MMU state.
+- A cache miss must **not** perform file I/O or DEFLATE inside the TLB-miss
+  exception path. The safe miss-recovery point is still to be designed and
+  proven. Until then, required startup and room pages must be explicitly
+  preloaded; an unmapped access must fail safely rather than return to the
+  faulting instruction without a valid translation.
+- **Fallback:** if a transparent TLB-backed window cannot be made safe with
+  Gint, convert the 121 sites to an accessor macro. The PC build can check
+  that the converted code is exactly equivalent.
 - The window is at virtual address 0x20000000 (`FXCG_ROM_WINDOW` in
   `port/fxcg/fxcg.ld`). ROM-resident symbols (the 400 constant ROM tables
   the PC build compiles in, and `gMapData`) are linker-defined inside it
@@ -333,7 +341,20 @@ Limits of the measurement:
 
 ### Phase 1: the compressed game on the calculator
 
-- Write `port/fxcg/`:
+**Current state (2026-11-20):** the C platform layer, input/VBlank/display
+scaffold and add-in link are implemented. CI builds Picori and boots it in the
+headless Casio emulator. A separate link-only check proves that an application
+object can provide Gint's `.gint.tlbh` section, and CI builds a read-only UTLB
+snapshot add-in. These checks do not implement or exercise ROM paging:
+`Fxcg_RomInit()` remains fail-closed, so the game has not reached its playable
+title-screen milestone.
+
+Next, complete D1 in isolation: inspect the exact Gint 2.11.0 hook behavior,
+capture UTLB/VBR state on the target OS 3.20.0202 calculator, then prove a
+resident-page refill and safe failure cases before connecting PCPK. Only then
+should the stand-alone add-in load the compressed page pak.
+
+- Existing platform scaffold:
   - a gint main loop that calls `AgbMain`;
   - VBlank pacing from a gint timer;
   - the keyboard map: D-pad on the arrows, A/B/L/R/Start/Select on F-keys and
