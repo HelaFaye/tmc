@@ -27,7 +27,9 @@ option(TMC_FXCG_P2_EXEC_PROBE
     "Build an isolated SH-4A P2 instruction-fetch/return probe" OFF)
 option(TMC_FXCG_P2_BL_RB_PROBE
     "Build an isolated P2 probe with synthetic TLB-miss MD/RB/BL state" OFF)
-if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE)
+option(TMC_FXCG_D1_MAP_PROBE
+    "Build hardware-only D1 alias proof using the OS 4 KiB mapper" OFF)
+if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE OR TMC_FXCG_D1_MAP_PROBE)
     enable_language(ASM)
 endif()
 if(TMC_FXCG_PPU_BENCH)
@@ -239,5 +241,25 @@ if(TMC_FXCG_OS_PAGING_PROBE)
     generate_g3a(TARGET fxcg_os_paging_probe
         OUTPUT "OS-PAGING-PROBE.g3a"
         NAME "OS Paging State Probe"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Hardware-only proof that the running OS can map add-in flash pages at D1
+# virtual addresses using its own 4 KiB round-robin allocator. This does not
+# enable the Picori D1 runtime or install a custom TLB-miss handler.
+if(TMC_FXCG_D1_MAP_PROBE)
+    add_executable(fxcg_d1_map_probe
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/d1_map_proof_probe.c
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/os_map_page_4k.S
+        ${TMC_ROOT}/tests/fxcg50-tlb-probe/tlb_state_probe.S)
+    target_compile_options(fxcg_d1_map_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding
+        -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_d1_map_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_d1_map_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_d1_map_probe
+        OUTPUT "D1-MAP-PROBE.g3a"
+        NAME "D1 OS Mapper Proof"
         ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()
