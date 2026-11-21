@@ -21,6 +21,13 @@ option(TMC_FXCG_TLBH_LINK_PROBE
     "Build a non-runnable link-only probe for overriding Gint's TLB-miss handler" OFF)
 option(TMC_FXCG_TLB_STATE_PROBE
     "Build a read-only fx-CG50 UTLB state probe for hardware diagnostics" OFF)
+option(TMC_FXCG_P2_EXEC_PROBE
+    "Build an isolated SH-4A P2 instruction-fetch/return probe" OFF)
+option(TMC_FXCG_P2_BL_RB_PROBE
+    "Build an isolated P2 probe with synthetic TLB-miss MD/RB/BL state" OFF)
+if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE)
+    enable_language(ASM)
+endif()
 if(TMC_FXCG_PPU_BENCH)
     find_package(LibProf 2.1 REQUIRED)
 endif()
@@ -147,5 +154,47 @@ if(TMC_FXCG_TLB_STATE_PROBE)
     generate_g3a(TARGET fxcg_tlb_state_probe
         OUTPUT "TLB-STATE-PROBE.g3a"
         NAME "TLB State Probe"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Hardware-only test of instruction fetch and RTS return from the uncached P2
+# alias of the already-tested upper-DRAM region. Never run this in the emulator.
+if(TMC_FXCG_P2_EXEC_PROBE)
+    add_executable(fxcg_p2_exec_probe
+        ${TMC_ROOT}/tests/fxcg50-p2-exec-probe/p2_exec_probe.c)
+    # SYNCO and ICBI are SH-4A instructions; no FPU instructions are used.
+    target_compile_options(fxcg_p2_exec_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_p2_exec_probe PRIVATE Gint::Gint)
+    # Keep the fxcg.ld libc _errno placement assertion active.
+    target_link_options(fxcg_p2_exec_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_p2_exec_probe
+        OUTPUT "P2-EXEC-PROBE.g3a"
+        NAME "P2 Execution Probe"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Synthetic P2 execution test with the MD/RB/BL state used on TLB-miss
+# entry. It runs on hardware and in the headless emulator, but does not trigger
+# an exception or access VBR/MMU/TLB registers.
+if(TMC_FXCG_P2_BL_RB_PROBE)
+    add_executable(fxcg_p2_bl_rb_probe
+        ${TMC_ROOT}/tests/fxcg50-p2-bl-rb-probe/p2_bl_rb_probe.c
+        ${TMC_ROOT}/tests/fxcg50-p2-bl-rb-probe/p2_bl_rb_trampoline.S)
+    target_compile_options(fxcg_p2_bl_rb_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
+    target_link_libraries(fxcg_p2_bl_rb_probe PRIVATE Gint::Gint)
+    # CI has no keyboard input: auto-dismiss result screens and draw a
+    # framebuffer marker after the final successful SR readback.
+    if(TMC_FXCG_EMULATOR_TEST)
+        target_compile_definitions(fxcg_p2_bl_rb_probe PRIVATE
+            TMC_FXCG_P2_EMULATOR_TEST=1)
+    endif()
+    target_link_options(fxcg_p2_bl_rb_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_p2_bl_rb_probe
+        OUTPUT "P2-FLAG-ISOLATION-PROBE.g3a"
+        NAME "P2 Flag Isolation"
         ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()

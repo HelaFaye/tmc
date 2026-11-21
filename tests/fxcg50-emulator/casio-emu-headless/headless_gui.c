@@ -9,6 +9,9 @@
 #define EXPECTED_ROM_ERROR_MARKER 0x07e0
 #define MIN_VISIBLE_MESSAGE_PIXELS 24
 
+extern int headless_p2_flag_mode;
+#define MIN_P2_PASS_PIXELS 8
+
 static u16 last_frame[SCREEN_WIDTH * SCREEN_HEIGHT];
 static int have_frame;
 
@@ -53,6 +56,22 @@ static int save_ppm(void)
     return ok;
 }
 
+static int green_pass_pixels(void)
+{
+    int count = 0;
+    /* The probe redraws its terminal all-tests-PASS line in C_GREEN (RGB565
+       0x07e0). Earlier per-stage PASS screens are deliberately not marked. */
+    for (int y = 20; y < 48; ++y)
+    {
+        for (int x = 2; x < SCREEN_WIDTH - 2; ++x)
+        {
+            if (last_frame[y * SCREEN_WIDTH + x] == 0x07e0)
+                ++count;
+        }
+    }
+    return count;
+}
+
 static int visible_message_pixels(void)
 {
     int count = 0;
@@ -75,10 +94,25 @@ void runMainLoop(void (*callback)(void))
 {
     /* Match fxOGL's headless harness: advance enough emulated frames for the
        Gint LCD driver to publish its framebuffer, then inspect the capture. */
-    for (int frame = 0; frame < 12; ++frame)
+    for (int frame = 0; frame < 16; ++frame)
         callback();
 
     const int capture_saved = have_frame && save_ppm();
+
+    if (headless_p2_flag_mode)
+    {
+        const int pass_pixels = have_frame ? green_pass_pixels() : 0;
+        printf("FXCG_P2_FLAG_EMU_PASS_PIXELS=%d\n", pass_pixels);
+        printf("FXCG_P2_FLAG_EMU_DISPLAY_CAPTURED=%s\n",
+               have_frame ? "yes" : "no");
+        if (!have_frame || !capture_saved || pass_pixels < MIN_P2_PASS_PIXELS)
+        {
+            fprintf(stderr, "P2 SR flag readback emulator test failed\n");
+            exit(1);
+        }
+        puts("FXCG_P2_FLAG_EMU_RESULT=PASS");
+        return;
+    }
 
     const unsigned marker = have_frame ? last_frame[0] : 0;
     const int message_pixels = have_frame ? visible_message_pixels() : 0;
