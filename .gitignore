@@ -196,3 +196,6 @@ vrdump/
 
 # fx-CG50 TLB-handler link-probe verifier
 !tests/fxcg50-tlb-probe/verify_link.py
+
+# Emulator checkout used by tests/fxcg50-emulator (CI clones it here too)
+.cache/
