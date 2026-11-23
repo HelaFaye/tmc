@@ -1,0 +1,50 @@
+
+/* ---- appended by the Picori headless harness (mmu_window.c) ---- */
+#include "../../../../mmu_window.h"
+
+void utlbSetEntry(u32 e, u32 a, u32 d) {
+  e &= 0x3f;
+  addresses[e].VPN = a >> 10; addresses[e].D = (a >> 9) & 1;
+  addresses[e].V = (a >> 8) & 1; addresses[e].ASID = a & 0xff;
+  datas[e].PPN = (d >> 10) & 0x7ffff; datas[e].V = (d >> 8) & 1;
+  datas[e].SZ1 = (d >> 7) & 1; datas[e].PR = (d >> 5) & 3;
+  datas[e].SZ2 = (d >> 4) & 1; datas[e].C = (d >> 3) & 1;
+  datas[e].D = (d >> 2) & 1; datas[e].SH = (d >> 1) & 1; datas[e].WT = d & 1;
+}
+
+/* A valid 4 KiB entry for va (ASID ignored: ASID is always 0 here). */
+int utlbFind4k(u32 va, u32 *pa) {
+  int found = -1;
+  for (int e = 0; e < 64; e++) {
+    if (!addresses[e].V || !datas[e].V || datas[e].SZ1 || !datas[e].SZ2) continue;
+    if (((u32)addresses[e].VPN << 10 & 0xfffff000u) != (va & 0xfffff000u)) continue;
+    if (found >= 0) {
+      printf("D1_EMU: multiple UTLB hits for %08x (entries %d and %d)\n", va, found, e);
+      exit(4);
+    }
+    found = e;
+  }
+  if (found < 0) return 0;
+  *pa = ((u32)datas[found].PPN << 10 & 0x1ffff000u) | (va & 0xfffu);
+  return 1;
+}
+
+void utlbArrayWrite(u32 address, u32 value) {
+  u32 e = (address >> 8) & 0x3f;
+  if ((address & 0xff000000u) == 0xf6000000u) {
+    if (address & 0x80) { /* associative: update V/D of the matching entry */
+      for (int i = 0; i < 64; i++)
+        if (addresses[i].V && ((u32)addresses[i].VPN << 10 & 0xfffff000u) == (value & 0xfffff000u)) {
+          addresses[i].V = (value >> 8) & 1; addresses[i].D = (value >> 9) & 1;
+        }
+    } else {
+      addresses[e].VPN = value >> 10; addresses[e].D = (value >> 9) & 1;
+      addresses[e].V = (value >> 8) & 1; addresses[e].ASID = value & 0xff;
+    }
+  } else {
+    datas[e].PPN = (value >> 10) & 0x7ffff; datas[e].V = (value >> 8) & 1;
+    datas[e].SZ1 = (value >> 7) & 1; datas[e].PR = (value >> 5) & 3;
+    datas[e].SZ2 = (value >> 4) & 1; datas[e].C = (value >> 3) & 1;
+    datas[e].D = (value >> 2) & 1; datas[e].SH = (value >> 1) & 1; datas[e].WT = value & 1;
+  }
+}

@@ -10,6 +10,9 @@
 #define MIN_VISIBLE_MESSAGE_PIXELS 24
 
 extern int headless_p2_flag_mode;
+extern int headless_d1_pager_mode;
+extern u32 mmuDone;
+#define D1_PAGER_MAX_FRAMES 3600
 #define MIN_P2_PASS_PIXELS 8
 
 static u16 last_frame[SCREEN_WIDTH * SCREEN_HEIGHT];
@@ -92,6 +95,28 @@ static int visible_message_pixels(void)
 
 void runMainLoop(void (*callback)(void))
 {
+    if (headless_d1_pager_mode)
+    {
+        /* D1-PAGER-PROBE prints its report through the debug port and
+           writes the done port (mmu_window.c) when it finishes. */
+        int frame = 0;
+        while (!mmuDone && frame < D1_PAGER_MAX_FRAMES)
+        {
+            callback();
+            ++frame;
+        }
+        if (have_frame)
+            (void)save_ppm();
+        printf("\nD1_EMU_FRAMES=%d\n", frame);
+        if (!mmuDone)
+        {
+            fprintf(stderr, "D1 pager probe did not finish in %d frames\n", D1_PAGER_MAX_FRAMES);
+            exit(1);
+        }
+        printf("D1_EMU_DONE_CODE=%u\n", mmuDone & 0xff);
+        exit((mmuDone & 0xff) == 0 ? 0 : 1);
+    }
+
     /* Match fxOGL's headless harness: advance enough emulated frames for the
        Gint LCD driver to publish its framebuffer, then inspect the capture. */
     for (int frame = 0; frame < 16; ++frame)

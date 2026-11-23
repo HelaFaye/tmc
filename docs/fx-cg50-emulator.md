@@ -32,3 +32,42 @@ It does **not** validate the D1 TLB refill handler, the page-pak reader, the
 hardware OS 3.20.0202 MMU behavior, or game execution. The emulator is not a
 replacement for physical-calculator validation. No copyrighted ROM or page
 pak is checked out or embedded by this workflow.
+
+## D1 pager test (`--d1-pager`)
+
+The pinned emulator has no MMU, no TLB-miss exceptions and no OS, so the
+plain smoke test cannot reach the D1 pager. The harness therefore copies the
+emulator sources into its build directory and splices in a **test-only MMU
+extension** (`tests/fxcg50-emulator/casio-emu-headless/mmu_window.c`). It is
+inactive unless `--d1-pager` is given, so the two tests above run the
+emulator as before. For the ROM window `[0x20000000, 0x21000000)` only, it
+adds:
+
+- translation through the emulator's 64-entry UTLB model;
+- precise TLB-miss exceptions: the faulting access is aborted, SPC holds the
+  faulting instruction (or its branch, for a delay slot), SSR, SGR, EXPEVT
+  and TEA are set, SR.MD/RB/BL are set, and the CPU jumps to `VBR+0x400`. A
+  miss while BL is already set stops the run, since hardware would reset;
+- OS syscall 0x09 into round-robin UTLB slots 0-54, the behaviour
+  D1-MAP-PROBE recorded on OS 3.20.0202;
+- writes to the memory-mapped UTLB arrays, for the P2 eviction routine;
+- interrupts held while BL = 1 or IMASK = 15.
+
+`D1-PAGER-PROBE.g3a`, built with `TMC_FXCG_EMULATOR_TEST`, prints its report
+through the emulator's debug port instead of storage memory and writes a
+done port when finished. CI requires `RESULT=PASS`, all eight stages
+passing and `REGS_MISMATCH_MASK=0000`, and uploads the report.
+
+First local run, 2026-11-23: all eight stages passed in 26 emulated frames,
+with 6,184 window TLB misses, 3,093 syscall 0x09 mappings and 3,084
+evictions with invalidation. Two deliberate bugs were planted to check that
+the test can fail. Without UTLB invalidation on eviction, `5_EVICTION` fails.
+Without restoring r5 in the upcall, stages 2-4 fail with
+`REGS_MISMATCH_MASK=0020`.
+
+This checks the handler's control flow, the upcall's register state and
+the cache bookkeeping on an interpreter. It does not model the SH7305's
+caches, ITLB, the real OS mapper, P2-only access rules or timing. CI then
+builds the hardware variants of the probe and of `Picori.g3a` with
+`TMC_FXCG_D1_PAGER=ON`, and uploads them as `fxcg50-d1-pager-hardware`;
+CI does not run them.

@@ -318,6 +318,10 @@ if(TMC_FXCG_D1_PAGER_PROBE)
         -ffunction-sections -fdata-sections -w)
     target_compile_definitions(fxcg_d1_pager_probe PRIVATE
         TMC_FXCG_D1_PAGER=1 FXCG_ROM_SYNTHETIC=1 FXCG_ROM_FRAMES=64)
+    if(TMC_FXCG_EMULATOR_TEST)
+        # Report through the headless emulator's debug port (--d1-pager).
+        target_compile_definitions(fxcg_d1_pager_probe PRIVATE TMC_FXCG_EMULATOR_TEST=1)
+    endif()
     target_include_directories(fxcg_d1_pager_probe PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${CGLINK_DIR}/include)
     target_link_libraries(fxcg_d1_pager_probe PRIVATE Gint::Gint)

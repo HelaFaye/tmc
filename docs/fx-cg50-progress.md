@@ -11,7 +11,7 @@ with every step that changes what is known.
 | Phase | State |
 |---|---|
 | 0. Measure and set up | ROM working set measured (590 validated rooms); SH-4 toolchain and 623/623 source compile verified; code size measured (about 1.0 MB); upper 3,200 KiB DRAM passed RAMCheck v2 on OS 3.20.0202. Device I/O/baud measurements and the D7 RAM-loader spike remain open; corrected PCPK rebuild remains pending |
-| 1. The game on the calculator | **Current focus.** D1 pager implemented (`TMC_FXCG_D1_PAGER=ON`; see `fx-cg50-d1-pager.md`), host-tested, built with `D1-PAGER-PROBE.g3a`; **not yet run on hardware**. Default build stays fail-closed. ROM-only page pak (1,140 pages, 2.63 MiB) built. Next: run the probe, then the pager build. Open: byte order of in-place ROM reads (no big-endian validation yet); room `0x8a:0x02` hangs in ROM-only mode on the PC |
+| 1. The game on the calculator | **Current focus.** D1 pager implemented (`TMC_FXCG_D1_PAGER=ON`; see `fx-cg50-d1-pager.md`), host-tested, passing `D1-PAGER-PROBE` in the emulator MMU extension (CI); **not yet run on hardware**. Default build stays fail-closed. ROM-only page pak (1,140 pages, 2.63 MiB) built. Next: run the probe, then the pager build. Open: byte order of in-place ROM reads (no big-endian validation yet); room `0x8a:0x02` hangs in ROM-only mode on the PC |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, deliberately deferred until Phase 1 is playable |
 | 3-6 | Not started |
 
@@ -113,6 +113,29 @@ separate P2 instruction-execution probe. No UTLB entries have been written,
 no `URB`/`URC` policy has been selected, and `Fxcg_RomInit()` remains fail-closed.
 
 ## Log
+
+### 2026-11-23: D1 pager passes in the emulator; CI runs it
+
+- **Local smoke test:** the pinned `Heath123/casio-emu` was built here, and
+  the existing Picori smoke test passed: `PICORI_CASIO_EMU_RESULT=PASS`.
+- **Probe on the stock emulator:** `D1-PAGER-PROBE` stopped at the OS
+  syscall dispatcher. The emulator has no OS and no MMU.
+- **Test-only MMU extension:** added to the harness (`--d1-pager`,
+  `mmu_window.c`). It is spliced into a copy of the emulator sources at
+  configure time, so the pinned checkout and the existing tests are
+  unchanged.
+- **Probe result with the extension:** all eight stages PASS, with 6,184
+  window misses, 3,093 syscall 0x09 mappings, 3,084 evictions and
+  `REGS_MISMATCH_MASK=0000`.
+- **Planted bugs:** with UTLB invalidation removed, the eviction stage
+  fails. With r5 not restored in the upcall, stages 2-4 fail
+  (`REGS_MISMATCH_MASK=0020`).
+- **CI workflow:** `fxcg50-emulator.yml` now checks out `external/fxLauncher`
+  and runs the probe in the emulator. It requires `RESULT=PASS`, all eight
+  stages and a zero register mask, and uploads the report. It then builds
+  the hardware variants (`D1-PAGER-PROBE.g3a`, and `Picori-D1.g3a` with the
+  pager) and uploads them as `fxcg50-d1-pager-hardware`, without running
+  them.
 
 ### 2026-11-23: D1 pager built; hardware results folded in
 

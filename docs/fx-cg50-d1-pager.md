@@ -1,6 +1,7 @@
 # fx-CG50 D1 pager: the ROM window
 
-Status: **implemented, built, host-tested; not yet run on hardware.** The
+Status: **implemented, host-tested, and passing in the emulator's test-only
+MMU extension (`fx-cg50-emulator.md`, run in CI); not yet run on hardware.** The
 default build stays fail-closed. The pager is built only with
 `-DTMC_FXCG_D1_PAGER=ON`; its hardware test add-in only with
 `-DTMC_FXCG_D1_PAGER_PROBE=ON`.
@@ -91,5 +92,6 @@ TLB miss:
 - The fault service reads storage memory through gint's world switch from
   whatever point the game was at when it missed. The `PCPKLOG` reader did the
   same reads, but not from inside a fault.
-- The emulator in CI does not model the MMU, so CI only builds these
-  targets.
+- CI runs the probe on an emulator MMU extension written for this test
+  (`fx-cg50-emulator.md`). That checks the logic but not the SH7305's
+  caches, ITLB or OS mapper, so the hardware run is still required.

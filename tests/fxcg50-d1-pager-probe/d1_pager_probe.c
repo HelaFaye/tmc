@@ -51,14 +51,33 @@ static int WriteReportOs(void* unused) {
     return bad ? (errno ? errno : EIO) : 0;
 }
 
+#ifdef TMC_FXCG_EMULATOR_TEST
+/* Headless casio-emu (--d1-pager): no OS file system. Stream the new report
+ * text through the emulator's debug print port; the harness's done port
+ * ends the run (tests/fxcg50-emulator/casio-emu-headless/mmu_window.c). */
+static size_t sPrinted;
+static void Save(void) {
+    for (; sPrinted < sReportSize; sPrinted++)
+        *(volatile uint8_t*)0xfffff000u = (uint8_t)sReport[sPrinted];
+}
+static void EmuDone(uint32_t code) {
+    *(volatile uint32_t*)0xfffff004u = code;
+}
+#else
 static void Save(void) {
     sSaveError = gint_world_switch(GINT_CALL(WriteReportOs, NULL));
 }
+#endif
 
 /* Called by fxcg_rom.c when a page cannot be served. */
 void Fxcg_ShowMessage(const char* line1, const char* line2) {
     Report("FATAL=%s / %s\n", line1, line2 ? line2 : "");
     Save();
+#ifdef TMC_FXCG_EMULATOR_TEST
+    EmuDone(2);
+    for (;;) {
+    }
+#endif
     dclear(C_BLACK);
     dtext(4, 4, C_WHITE, line1);
     if (line2)
@@ -202,6 +221,11 @@ int main(void) {
     dtext(4, 46, sFailures ? C_RED : C_GREEN, sFailures ? "FAIL: see D1-PAGER.TXT" : "PASS: D1-PAGER.TXT saved");
     dtext(4, 214, C_WHITE, "Press any key to exit");
     dupdate();
+#ifdef TMC_FXCG_EMULATOR_TEST
+    EmuDone(sFailures ? 1 : 0);
+    for (;;) {
+    }
+#endif
     getkey();
     return 0;
 }

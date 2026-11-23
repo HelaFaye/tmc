@@ -16,6 +16,8 @@ on:
       - "tests/fxcg50-tlb-probe/**"
       - "tests/fxcg50-p2-exec-probe/**"
       - "tests/fxcg50-p2-bl-rb-probe/**"
+      - "tests/fxcg50-d1-pager-probe/**"
+      - "external/fxLauncher"
       - ".github/workflows/fxcg50-emulator.yml"
   pull_request:
     paths:
@@ -29,6 +31,8 @@ on:
       - "tests/fxcg50-tlb-probe/**"
       - "tests/fxcg50-p2-exec-probe/**"
       - "tests/fxcg50-p2-bl-rb-probe/**"
+      - "tests/fxcg50-d1-pager-probe/**"
+      - "external/fxLauncher"
       - ".github/workflows/fxcg50-emulator.yml"
   workflow_dispatch:
     inputs:
@@ -55,6 +59,9 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+
+      - name: Check out fxLauncher (DEFLATE decoder for the D1 pager)
+        run: git submodule update --init --depth 1 external/fxLauncher
 
       - name: Check out fxSDK toolchain recipe
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -89,7 +96,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work/port/fxcg \
             fxsdk-ci:latest \
-            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON -DTMC_FXCG_TLB_STATE_PROBE=ON -DTMC_FXCG_OS_PAGING_PROBE=ON -DTMC_FXCG_D1_MAP_PROBE=ON -DTMC_FXCG_COLD_DATA_TLB_MISS_PROBE=ON -DTMC_FXCG_P2_EXEC_PROBE=ON -DTMC_FXCG_P2_BL_RB_PROBE=ON && fxsdk build-cg'
+            sh -c 'command -v fxsdk && fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=ON -DTMC_FXCG_TLBH_LINK_PROBE=ON -DTMC_FXCG_TLB_STATE_PROBE=ON -DTMC_FXCG_OS_PAGING_PROBE=ON -DTMC_FXCG_D1_MAP_PROBE=ON -DTMC_FXCG_COLD_DATA_TLB_MISS_PROBE=ON -DTMC_FXCG_P2_EXEC_PROBE=ON -DTMC_FXCG_P2_BL_RB_PROBE=ON -DTMC_FXCG_D1_PAGER_PROBE=ON && fxsdk build-cg'
 
           G3A="$(find port/fxcg -type f -name 'Picori.g3a' -print -quit)"
           test -n "$G3A"
@@ -129,6 +136,13 @@ jobs:
           test -n "$P2_FLAG_ISOLATION_PROBE_G3A"
           printf 'FXCG_P2_FLAG_ISOLATION_PROBE_G3A=%s\n' "$P2_FLAG_ISOLATION_PROBE_G3A" >> "$GITHUB_ENV"
           echo "Built hardware-only P2 flag-isolation probe $P2_FLAG_ISOLATION_PROBE_G3A (not executed)"
+          # Emulator variant of the D1 pager probe (reports through the
+          # emulator's debug port); the hardware variant is built later.
+          D1_PAGER_EMU_G3A="$(find port/fxcg -type f -name 'D1-PAGER-PROBE.g3a' -print -quit)"
+          test -n "$D1_PAGER_EMU_G3A"
+          mkdir -p build/emulator-addins
+          cp "$D1_PAGER_EMU_G3A" build/emulator-addins/D1-PAGER-PROBE-EMULATOR.g3a
+          printf 'D1_PAGER_EMU_G3A=%s\n' build/emulator-addins/D1-PAGER-PROBE-EMULATOR.g3a >> "$GITHUB_ENV"
 
       - name: Upload read-only OS paging-state probe add-in
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -212,3 +226,48 @@ jobs:
           name: fxcg50-p2-sr-flag-emulator-screen
           path: emulated-screen.ppm
           if-no-files-found: ignore
+
+      # The D1 ROM-window pager (docs/fx-cg50-d1-pager.md) on the emulator's
+      # test-only MMU extension (--d1-pager, mmu_window.c): TLB-miss
+      # exceptions for the ROM window, OS syscall 0x09, UTLB array writes.
+      # It checks the handler paths, upcall register preservation and
+      # eviction; it is not a substitute for the hardware run.
+      - name: Run D1 pager probe in Casio emulator (MMU extension)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 300 build/casio-emu-headless/casio-emu-headless \
+            "$D1_PAGER_EMU_G3A" --d1-pager | tee d1-pager-emulator.txt
+          grep -q '^RESULT=PASS' d1-pager-emulator.txt
+          grep -q '^REGS_MISMATCH_MASK=0000' d1-pager-emulator.txt
+          test "$(grep -c '^STAGE .* PASS ' d1-pager-emulator.txt)" -eq 8
+
+      - name: Upload D1 pager emulator report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxcg50-d1-pager-emulator-report
+          path: d1-pager-emulator.txt
+          if-no-files-found: ignore
+
+      - name: Build hardware D1 pager probe and Picori with the D1 pager
+        shell: bash
+        run: |
+          # Without TMC_FXCG_EMULATOR_TEST: the probe writes /D1-PAGER.TXT and
+          # Picori reads /Picori.pak. Hardware-only; CI does not execute them.
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work/port/fxcg \
+            fxsdk-ci:latest \
+            sh -c 'fxsdk build-cg -c -DTMC_FXCG_EMULATOR_TEST=OFF -DTMC_FXCG_D1_PAGER=ON -DTMC_FXCG_D1_PAGER_PROBE=ON && fxsdk build-cg'
+          mkdir -p build/hardware-addins
+          cp port/fxcg/D1-PAGER-PROBE.g3a build/hardware-addins/D1-PAGER-PROBE.g3a
+          cp port/fxcg/Picori.g3a build/hardware-addins/Picori-D1.g3a
+          (cd build/hardware-addins && sha256sum *.g3a | tee SHA256SUMS)
+
+      - name: Upload D1 pager hardware add-ins (run the probe first)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxcg50-d1-pager-hardware
+          path: build/hardware-addins/
+          if-no-files-found: error
