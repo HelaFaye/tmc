@@ -7,3 +7,6 @@
 [submodule "libs/tmc-Modern-Launcher"]
 	path = libs/tmc-Modern-Launcher
 	url = https://github.com/MatheoVignaud/tmc-Modern-Launcher.git
+[submodule "external/fxLauncher"]
+	path = external/fxLauncher
+	url = https://github.com/HelaFaye/fxLauncher.git

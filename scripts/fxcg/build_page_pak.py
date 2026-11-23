@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Build a compact, page-addressable ROM pak for the fx-CG50.
 
-usage: build_page_pak.py <USA-baserom.gba> <out.pak> <touch-dir> [<touch-dir> ...]
+usage: build_page_pak.py <USA-baserom.gba> <out.pak> [--boot=<touch.txt> ...] <touch-dir> [<touch-dir> ...]
+
+--boot adds every page of a boot capture (a ROM-touch log of a run from
+power-on through the title screen and file select, recorded with
+TMC_ROM_ONLY=1; see docs/fx-cg50-data-prep.md) to the resident baseline.
 
 The calculator target currently links the USA ROM symbol map. This tool
 therefore accepts only the exact supported USA ROM image. It stores each
@@ -101,9 +105,26 @@ def main(argv):
     if rom_sha1 != USA_SHA1:
         raise SystemExit("ROM SHA-1 mismatch: this fx-CG50 build's linker symbols target the supported USA ROM; got %s" % rom_sha1)
 
-    rooms, load_pages = load_rooms(argv[3:])
+    boot_files = [a[len("--boot="):] for a in argv[3:] if a.startswith("--boot=")]
+    directories = [a for a in argv[3:] if not a.startswith("--boot=")]
+    rooms, load_pages = load_rooms(directories)
     if not rooms:
         raise SystemExit("no completed room runs found; run rom_touch_sweep.sh first")
+    boot_pages = set()
+    for path in boot_files:
+        with open(path) as stream:
+            for line in stream:
+                fields = line.split()
+                if len(fields) >= 2 and fields[0] in ("load", "play"):
+                    page = int(fields[1])
+                    if not 0 <= page < ROM_SIZE // PAGE:
+                        raise SystemExit("boot capture %s names page %d" % (path, page))
+                    boot_pages.add(page)
+        if not boot_pages:
+            raise SystemExit("boot capture %s has no ROM pages" % path)
+    # Like the load phase, the boot path runs before any room: keep it resident.
+    for pages in rooms.values():
+        pages.update(boot_pages)
 
     all_pages = sorted(set().union(*rooms.values()))
     baseline = set.intersection(*rooms.values())
@@ -203,7 +224,7 @@ def main(argv):
     print("Pak SHA-256 %s" % pak_sha256)
     print("Wrote %s (metadata: %s.json; checksum: %s.sha256)" % (
         output_path, output_path, output_path))
-    print("Only the .pak is intended for calculator transfer; the runtime page reader is not implemented yet.")
+    print("Only the .pak is intended for calculator transfer (as /Picori.pak; read by Picori built with TMC_FXCG_D1_PAGER=ON).")
     return 0
 
 

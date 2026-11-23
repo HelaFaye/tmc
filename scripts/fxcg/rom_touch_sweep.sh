@@ -49,7 +49,7 @@ if [ "$1" = "--one" ]; then
     cd "$D"
 
     if timeout --signal=TERM --kill-after=5 300 \
-        env OMP_NUM_THREADS=1 TMC_AUTOPLAY=1 TMC_ROOMCAP=1 \
+        env OMP_NUM_THREADS=1 TMC_AUTOPLAY=1 TMC_ROOMCAP=1 TMC_ROM_ONLY=1 \
         TMC_ROOMCAP_POSTINTRO=1 \
         TMC_ROOMCAP_WARP="$A,$R,0x80,0x80,1" TMC_ROOMCAP_SETTLE=100000 \
         SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \

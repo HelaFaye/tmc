@@ -11,7 +11,7 @@ with every step that changes what is known.
 | Phase | State |
 |---|---|
 | 0. Measure and set up | ROM working set measured (590 validated rooms); SH-4 toolchain and 623/623 source compile verified; code size measured (about 1.0 MB); upper 3,200 KiB DRAM passed RAMCheck v2 on OS 3.20.0202. Device I/O/baud measurements and the D7 RAM-loader spike remain open; corrected PCPK rebuild remains pending |
-| 1. The game on the calculator | **Current focus.** `port/fxcg/` and `Picori.g3a` (1.15 MB) build; headless emulator smoke test passes. Gint `.gint.tlbh` link override is verified by a link-only probe. The original read-only UTLB probe builds but is **blocked from hardware use** because its P4 array reads execute in P0. ROM paging is **not implemented** and `Fxcg_RomInit()` remains fail-closed. Next: validate P2 instruction execution, build a corrected P2 UTLB snapshot, then run the isolated resident-page refill test |
+| 1. The game on the calculator | **Current focus.** D1 pager implemented (`TMC_FXCG_D1_PAGER=ON`; see `fx-cg50-d1-pager.md`), host-tested, built with `D1-PAGER-PROBE.g3a`; **not yet run on hardware**. Default build stays fail-closed. ROM-only page pak (1,140 pages, 2.63 MiB) built. Next: run the probe, then the pager build. Open: byte order of in-place ROM reads (no big-endian validation yet); room `0x8a:0x02` hangs in ROM-only mode on the PC |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, deliberately deferred until Phase 1 is playable |
 | 3-6 | Not started |
 
@@ -113,6 +113,66 @@ separate P2 instruction-execution probe. No UTLB entries have been written,
 no `URB`/`URC` policy has been selected, and `Fxcg_RomInit()` remains fail-closed.
 
 ## Log
+
+### 2026-11-23: D1 pager built; hardware results folded in
+
+Hardware files received (OS 3.20.0202): `TLBSNAP`, `TLBSLOT`, `RAMCHECK`,
+`PCPKLOG`, `OS-PAGING`, `D1-MAP-PROBE` (PASS), `COLD-DATA-TLB-MISS` (PASS),
+and `D1TLBH.TXT`, which is 650 zero bytes: a run that died before writing.
+
+Design decided by those results (details in `fx-cg50-d1-pager.md`):
+- No `LDTLB` anywhere. UTLB 55-62 are the permanent add-in RAM mappings and
+  `URB=63`, so a refill at `URC` could unmap the stack.
+- **Resident window pages:** mapped from the TLB-miss handler with OS syscall
+  `0x09` and flags `0x6C`, the call the mapper probe validated, in the OS's
+  own slot pool.
+- **Pages not yet resident:** fetched by an upcall in normal context, never
+  inside the exception.
+- **Eviction:** clears the UTLB entry from P2.
+- **Add-in misses:** gint's stock `0x0C` path, unchanged.
+
+Added:
+- **Pager sources:** `port/fxcg/fxcg_tlbh.S` (replaces `.gint.tlbh`; 0x120
+  bytes, linker-asserted at most 0x200), `fxcg_p2_tlb.S`, and the pager in
+  `fxcg_rom.c`.
+- **Probe:** `tests/fxcg50-d1-pager-probe/` for `D1-PAGER-PROBE.g3a`, eight
+  stages, with the report saved after each one.
+- **Host test:** `port/fxcg/tests/test_rom_cache.c`. It passed on the new pak:
+  1,140 pages byte-identical, 3,416 evictions, pinned pages kept.
+- **Inflate dependency:** `external/fxLauncher` submodule, for `cglink_inflate`.
+- **Build options:** `TMC_FXCG_D1_PAGER` and `TMC_FXCG_D1_PAGER_PROBE`, both
+  off by default. The default `Picori.g3a` still uses gint's handler
+  (`_gint_tlbh_size` 0x70) and fails closed.
+
+**The earlier pak would have failed on the calculator.**
+- The calculator has no asset loader. The PC loaded texts, area tables and
+  sprite pointers from extracted assets, so its sweeps never touched those
+  ROM pages.
+- `TMC_ROM_ONLY=1` in `port_asset_loader.cpp` makes the PC take the same ROM
+  fallbacks. A boot run then touched 54 play pages instead of 15.
+- The ROM-only sweep (`rom_touch_sweep.sh` now sets it) and the new boot
+  capture (`rom_touch_boot.sh`, passed with `build_page_pak.py --boot=`)
+  give:
+
+| | Asset-backed pak (earlier) | ROM-only pak |
+|---|---:|---:|
+| Validated rooms | 590 | 590 |
+| Unique pages | 582 | 1,140 (4.45 MiB raw) |
+| Pak size | 0.89 MiB | 2.63 MiB |
+| Pinned baseline | 128 | 165 (234 KiB compressed) |
+| Per room beyond baseline | - | median 36 KiB, p90 66 KiB, max 132 KiB |
+
+Room `0x8a:0x02` runs to completion with assets, but under `TMC_ROM_ONLY`
+it hangs until the 300 s timeout (exit 137), after
+`ResolveRomPtr: address 0x00880000 is outside ROM`. It is left out of this
+pak. It may be a bug in the ROM fallback path the calculator uses, and is
+not yet investigated.
+
+**Still open, and probably the next blocker after paging:** byte order. The
+game reads ROM structures in place (room headers, scripts, entity lists).
+Only a few paths have `TMC_BE` swaps, so on the big-endian SH-4 other
+multi-byte ROM fields may read wrong. No big-endian run of the game has been
+done yet (plan Phase 0 item 2).
 
 ### 2026-11-20: exact Picori artifact for the Gint startup check
 

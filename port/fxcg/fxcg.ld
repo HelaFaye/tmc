@@ -74,6 +74,10 @@ SECTIONS
 		_gint_tlbh_start = . ;
 		KEEP(*(.gint.tlbh))
 		_gint_tlbh_size = ABSOLUTE(. - _gint_tlbh_start);
+		/* kinit() copies this to VBR+0x400; VBR+0x600 is the interrupt
+		   entry, so the handler (fxcg_tlbh.S with the D1 pager) must fit
+		   in 0x200 bytes. */
+		ASSERT(_gint_tlbh_size <= 0x200, "fx-CG50: .gint.tlbh exceeds VBR+0x400..0x600");
 
 		*(.text .text.*)
 	} > rom

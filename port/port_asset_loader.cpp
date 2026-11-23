@@ -35,6 +35,7 @@ extern Frame* gSpriteAnimations_322[];
 #undef max
 #endif
 
+#include <cstdlib>
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -1389,7 +1390,21 @@ GfxLoadDecision EvaluateGfxControl(u8 unknown) {
  * than pulling all of main.h into this translation unit. */
 extern "C" u16 gPaletteBuffer[];
 
+/* TMC_ROM_ONLY=1: load nothing from the asset tree, so every caller takes
+ * its ROM fallback, as the fx-CG50 build (which has no asset loader) does.
+ * Used to record the ROM pages that build touches (scripts/fxcg). */
+static bool Port_AssetsRomOnly(void) {
+    static int sRomOnly = -1;
+    if (sRomOnly < 0) {
+        const char* e = getenv("TMC_ROM_ONLY");
+        sRomOnly = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return sRomOnly == 1;
+}
+
 extern "C" bool32 Port_LoadPaletteGroupFromAssets(u32 group) {
+    if (Port_AssetsRomOnly())
+        return FALSE;
     if (gRomRegion != ROM_REGION_USA) {
         return FALSE;
     }
@@ -1445,6 +1460,8 @@ extern "C" bool32 Port_LoadPaletteGroupFromAssets(u32 group) {
 }
 
 extern "C" bool32 Port_LoadGfxGroupFromAssets(u32 group) {
+    if (Port_AssetsRomOnly())
+        return FALSE;
     /* Extracted asset caches use the build-time baseline. A universal build is
      * USA-based, so non-USA ROMs must retain their runtime-resolved ROM tables. */
     if (gRomRegion != ROM_REGION_USA) {
@@ -1523,6 +1540,8 @@ extern "C" bool32 Port_LoadGfxGroupFromAssets(u32 group) {
 }
 
 extern "C" bool32 Port_LoadAreaTablesFromAssets(void) {
+    if (Port_AssetsRomOnly())
+        return FALSE;
     if (gRomRegion != ROM_REGION_USA)
         return FALSE;
     if (!EnsureAssetGroupCache() || !gAssetGroupCache.hasAreaData) {
@@ -1543,6 +1562,8 @@ extern "C" bool32 Port_LoadAreaTablesFromAssets(void) {
 }
 
 extern "C" bool32 Port_LoadSpritePtrsFromAssets(void) {
+    if (Port_AssetsRomOnly())
+        return FALSE;
     /* Never reseed non-USA sprite pointers from the USA-baseline cache. Doing so
      * overwrites every gSpritePtrs[i].animations with a *native* heap pointer, which
      * is fine on USA, but breaks other regions: Port_GetSpriteAnimationData uses its ROM
@@ -1731,6 +1752,8 @@ extern "C" bool32 Port_LoadSpritePtrsFromAssets(void) {
 }
 
 extern "C" bool32 Port_LoadTextsFromAssets(void) {
+    if (Port_AssetsRomOnly())
+        return FALSE;
     if (gRomRegion != ROM_REGION_USA)
         return FALSE;
     if (!EnsureAssetGroupCache() || !gAssetGroupCache.hasTextData) {
@@ -1784,6 +1807,8 @@ extern "C" bool32 Port_AreSpritePtrsLoadedFromAssets(void) {
 }
 
 extern "C" bool32 Port_RefreshAreaDataFromAssets(u32 area) {
+    if (Port_AssetsRomOnly())
+        return FALSE;
     if (gRomRegion != ROM_REGION_USA)
         return FALSE;
     if (!EnsureAssetGroupCache() || !gAssetGroupCache.hasAreaData || area >= kAreaCount) {
@@ -1894,6 +1919,8 @@ extern "C" const u8* Port_GetMapAssetDataByIndex(u32 assetIndex, u32* size) {
 }
 
 extern "C" const u8* Port_GetSpriteAnimationData(u16 spriteIndex, u32 animIndex) {
+    if (Port_AssetsRomOnly())
+        return nullptr;
     /* JP ROM: the asset cache's sprite-animation buffers are not region-correct for
      * JP (the asset baseline is USA / JP extraction residual), which made JP entity
      * animPtrs fail FrameZero's bounds check (hundreds of "animPtr outside/overruns

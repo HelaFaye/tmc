@@ -53,14 +53,34 @@ host-side sidecars on the computer. The pak contains copyrighted ROM-derived
 data; generate it from your own legally obtained ROM and do not commit or
 redistribute it.
 
-## 3. Runtime status — important
+## 3. Record the pages the calculator reads, not the PC
 
-This host-side conversion is implemented, but the calculator-side D1 ROM
-window is not. `port/fxcg/fxcg_rom.c` still deliberately returns failure and
-`Fxcg_GameMain()` displays that failure message. The `.pak` is therefore a
-prepared input, not yet a loadable runtime resource. Do not remove that
-fail-closed behaviour or claim the game boots until the TLB-backed page
-reader (or the documented accessor fallback) has been implemented and tested.
+The calculator build has no asset loader: texts, area tables, sprite
+pointers and graphics groups come from the ROM. The PC build loads them from
+its extracted asset tree unless `TMC_ROM_ONLY=1` is set. A pak built from
+asset-backed sweeps therefore misses pages the calculator needs. On
+2026-11-23 the ROM-only sweep touched 1,140 unique pages, against 582 in
+the earlier pak.
+
+- `rom_touch_sweep.sh` now always sets `TMC_ROM_ONLY=1`.
+- `rom_touch_boot.sh <tmc_pc> <baserom.gba> boot-touch.txt` records power-on
+  through the title screen, file select and a new file, also ROM-only.
+- Pass that log to the packer with `--boot=boot-touch.txt`; its pages join
+  the pinned baseline:
+
+```sh
+scripts/fxcg/prepare_calculator_data.sh baserom.gba Picori.pak \
+  --boot=boot-touch.txt build/fxcg-rom-touch
+```
+
+Copy `Picori.pak` to the root of storage memory as `/Picori.pak`.
+
+## 4. Runtime
+
+The calculator-side reader is the D1 pager (`docs/fx-cg50-d1-pager.md`). It
+is built only with `-DTMC_FXCG_D1_PAGER=ON`. The default build still stops
+at the fail-closed ROM message. Run `D1-PAGER-PROBE.g3a` on the calculator
+before the pager build.
 
 The game BSS placement is separate from ROM paging. It targets the upper
 DRAM range described in `fxcg.ld`, and CI checks the measured origin,

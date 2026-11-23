@@ -31,7 +31,11 @@ option(TMC_FXCG_D1_MAP_PROBE
     "Build hardware-only D1 alias proof using the OS 4 KiB mapper" OFF)
 option(TMC_FXCG_COLD_DATA_TLB_MISS_PROBE
     "Build a hardware-only controlled cold data-TLB miss/refill probe" OFF)
-if(TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE OR TMC_FXCG_D1_MAP_PROBE OR TMC_FXCG_COLD_DATA_TLB_MISS_PROBE)
+option(TMC_FXCG_D1_PAGER
+    "Build Picori with the D1 ROM window (TLB-miss pager reading Picori.pak); default stays fail-closed" OFF)
+option(TMC_FXCG_D1_PAGER_PROBE
+    "Build the hardware-only D1-PAGER-PROBE add-in (synthetic pages, staged log)" OFF)
+if(TMC_FXCG_D1_PAGER OR TMC_FXCG_D1_PAGER_PROBE OR TMC_FXCG_TLBH_LINK_PROBE OR TMC_FXCG_P2_BL_RB_PROBE OR TMC_FXCG_TLB_STATE_PROBE OR TMC_FXCG_TLB_SLOT_SWEEP_PROBE OR TMC_FXCG_D1_MAP_PROBE OR TMC_FXCG_COLD_DATA_TLB_MISS_PROBE)
     enable_language(ASM)
 endif()
 if(TMC_FXCG_PPU_BENCH)
@@ -93,6 +97,17 @@ if(TMC_FXCG_PPU_BENCH)
     list(APPEND PICORI_PORT_SOURCES fxcg_ppu_bench.c)
 endif()
 
+# D1 pager: the TLB-miss handler (replaces gint's .gint.tlbh), the P2 UTLB
+# eviction helper and the DEFLATE decoder from fxLauncher's link library.
+set(CGLINK_DIR ${TMC_ROOT}/external/fxLauncher/lib/cglink)
+set(PICORI_D1_SOURCES fxcg_tlbh.S fxcg_p2_tlb.S ${CGLINK_DIR}/src/inflate.c)
+# SYNCO/ICBI/OCBP are SH-4A instructions (the probes build the same way).
+set_source_files_properties(fxcg_rom.c fxcg_p2_tlb.S fxcg_tlbh.S
+    PROPERTIES COMPILE_OPTIONS "-m4a-nofpu")
+if(TMC_FXCG_D1_PAGER)
+    list(APPEND PICORI_PORT_SOURCES ${PICORI_D1_SOURCES})
+endif()
+
 add_executable(picori ${PICORI_GAME_SOURCES} ${PICORI_PORT_SOURCES})
 target_compile_options(picori PRIVATE -Os -std=gnu11 -fno-freestanding -ffunction-sections -fdata-sections -w)
 target_compile_definitions(picori PRIVATE
@@ -102,6 +117,10 @@ if(TMC_FXCG_EMULATOR_TEST)
 endif()
 if(TMC_FXCG_PPU_BENCH)
     target_compile_definitions(picori PRIVATE TMC_FXCG_PPU_BENCH=1)
+endif()
+if(TMC_FXCG_D1_PAGER)
+    target_compile_definitions(picori PRIVATE TMC_FXCG_D1_PAGER=1)
+    target_include_directories(picori PRIVATE ${CGLINK_DIR}/include)
 endif()
 target_include_directories(picori PRIVATE
     ${TMC_ROOT}/include ${TMC_GENERATED} ${TMC_ROOT}/port ${TMC_ROOT}
@@ -283,5 +302,29 @@ if(TMC_FXCG_COLD_DATA_TLB_MISS_PROBE)
     generate_g3a(TARGET fxcg_cold_data_tlb_miss_probe
         OUTPUT "COLD-DATA-TLB-MISS-PROBE.g3a"
         NAME "Cold Data TLB Miss Probe"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
+endif()
+
+# Staged hardware test of the D1 pager with generated pages (no pak): the
+# same fxcg_tlbh.S, fxcg_p2_tlb.S and fxcg_rom.c as Picori. See
+# docs/fx-cg50-d1-pager.md for the stages and how to read D1-PAGER.TXT.
+if(TMC_FXCG_D1_PAGER_PROBE)
+    add_executable(fxcg_d1_pager_probe
+        ${TMC_ROOT}/tests/fxcg50-d1-pager-probe/d1_pager_probe.c
+        ${TMC_ROOT}/tests/fxcg50-d1-pager-probe/d1_pager_regs.S
+        fxcg_rom.c fxcg_tlbh.S fxcg_p2_tlb.S)
+    target_compile_options(fxcg_d1_pager_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding
+        -ffunction-sections -fdata-sections -w)
+    target_compile_definitions(fxcg_d1_pager_probe PRIVATE
+        TMC_FXCG_D1_PAGER=1 FXCG_ROM_SYNTHETIC=1 FXCG_ROM_FRAMES=64)
+    target_include_directories(fxcg_d1_pager_probe PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CGLINK_DIR}/include)
+    target_link_libraries(fxcg_d1_pager_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_d1_pager_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_d1_pager_probe
+        OUTPUT "D1-PAGER-PROBE.g3a"
+        NAME "D1 Pager Probe"
         ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()
