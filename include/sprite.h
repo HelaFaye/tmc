@@ -10,9 +10,11 @@ typedef struct {
         u8 raw;
         struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-            u8 vFlip : 1;
-            u8 hFlip : 1;
+            struct __attribute__((scalar_storage_order("little-endian"))) {
             u8 unk : 6;
+            u8 hFlip : 1;
+            u8 vFlip : 1;
+            };
 #else
             u8 unk : 6;
             u8 hFlip : 1;
@@ -24,9 +26,11 @@ typedef struct {
         u8 raw;
         struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-            u8 endOfAnimation : 1;
-            u8 unk : 1;
+            struct __attribute__((scalar_storage_order("little-endian"))) {
             u8 extraFrameIndex : 6;
+            u8 unk : 1;
+            u8 endOfAnimation : 1;
+            };
 #else
             u8 extraFrameIndex : 6;
             u8 unk : 1;

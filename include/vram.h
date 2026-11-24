@@ -27,8 +27,10 @@ typedef enum {
 
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 vramStatus : 4;
-    u8 status : 4;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    /*0x00*/ u8 status : 4;
+    /*0x00*/ u8 vramStatus : 4; // Whether the gfx was uploaded to the vram?
+    };
 #else
     /*0x00*/ u8 status : 4;
     /*0x00*/ u8 vramStatus : 4; // Whether the gfx was uploaded to the vram?

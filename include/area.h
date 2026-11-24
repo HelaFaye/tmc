@@ -50,9 +50,11 @@ typedef struct {
     u16 lightLevel;
     u8 lightType;
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 unk_0c_4 : 4;
-    u8 unk_0c_1 : 3;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unk_0c_0 : 1;
+    u8 unk_0c_1 : 3;
+    u8 unk_0c_4 : 4;
+    };
 #else
     u8 unk_0c_0 : 1;
     u8 unk_0c_1 : 3;

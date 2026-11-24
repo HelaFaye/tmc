@@ -15,10 +15,12 @@ typedef struct EnemyDefinition {
     u16 spriteIndex;
     struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-        u8 shadow : 2;
-        u8 draw : 2;
-        u8 collision : 1;
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 spritePriority : 3;
+        u8 collision : 1;
+        u8 draw : 2;
+        u8 shadow : 2;
+        };
 #else
         u8 spritePriority : 3;
         u8 collision : 1;
@@ -40,18 +42,22 @@ typedef struct ProjectileDefinition {
         const struct ProjectileDefinition* definition;
     } ptr;
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u16 field0x3c : 4;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u16 spriteIndex : 12;
+    u16 field0x3c : 4;
+    };
 #else
     u16 spriteIndex : 12;
     u16 field0x3c : 4;
 #endif
     struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-        u8 shadow : 2;
-        u8 draw : 2;
-        u8 collision : 1;
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 spritePriority : 3;
+        u8 collision : 1;
+        u8 draw : 2;
+        u8 shadow : 2;
+        };
 #else
         u8 spritePriority : 3;
         u8 collision : 1;
@@ -118,9 +124,11 @@ typedef struct NPCDefinition {
 typedef struct ObjectDefinition {
     struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-        u8 unk : 4;
-        u8 flags : 2;
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 type : 2;
+        u8 flags : 2;
+        u8 unk : 4;
+        };
 #else
         u8 type : 2;
         u8 flags : 2;
@@ -164,9 +172,11 @@ typedef struct ObjectDefinition {
 typedef struct NPCDefinition {
     struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-        u8 unk : 4;
-        u8 flags : 2;
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 type : 2;
+        u8 flags : 2;
+        u8 unk : 4;
+        };
 #else
         u8 type : 2;
         u8 flags : 2;

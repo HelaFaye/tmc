@@ -77,10 +77,12 @@ typedef enum {
  */
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 unk_0_4 : 4;
-    u8 unk_0_2 : 2;
-    u8 unk_0_1 : 1;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 used : 1;
+    u8 unk_0_1 : 1;
+    u8 unk_0_2 : 2; // Load data into VRAM? 0: do not load, 1: ready to load 2: loaded
+    u8 unk_0_4 : 4;
+    };
 #else
     u8 used : 1;
     u8 unk_0_1 : 1;
@@ -184,8 +186,10 @@ typedef enum {
 
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 vramStatus : 4;
-    u8 status : 4;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    /*0x00*/ u8 status : 4;
+    /*0x00*/ u8 vramStatus : 4; // Whether the gfx was uploaded to the vram?
+    };
 #else
     /*0x00*/ u8 status : 4;
     /*0x00*/ u8 vramStatus : 4; // Whether the gfx was uploaded to the vram?
@@ -280,9 +284,11 @@ static_assert(sizeof(PauseMenuOptions) == 0x18, "PauseMenuOptions size incorrect
 
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 unk04 : 4;
-    u8 unk01 : 3;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unk00 : 1;
+    u8 unk01 : 3;
+    u8 unk04 : 4;
+    };
 #else
     u8 unk00 : 1;
     u8 unk01 : 3;
@@ -386,11 +392,13 @@ typedef struct {
     u16 gfx_src;
     u8 width;
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 border_type : 4;
-    u8 draw_border : 1;
-    u8 unused : 1;
-    u8 sm_border : 1;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 right_align : 1;
+    u8 sm_border : 1;
+    u8 unused : 1;
+    u8 draw_border : 1;
+    u8 border_type : 4;
+    };
 #else
     u8 right_align : 1;
     u8 sm_border : 1;

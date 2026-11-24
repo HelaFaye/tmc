@@ -20,10 +20,19 @@ so little-endian builds compile exactly the original text. Storage units
 follow GCC's rules for the declared type; 32-bit units are split into two
 16-bit halves when no field straddles bit 16 (the GBA's memory is read as
 halfwords: OAM attributes, I/O registers). Runs whose struct already
-handles byte order (contains __BYTE_ORDER__) are left alone.
+already handles byte order (inside an #if on __BYTE_ORDER__) are left
+alone, so running the script again changes nothing.
 
-usage: be_bitfields.py [--check] <file.h> ...
+usage: be_bitfields.py [--check|--undo] <file> ...
   --check: report what would change, write nothing
+  --undo:  remove the generated blocks
+
+Two forms are generated. Single-byte runs, and every run of a type that
+data tables initialise positionally (POSITIONAL), are wrapped in an
+anonymous struct with scalar_storage_order("little-endian"): declaration
+order is kept and the layout is the GBA's, bits and bytes. Other
+multi-byte runs (OAM, I/O-style layouts read as host-order halfwords) are
+reversed within each unit instead.
 """
 import re
 import sys
@@ -87,19 +96,64 @@ def be_lines(indent, units):
     return lines
 
 
+# Types initialised positionally in data tables. Reversing their fields would
+# hand the values to the wrong fields, so their multi-byte runs use the
+# storage-order wrapper as well (see SSO below).
+POSITIONAL = {"EnemyDefinition", "ProjectileDefinition", "Font", "struct_0811F960", "struct_08121D54"}
+MARK = "/* be_bitfields.py: GBA bit layout */"
+
+
+def undo(text):
+    """Remove the blocks this script generated, restoring the original text."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        if MARK in lines[i] and lines[i].lstrip().startswith("#if"):
+            j = i + 1
+            while not lines[j].lstrip().startswith("#else"):
+                j += 1
+            k = j + 1
+            while not lines[k].lstrip().startswith("#endif"):
+                k += 1
+            out.extend(lines[j + 1:k])
+            i = k + 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
+def enclosing_name(lines, j):
+    """Name after the brace that closes the struct containing line j."""
+    depth = 0
+    for line in lines[j:j + 400]:
+        code = re.sub(r"/\*.*?\*/|//.*", "", line)
+        depth += code.count("{") - code.count("}")
+        if depth < 0:
+            m = re.search(r"\}\s*(?:PACKED\s*)?(\w+)?", code)
+            return m.group(1) if m else None
+    return None
+
+
 def transform(text):
     lines = text.split("\n")
     out, i, changed, skipped = [], 0, 0, []
     depth_has_order = []
     while i < len(lines):
         line = lines[i]
-        if "__BYTE_ORDER__" in line:
-            # Leave the enclosing struct alone (it handles byte order itself).
-            out.append(line)
-            i += 1
-            while i < len(lines) and not lines[i].lstrip().startswith("}"):
+        if "__BYTE_ORDER__" in line and line.lstrip().startswith("#if"):
+            # Copy an existing byte-order conditional (hand-written, or one
+            # this script made earlier) unchanged, up to its matching #endif.
+            depth = 0
+            while i < len(lines):
+                t = lines[i].lstrip()
+                if t.startswith("#if"):
+                    depth += 1
+                elif t.startswith("#endif"):
+                    depth -= 1
                 out.append(lines[i])
                 i += 1
+                if depth == 0:
+                    break
             continue
         m = FIELD.match(line)
         if not m:
@@ -147,8 +201,19 @@ def transform(text):
             out.extend(original)
         else:
             indent = m.group(1)
-            out.append("#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */")
-            out.extend(be_lines(indent, units))
+            out.append("#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ " + MARK)
+            single_byte = all(WIDTH[f[0]] == 8 for f in run)
+            if single_byte or enclosing_name(lines, j) in POSITIONAL:
+                # SSO: an anonymous struct with little-endian storage order
+                # keeps the declaration order (positional initialisers stay
+                # valid) and gives the GBA's bit and byte layout.
+                out.append(indent + 'struct __attribute__((scalar_storage_order("little-endian"))) {')
+                out.extend(original)
+                out.append(indent + "};")
+            else:
+                # Reversed fields: GBA bit positions within host-order
+                # halfwords, as the PPU reads OAM and I/O.
+                out.extend(be_lines(indent, units))
             out.append("#else")
             out.extend(original)
             out.append("#endif")
@@ -159,6 +224,12 @@ def transform(text):
 
 def main(argv):
     check = "--check" in argv
+    if "--undo" in argv:
+        for path in [a for a in argv[1:] if not a.startswith("--")]:
+            text = open(path).read()
+            if MARK in text:
+                open(path, "w").write(undo(text))
+        return 0
     files = [a for a in argv[1:] if a != "--check"]
     total = 0
     for path in files:

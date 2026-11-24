@@ -39,8 +39,15 @@ extern const u32 gUnk_08133368[];
 extern const u32 gUnk_08133368_eu[];
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 _0_0 : 4;
     u8 _0_4 : 4;
+    };
+#else
+    u8 _0_0 : 4;
+    u8 _0_4 : 4;
+#endif
     u8 _1;
     u16 _2;
 } Palette2;

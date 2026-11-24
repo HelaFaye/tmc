@@ -649,8 +649,15 @@ void sub_08077D38(ItemBehavior* this, u32 index) {
 }
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 b0 : 4;
     u8 b1 : 4;
+    };
+#else
+    u8 b0 : 4;
+    u8 b1 : 4;
+#endif
 } PACKED Unk_bitfield;
 
 typedef struct {

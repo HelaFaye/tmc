@@ -28,8 +28,15 @@ typedef struct {
 } SpecialFxObject;
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unk_00 : 4;
     u8 unk_00_4 : 4;
+    };
+#else
+    u8 unk_00 : 4;
+    u8 unk_00_4 : 4;
+#endif
     u8 unk_01;
     u16 sfx;
 } struct_0811F960;

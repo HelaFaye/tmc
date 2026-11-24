@@ -1660,6 +1660,13 @@ void Port_LoadRom(const char* path) {
     /* Font/text data tables — from active ROM */
     memcpy(gUnk_08109244, &gRomData[R->text09244], 4);
     memcpy(gUnk_0810926C, &gRomData[R->text0926C], 64);
+#ifdef TMC_BE
+    { /* src/text.c reads this as u32[16] */
+        u32* w = (u32*)gUnk_0810926C;
+        for (int i = 0; i < 16; i++)
+            w[i] = __builtin_bswap32(w[i]);
+    }
+#endif
     memcpy(gUnk_081092D4, &gRomData[R->text092D4], 346);
     memcpy(gUnk_0810942E, &gRomData[R->text0942E], 160);
     memcpy(gUnk_081094CE, &gRomData[R->text094CE], 1378);

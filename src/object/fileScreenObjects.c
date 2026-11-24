@@ -61,9 +61,17 @@ typedef struct {
     u16 unk0;
     s16 unk2;
     u16 unk4;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unk6_0 : 3;
     u8 unk6_3 : 3;
     u8 unk6_6 : 2;
+    };
+#else
+    u8 unk6_0 : 3;
+    u8 unk6_3 : 3;
+    u8 unk6_6 : 2;
+#endif
     u8 unk7;
 } struct_08121D54;
 

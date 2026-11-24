@@ -159,10 +159,12 @@ typedef struct {
 
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 b3 : 1;
-    u8 b2 : 1;
-    u8 b1 : 3;
-    u8 b0 : 3;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    u8 b0 : 3; // 1-4 /**< set to is 4 in entity init (default/lowest?)
+    u8 b1 : 3; // 8
+    u8 b2 : 1; // 0x40
+    u8 b3 : 1; // 0x80
+    };
 #else
     u8 b0 : 3; // 1-4 /**< set to is 4 in entity init (default/lowest?)
     u8 b1 : 3; // 8
@@ -214,8 +216,10 @@ typedef struct Entity_ {
     /*0x0f*/ u8 subtimer;               /**< General purpose timer. */
     /*0x10*/ u8 flags;                  /**< @see EntityFlags */
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 updatePriorityPrev : 4;
-    u8 updatePriority : 4;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    /*0x11*/ u8 updatePriority : 4;     /**< Current priority. @see Priority */
+    /*    */ u8 updatePriorityPrev : 4; /**< Priority to restore after request is over. @see RequestPriority. */
+    };
 #else
     /*0x11*/ u8 updatePriority : 4;     /**< Current priority. @see Priority */
     /*    */ u8 updatePriorityPrev : 4; /**< Priority to restore after request is over. @see RequestPriority. */
@@ -227,12 +231,14 @@ typedef struct Entity_ {
     /*0x17*/ u8 followerFlag;   /**< Controls collisions between followers, unused. */
     /*0x18*/ struct PACKED SpriteSettings {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 flipY : 1;
-    u8 flipX : 1;
-    u8 shadow : 2;
-    u8 ss3 : 1;
-    u8 ss2 : 1;
-    u8 draw : 2;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    /*    */     u8 draw        : 2; /**< Draw type. 0 = disabled, 1 = clip to screen, 3 = draw always */ /* 0x2 */ 
+    /*    */     u8 ss2         : 1; /*   4 */
+    /*    */     u8 ss3         : 1; /*   8 */
+    /*    */     u8 shadow      : 2; /* 0x10-0x20 */
+    /*    */     u8 flipX       : 1; /**< Flip sprite horizontally. */ /* 0x40 */ 
+    /*    */     u8 flipY       : 1; /**< Flip sprite vertically. */ /* 0x80 */ 
+    };
 #else
     /*    */     u8 draw        : 2; /**< Draw type. 0 = disabled, 1 = clip to screen, 3 = draw always */ /* 0x2 */ 
     /*    */     u8 ss2         : 1; /*   4 */
@@ -244,10 +250,12 @@ typedef struct Entity_ {
     /*    */ } spriteSettings;
     /*0x19*/ struct PACKED SpriteRendering {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 b3 : 2;
-    u8 b2 : 2;
-    u8 alphaBlend : 2;
-    u8 b0 : 2;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    /*    */     u8 b0         : 2; /* 1-2 */
+    /*    */     u8 alphaBlend : 2; /* 4-8 */
+    /*    */     u8 b2         : 2; /* 0x10 */
+    /*    */     u8 b3         : 2; /* 0x40 */
+    };
 #else
     /*    */     u8 b0         : 2; /* 1-2 */
     /*    */     u8 alphaBlend : 2; /* 4-8 */
@@ -269,9 +277,17 @@ typedef struct Entity_ {
     /*    */    } b;
     /*    */ } palette;
     /*0x1b*/ struct PACKED SpriteOrientation {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     /*    */     u8 b0    : 1; /* 1  */
     /*    */     u8 b1    : 5; /* 0x2-0x10 */
     /*    */     u8 flipY : 2; /* 0x20-0x40 */
+    };
+#else
+    /*    */     u8 b0    : 1; /* 1  */
+    /*    */     u8 b1    : 5; /* 0x2-0x10 */
+    /*    */     u8 flipY : 2; /* 0x20-0x40 */
+#endif
     /*    */ } spriteOrientation;
     /*0x1c*/ u8 gustJarFlags; /**< Controls sfx and other things */
     /*0x1d*/ u8 gustJarTolerance; /**< Frames needed to pull off ground. */

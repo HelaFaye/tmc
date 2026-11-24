@@ -44,8 +44,15 @@ typedef struct _ChuchuBossEntity {
     struct _ChuchuBossEntity* unk_68;
     u8 unk_6c;
     struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 unk0 : 1;
         u8 unk1 : 1;
+        };
+#else
+        u8 unk0 : 1;
+        u8 unk1 : 1;
+#endif
     } PACKED unk_6d;
     u8 unk_6e[2];
     u8 unk_70[0x4];

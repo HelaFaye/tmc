@@ -844,7 +844,13 @@ void sub_0805F820(WStruct* r0, u32* r1) {
     if (r0->unk4 - r0->unk6 > 0) {
         UnpackTextNibbles(r1, &gUnk_02036A58);
         if (r0->unk1 == 0) {
+#ifdef PC_PORT
+            /* *r1 is the glyph's first ROM word: little-endian on any host. */
+            const u8* g = (const u8*)r1;
+            u32 tmp = sub_0805F7A0((u32)g[0] | ((u32)g[1] << 8) | ((u32)g[2] << 16) | ((u32)g[3] << 24));
+#else
             u32 tmp = sub_0805F7A0(*r1);
+#endif
             uVar6 = tmp & 0xf;
             uVar3 = tmp >> 8;
         } else {
@@ -938,6 +944,20 @@ void sub_0805F918(u32 idx, u32 idx2, void* dest) {
 
 u32 sub_0805F9A0(u32 r0) {
     if (gSaveHeader->language == 0) {
+#ifdef PC_PORT
+        /* A ROM copy of little-endian halfwords: read them as such, so
+         * big-endian targets (TMC_BE) get the same characters. */
+        const u8* val = gUnk_081092D4;
+        u32 i = 0;
+
+        do {
+            if ((u32)(val[0] | (val[1] << 8)) == r0) {
+                return i + 0x800;
+            }
+            i++;
+            val += 2;
+        } while ((val[0] | (val[1] << 8)) != 0);
+#else
         u16* val = (u16*)gUnk_081092D4;
         u32 i = 0;
 
@@ -948,6 +968,7 @@ u32 sub_0805F9A0(u32 r0) {
             i++;
             val++;
         } while (*val != 0);
+#endif
     } else if (r0 == 0x31a) {
         r0 = 1;
         r0 &= 0xff;

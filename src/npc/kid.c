@@ -377,8 +377,15 @@ typedef union {
         u16 y;
         s16 z;
         u8 framestate;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 animationState : 6;
         u8 collisionLayer : 2;
+        };
+#else
+        u8 animationState : 6;
+        u8 collisionLayer : 2;
+#endif
     } FIELDS;
     u64 DWORD;
 } KidHeapItem;

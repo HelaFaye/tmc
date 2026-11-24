@@ -303,12 +303,14 @@ struct SioUartCnt {
 // JOY Bus Communication Control Structure
 struct JoyCnt {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 unused_7 : 1;
-    u8 ifEnable : 1;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    u8 ifReset : 1; // JOY Bus Reset Interrupt Request
+    u8 ifRecv : 1;  // JOY Bus Received Interrupt Request
+    u8 ifSend : 1;  // JOY Bus Sent Interrupt Request
     u8 unused_5_3 : 3;
-    u8 ifSend : 1;
-    u8 ifRecv : 1;
-    u8 ifReset : 1;
+    u8 ifEnable : 1; // Interrupt Request Enable
+    u8 unused_7 : 1;
+    };
 #else
     u8 ifReset : 1; // JOY Bus Reset Interrupt Request
     u8 ifRecv : 1;  // JOY Bus Received Interrupt Request
@@ -322,12 +324,14 @@ struct JoyCnt {
 // JOY Bus Communication Status Structure
 struct JoyStat {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 unused_7_6 : 2;
-    u8 flags : 2;
-    u8 send : 1;
-    u8 unused_2 : 1;
-    u8 recv : 1;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unused_0 : 1;
+    u8 recv : 1; // Receive Status
+    u8 unused_2 : 1;
+    u8 send : 1;  // Send Status
+    u8 flags : 2; // General Flag
+    u8 unused_7_6 : 2;
+    };
 #else
     u8 unused_0 : 1;
     u8 recv : 1; // Receive Status
@@ -341,17 +345,19 @@ struct JoyStat {
 // General Input/Output Control Structure
 struct RCnt {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 so_i_o : 1;
-    u8 si_i_o : 1;
-    u8 sd_i_o : 1;
-    u8 sc_i_o : 1;
-    u8 so : 1;
-    u8 si : 1;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    u8 sc : 1; // Data
     u8 sd : 1;
-    u8 sc : 1;
-    u8 sioModeMaster : 2;
+    u8 si : 1;
+    u8 so : 1;
+    u8 sc_i_o : 1; // I/O Select
+    u8 sd_i_o : 1;
+    u8 si_i_o : 1;
+    u8 so_i_o : 1;
+    u8 ifEnable : 1; // Interrupt Request Enable
     u8 unused_13_9 : 5;
-    u8 ifEnable : 1;
+    u8 sioModeMaster : 2; // SIO Mode Master
+    };
 #else
     u8 sc : 1; // Data
     u8 sd : 1;

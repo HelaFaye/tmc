@@ -32,10 +32,12 @@ bool Message_GetWindowRect(int* x, int* y, int* width, int* height);
 
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 unk06 : 1;
-    u8 unk05 : 2;
-    u8 unk01 : 4;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unk00 : 1;
+    u8 unk01 : 4;
+    u8 unk05 : 2;
+    u8 unk06 : 1;
+    };
 #else
     u8 unk00 : 1;
     u8 unk01 : 4;

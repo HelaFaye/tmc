@@ -5,8 +5,10 @@
 
 typedef struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 _0_4 : 4;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 _0_0 : 4;
+    u8 _0_4 : 4;
+    };
 #else
     u8 _0_0 : 4;
     u8 _0_4 : 4;
@@ -19,11 +21,13 @@ extern Palette gPaletteList[0x10];
 typedef struct {
     struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-        u8 unk4 : 4;
-        u8 unk3 : 1;
-        u8 unk2 : 1;
-        u8 unk1 : 1;
+        struct __attribute__((scalar_storage_order("little-endian"))) {
         u8 unk0 : 1;
+        u8 unk1 : 1;
+        u8 unk2 : 1;
+        u8 unk3 : 1;
+        u8 unk4 : 4;
+        };
 #else
         u8 unk0 : 1;
         u8 unk1 : 1;

@@ -712,9 +712,17 @@ extern struct_gUnk_08128C14 gUnk_08128C14[];
 extern struct_gUnk_08128C14 gUnk_08128C94[];
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
     u8 unk00 : 5;
     u8 unk05 : 5;
     u8 unk10 : 6;
+    };
+#else
+    u8 unk00 : 5;
+    u8 unk05 : 5;
+    u8 unk10 : 6;
+#endif
 } PACKED gUnk_08128DE8_struct_2;
 
 typedef struct {

@@ -543,8 +543,10 @@ typedef struct {
     /*0x3c*/ u8 killed; /**< Non-zero if player is dead */
     /*0x3d*/ u8 moleMittsState;
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u8 filler14 : 6;
-    u8 swordDamage : 2;
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+    /*0x3e*/ u8 swordDamage : 2;
+    /*    */ u8 filler14 : 6;
+    };
 #else
     /*0x3e*/ u8 swordDamage : 2;
     /*    */ u8 filler14 : 6;

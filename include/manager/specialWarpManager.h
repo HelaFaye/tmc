@@ -13,10 +13,12 @@ typedef struct {
         u8 all;
         struct {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-            u8 unk3 : 3;
-            u8 unk2 : 1;
-            u8 unk1 : 2;
+            struct __attribute__((scalar_storage_order("little-endian"))) {
             u8 layer : 2;
+            u8 unk1 : 2;
+            u8 unk2 : 1;
+            u8 unk3 : 3;
+            };
 #else
             u8 layer : 2;
             u8 unk1 : 2;
