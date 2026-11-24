@@ -2086,7 +2086,12 @@ void sub_080610B8(void) {
             sub_08051480(0);
             break;
         case 6:
+#ifdef TMC_BE
+            /* The keyboard tilemap came from the ROM: little-endian entries. */
+            tmp2 = ((u16)__builtin_bswap16(gBG3Buffer[gGenericMenu.unk10.a[0] * 2 + 0xc3 + gGenericMenu.unk10.a[1] * 0x40]) >> 1);
+#else
             tmp2 = ((gBG3Buffer[gGenericMenu.unk10.a[0] * 2 + 0xc3 + gGenericMenu.unk10.a[1] * 0x40]) >> 1);
+#endif
             sub_08051480(tmp2);
             break;
         case 8:
