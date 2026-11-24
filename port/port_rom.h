@@ -241,8 +241,15 @@ void Port_DecodeFontGBA(const void* gba_data, Font* out);
  */
 static inline bool Port_IsFontGBAEncoded(const void* data) {
     const u8* raw = (const u8*)data;
+#if PORT_PTR64
     u32 word1 = raw[4] | (raw[5] << 8) | (raw[6] << 16) | (raw[7] << 24);
     return (word1 >= 0x02000000u && word1 < 0x08000000u);
+#else
+    /* With 32-bit pointers a native Font has the GBA layout too, and its
+     * gfx_dest legitimately holds a GBA VRAM address, so the test above
+     * would misread it. A GBA-encoded Font is one that lies in the ROM. */
+    return gRomData && raw >= gRomData && raw < gRomData + gRomSize;
+#endif
 }
 
 /*
