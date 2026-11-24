@@ -42,6 +42,16 @@ typedef u16 bool16;
 typedef u32 bool32;
 
 struct BgCnt {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 screenSize : 2;
+    u16 areaOverflowMode : 1;
+    u16 screenBaseBlock : 5;
+    u16 palettes : 1;
+    u16 mosaic : 1;
+    u16 dummy : 2;
+    u16 charBaseBlock : 2;
+    u16 priority : 2;
+#else
     u16 priority : 2;
     u16 charBaseBlock : 2;
     u16 dummy : 2;
@@ -50,17 +60,39 @@ struct BgCnt {
     u16 screenBaseBlock : 5;
     u16 areaOverflowMode : 1;
     u16 screenSize : 2;
+#endif
 };
 typedef volatile struct BgCnt vBgCnt;
 
 struct PlttData {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 unused_15 : 1;
+    u16 b : 5;
+    u16 g : 5;
+    u16 r : 5;
+#else
     u16 r : 5; // red
     u16 g : 5; // green
     u16 b : 5; // blue
     u16 unused_15 : 1;
+#endif
 };
 
 struct OamData {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 shape : 2;
+    u16 bpp : 1;
+    u16 mosaic : 1;
+    u16 objMode : 2;
+    u16 affineMode : 2;
+    u16 y : 8;
+    u16 size : 2;
+    u16 matrixNum : 5;
+    u16 x : 9;
+    u16 paletteNum : 4;
+    u16 priority : 2;
+    u16 tileNum : 10;
+#else
     /*0x00*/ u32 y : 8;
     /*0x01*/ u32 affineMode : 2; // 0x1, 0x2 -> 0x4
     u32 objMode : 2;             // 0x4, 0x8 -> 0xC
@@ -75,6 +107,7 @@ struct OamData {
     /*0x04*/ u16 tileNum : 10; // 0x3FF
     u16 priority : 2;          // 0x400, 0x800 -> 0xC00
     u16 paletteNum : 4;
+#endif
     /*0x06*/ u16 affineParam;
 };
 
@@ -151,6 +184,18 @@ struct ObjAffineSrcData {
 
 // Normal SIO Control Structure
 struct SioNormalCnt {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 unused_15 : 1;
+    u16 ifEnable : 1;
+    u16 mode : 2;
+    u16 unused_11_8 : 4;
+    u16 enable : 1;
+    u16 unused_6_4 : 3;
+    u16 ackSend : 1;
+    u16 ackRecv : 1;
+    u16 sck : 1;
+    u16 sck_I_O : 1;
+#else
     u16 sck_I_O : 1; // Clock I/O Select
     u16 sck : 1;     // Internal Clock Select
     u16 ackRecv : 1; // Transfer Enable Flag Receive
@@ -161,6 +206,7 @@ struct SioNormalCnt {
     u16 mode : 2;     // Communication Mode Select
     u16 ifEnable : 1; // Interrupt Request Enable
     u16 unused_15 : 1;
+#endif
     u8 data; // Data
     u8 unused_31_24;
 };
@@ -175,6 +221,18 @@ struct SioNormalCnt {
 
 // Multi-player SIO Control Structure
 struct SioMultiCnt {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 unused_15 : 1;
+    u16 ifEnable : 1;
+    u16 mode : 2;
+    u16 unused_11_8 : 4;
+    u16 enable : 1;
+    u16 error : 1;
+    u16 id : 2;
+    u16 sd : 1;
+    u16 si : 1;
+    u16 baudRate : 2;
+#else
     u16 baudRate : 2; // baud rate
     u16 si : 1;       // SI terminal
     u16 sd : 1;       // SD terminal
@@ -185,6 +243,7 @@ struct SioMultiCnt {
     u16 mode : 2;     // communication mode (should equal 2)
     u16 ifEnable : 1; // IRQ enable
     u16 unused_15 : 1;
+#endif
     u16 data; // data
 };
 
@@ -199,6 +258,22 @@ struct SioMultiCnt {
 
 // UART - SIO Control Structure
 struct SioUartCnt {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 unused_15 : 1;
+    u16 ifEnable : 1;
+    u16 mode : 2;
+    u16 recvEnable : 1;
+    u16 transEnable : 1;
+    u16 parityEnable : 1;
+    u16 fifoEnable : 1;
+    u16 length : 1;
+    u16 error : 1;
+    u16 recvDataEmpty : 1;
+    u16 transDataFull : 1;
+    u16 paritySelect : 1;
+    u16 ctsEnable : 1;
+    u16 baudRate : 2;
+#else
     u16 baudRate : 2;      // Baud Rate
     u16 ctsEnable : 1;     // Send Signal Enable
     u16 paritySelect : 1;  // Parity Even/Odd
@@ -213,6 +288,7 @@ struct SioUartCnt {
     u16 mode : 2;          // Communication Mode Select
     u16 ifEnable : 1;      // Interrupt Request Enable
     u16 unused_15 : 1;
+#endif
     u8 data; // Data
     u8 unused_31_24;
 };
@@ -226,26 +302,57 @@ struct SioUartCnt {
 
 // JOY Bus Communication Control Structure
 struct JoyCnt {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unused_7 : 1;
+    u8 ifEnable : 1;
+    u8 unused_5_3 : 3;
+    u8 ifSend : 1;
+    u8 ifRecv : 1;
+    u8 ifReset : 1;
+#else
     u8 ifReset : 1; // JOY Bus Reset Interrupt Request
     u8 ifRecv : 1;  // JOY Bus Received Interrupt Request
     u8 ifSend : 1;  // JOY Bus Sent Interrupt Request
     u8 unused_5_3 : 3;
     u8 ifEnable : 1; // Interrupt Request Enable
     u8 unused_7 : 1;
+#endif
 };
 
 // JOY Bus Communication Status Structure
 struct JoyStat {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unused_7_6 : 2;
+    u8 flags : 2;
+    u8 send : 1;
+    u8 unused_2 : 1;
+    u8 recv : 1;
+    u8 unused_0 : 1;
+#else
     u8 unused_0 : 1;
     u8 recv : 1; // Receive Status
     u8 unused_2 : 1;
     u8 send : 1;  // Send Status
     u8 flags : 2; // General Flag
     u8 unused_7_6 : 2;
+#endif
 };
 
 // General Input/Output Control Structure
 struct RCnt {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 so_i_o : 1;
+    u8 si_i_o : 1;
+    u8 sd_i_o : 1;
+    u8 sc_i_o : 1;
+    u8 so : 1;
+    u8 si : 1;
+    u8 sd : 1;
+    u8 sc : 1;
+    u8 sioModeMaster : 2;
+    u8 unused_13_9 : 5;
+    u8 ifEnable : 1;
+#else
     u8 sc : 1; // Data
     u8 sd : 1;
     u8 si : 1;
@@ -257,6 +364,7 @@ struct RCnt {
     u8 ifEnable : 1; // Interrupt Request Enable
     u8 unused_13_9 : 5;
     u8 sioModeMaster : 2; // SIO Mode Master
+#endif
 };
 
 #define ST_R_SIO_MASTER_MODE 0 // SIO master mode

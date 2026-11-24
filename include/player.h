@@ -542,8 +542,13 @@ typedef struct {
     /*0x3b*/ u8 field_0x3b;
     /*0x3c*/ u8 killed; /**< Non-zero if player is dead */
     /*0x3d*/ u8 moleMittsState;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 filler14 : 6;
+    u8 swordDamage : 2;
+#else
     /*0x3e*/ u8 swordDamage : 2;
     /*    */ u8 filler14 : 6;
+#endif
     /*0x3f*/ s8 spriteOffsetY;
     /*0x40*/ u32 path_memory[16];
     /*0x80*/ u16 speed_modifier;

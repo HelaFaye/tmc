@@ -14,10 +14,17 @@ typedef struct EnemyDefinition {
     } ptr;
     u16 spriteIndex;
     struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        u8 shadow : 2;
+        u8 draw : 2;
+        u8 collision : 1;
+        u8 spritePriority : 3;
+#else
         u8 spritePriority : 3;
         u8 collision : 1;
         u8 draw : 2;
         u8 shadow : 2;
+#endif
     } PACKED spriteFlags;
     u8 health;
     s16 speed;
@@ -32,13 +39,25 @@ typedef struct ProjectileDefinition {
         const Hitbox* hitbox;
         const struct ProjectileDefinition* definition;
     } ptr;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 field0x3c : 4;
+    u16 spriteIndex : 12;
+#else
     u16 spriteIndex : 12;
     u16 field0x3c : 4;
+#endif
     struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        u8 shadow : 2;
+        u8 draw : 2;
+        u8 collision : 1;
+        u8 spritePriority : 3;
+#else
         u8 spritePriority : 3;
         u8 collision : 1;
         u8 draw : 2;
         u8 shadow : 2;
+#endif
     } PACKED spriteFlags;
     u8 field0x40;
     s16 speed;
@@ -98,16 +117,37 @@ typedef struct NPCDefinition {
 #else
 typedef struct ObjectDefinition {
     struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        u8 unk : 4;
+        u8 flags : 2;
+        u8 type : 2;
+#else
         u8 type : 2;
         u8 flags : 2;
         u8 unk : 4;
+#endif
         u8 hitbox;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        u16 unk2 : 4;
+        u16 gfx_type : 2;
+        u16 gfx : 10;
+#else
         u16 gfx : 10;
         u16 gfx_type : 2;
         u16 unk2 : 4;
+#endif
     } PACKED bitfield;
     union {
         struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+            u16 unk2 : 2;
+            u16 shadow : 2;
+            u16 unk : 2;
+            u16 paletteIndex : 10;
+            u16 draw : 3;
+            u16 spritePriority : 3;
+            u16 spriteIndex : 10;
+#else
             u16 paletteIndex : 10;
             u16 unk : 2;
             u16 shadow : 2;
@@ -115,6 +155,7 @@ typedef struct ObjectDefinition {
             u16 spriteIndex : 10;
             u16 spritePriority : 3;
             u16 draw : 3;
+#endif
         } PACKED sprite;
         const struct ObjectDefinition* definition;
     } data;
@@ -122,16 +163,37 @@ typedef struct ObjectDefinition {
 
 typedef struct NPCDefinition {
     struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        u8 unk : 4;
+        u8 flags : 2;
+        u8 type : 2;
+#else
         u8 type : 2;
         u8 flags : 2;
         u8 unk : 4;
+#endif
         u8 hitbox;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+        u16 unk2 : 4;
+        u16 gfx_type : 2;
+        u16 gfx : 10;
+#else
         u16 gfx : 10;
         u16 gfx_type : 2;
         u16 unk2 : 4;
+#endif
     } PACKED bitfield;
     union {
         struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+            u16 unk2 : 2;
+            u16 shadow : 2;
+            u16 unk : 2;
+            u16 paletteIndex : 10;
+            u16 draw : 3;
+            u16 spritePriority : 3;
+            u16 spriteIndex : 10;
+#else
             u16 paletteIndex : 10;
             u16 unk : 2;
             u16 shadow : 2;
@@ -139,6 +201,7 @@ typedef struct NPCDefinition {
             u16 spriteIndex : 10;
             u16 spritePriority : 3;
             u16 draw : 3;
+#endif
         } PACKED sprite;
         const struct NPCDefinition* definition;
     } data;

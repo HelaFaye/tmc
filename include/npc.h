@@ -23,10 +23,20 @@ typedef enum {
 } DialogType;
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 : 4; /* BE: padding above the GBA fields */
+    u16 flag : 12;
+#else
     u32 flag : 12;
+#endif
     DialogFlagType flagType : 4;
     DialogType type : 4;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u16 : 15; /* BE: padding above the GBA fields */
+    u16 fromSelf : 1;
+#else
     u32 fromSelf : 1;
+#endif
     union {
         struct {
             u16 a;

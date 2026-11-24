@@ -26,8 +26,13 @@ typedef enum {
 } GfxSlotVramStatus;
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 vramStatus : 4;
+    u8 status : 4;
+#else
     /*0x00*/ u8 status : 4;
     /*0x00*/ u8 vramStatus : 4; // Whether the gfx was uploaded to the vram?
+#endif
     /*0x01*/ u8 slotCount;
     /*0x02*/ u8 referenceCount; /**< How many entities use this gfx slot */
     /*0x03*/ u8 unk_3;

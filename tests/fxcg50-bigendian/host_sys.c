@@ -119,7 +119,16 @@ void Fxcg_Update(void) {
         h = (h ^ (sVram[i] & 0xFF)) * 16777619u;
         h = (h ^ (sVram[i] >> 8)) * 16777619u;
     }
-    printf("FRAME %u %08x\n", sFrame, (unsigned)h);
+    /* OAM entries the game emitted this frame (gOAMControls.updated), read
+     * from the copy CopyOAM() made in game memory: OAM slots that are not
+     * the hidden placeholder 0x02A0 in attr0. */
+    {
+        extern unsigned short gOamMem[];
+        unsigned visible = 0;
+        for (int i = 0; i < 128; i++)
+            visible += gOamMem[i * 4] != 0x02A0;
+        printf("FRAME %u %08x oam=%u\n", sFrame, (unsigned)h, visible);
+    }
     if (sPpmEvery && sFrame % sPpmEvery == 0)
         SavePpm();
 }

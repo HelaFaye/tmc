@@ -26,10 +26,17 @@ typedef enum {
  * @brief Floating UI element
  */
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unk_0_4 : 4;
+    u8 unk_0_2 : 2;
+    u8 unk_0_1 : 1;
+    u8 used : 1;
+#else
     u8 used : 1;
     u8 unk_0_1 : 1;
     u8 unk_0_2 : 2; // Load data into VRAM? 0: do not load, 1: ready to load 2: loaded
     u8 unk_0_4 : 4;
+#endif
     u8 type;            /**< @see UIElementType */
     u8 type2;           // Subtype
     u8 buttonElementId; /**< Id of the button UI element this text is attached to */

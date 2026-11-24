@@ -31,10 +31,17 @@ bool Message_GetWindowRect(int* x, int* y, int* width, int* height);
 #endif
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unk06 : 1;
+    u8 unk05 : 2;
+    u8 unk01 : 4;
+    u8 unk00 : 1;
+#else
     u8 unk00 : 1;
     u8 unk01 : 4;
     u8 unk05 : 2;
     u8 unk06 : 1;
+#endif
     u8 code;      // first byte read
     u16 param;    // second byte read
     u16 extended; // ascii adjusted for jp chars

@@ -49,9 +49,15 @@ typedef struct {
     u8 filler[3];
     u16 lightLevel;
     u8 lightType;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unk_0c_4 : 4;
+    u8 unk_0c_1 : 3;
+    u8 unk_0c_0 : 1;
+#else
     u8 unk_0c_0 : 1;
     u8 unk_0c_1 : 3;
     u8 unk_0c_4 : 4;
+#endif
     u8 filler3[2];
     u16 field_0x10;
     u16 portal_x;

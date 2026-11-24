@@ -9,17 +9,29 @@ typedef struct {
     union {
         u8 raw;
         struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+            u8 vFlip : 1;
+            u8 hFlip : 1;
+            u8 unk : 6;
+#else
             u8 unk : 6;
             u8 hFlip : 1;
             u8 vFlip : 1;
+#endif
         } PACKED b;
     } PACKED spriteSettings;
     union {
         u8 raw;
         struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+            u8 endOfAnimation : 1;
+            u8 unk : 1;
+            u8 extraFrameIndex : 6;
+#else
             u8 extraFrameIndex : 6;
             u8 unk : 1;
             u8 endOfAnimation : 1;
+#endif
         } PACKED b;
     } PACKED frameSettings;
 } PACKED Frame;

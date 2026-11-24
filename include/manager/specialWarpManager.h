@@ -12,10 +12,17 @@ typedef struct {
     union {
         u8 all;
         struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+            u8 unk3 : 3;
+            u8 unk2 : 1;
+            u8 unk1 : 2;
+            u8 layer : 2;
+#else
             u8 layer : 2;
             u8 unk1 : 2;
             u8 unk2 : 1;
             u8 unk3 : 3;
+#endif
         } PACKED b;
     } PACKED unk_07;
 } SpecialWarpManagerWarpData;

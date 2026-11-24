@@ -76,10 +76,17 @@ typedef enum {
  * @brief Floating UI element
  */
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unk_0_4 : 4;
+    u8 unk_0_2 : 2;
+    u8 unk_0_1 : 1;
+    u8 used : 1;
+#else
     u8 used : 1;
     u8 unk_0_1 : 1;
     u8 unk_0_2 : 2; // Load data into VRAM? 0: do not load, 1: ready to load 2: loaded
     u8 unk_0_4 : 4;
+#endif
     u8 type;            /**< @see UIElementType */
     u8 type2;           // Subtype
     u8 buttonElementId; /**< Id of the button UI element this text is attached to */
@@ -176,8 +183,13 @@ typedef enum {
 } GfxSlotVramStatus;
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 vramStatus : 4;
+    u8 status : 4;
+#else
     /*0x00*/ u8 status : 4;
     /*0x00*/ u8 vramStatus : 4; // Whether the gfx was uploaded to the vram?
+#endif
     /*0x01*/ u8 slotCount;
     /*0x02*/ u8 referenceCount; /**< How many entities use this gfx slot */
     /*0x03*/ u8 unk_3;
@@ -267,9 +279,15 @@ static_assert(sizeof(PauseMenuOptions) == 0x18, "PauseMenuOptions size incorrect
 #endif
 
 typedef struct {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 unk04 : 4;
+    u8 unk01 : 3;
+    u8 unk00 : 1;
+#else
     u8 unk00 : 1;
     u8 unk01 : 3;
     u8 unk04 : 4;
+#endif
     u8 unk1;
     u8 charColor;
     u8 bgColor;
@@ -367,11 +385,19 @@ typedef struct {
     u32 _c;
     u16 gfx_src;
     u8 width;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
+    u8 border_type : 4;
+    u8 draw_border : 1;
+    u8 unused : 1;
+    u8 sm_border : 1;
+    u8 right_align : 1;
+#else
     u8 right_align : 1;
     u8 sm_border : 1;
     u8 unused : 1;
     u8 draw_border : 1;
     u8 border_type : 4;
+#endif
     u8 fill_type;
     u8 charColor;
     u8 _16;
