@@ -53,9 +53,16 @@ static const u32 sFadeTableOffsets[NUM_FADE_BRIGHTNESS][3] = {
  * 32-bit-aligned word (lw is fine) and extract the halfword (big-endian: the
  * lower address is the high half). Returns the same value the GBA's lhu would. */
 static inline u16 n64_cart_u16(const void* p) {
+#ifdef TMC_N64
     uintptr_t a = (uintptr_t)p;
     u32 w = *(const volatile u32*)(void*)(a & ~(uintptr_t)3);
     return (a & 2u) ? (u16)(w & 0xFFFFu) : (u16)(w >> 16);
+#else
+    /* Other big-endian targets (fx-CG50): the ROM holds the GBA's
+     * little-endian halfwords; assemble them from bytes. */
+    const u8* b = (const u8*)p;
+    return (u16)(b[0] | (b[1] << 8));
+#endif
 }
 #endif
 

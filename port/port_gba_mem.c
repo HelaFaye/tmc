@@ -16,6 +16,45 @@ u16 gObjPltt[256];
 u16 gOamMem[0x400 / 2];
 u8 gVram[0x18000];
 
+#ifdef TMC_BE
+#include <string.h>
+/* Big-endian targets keep I/O, EWRAM and IWRAM in host byte order: the game
+ * reads and writes them through typed pointers, and the PPU reads I/O
+ * natively (virtuappu_mode1_io_read16). These helpers must agree, so their
+ * 16/32-bit accesses to those regions are native too. ROM reads stay
+ * little-endian (the ROM holds GBA bytes); VRAM keeps the GBA byte layout. */
+static u8* NativeRegion(uint32_t addr, u32 size) {
+    if (addr >= 0x04000000u && addr + size <= 0x04000400u)
+        return &gIoMem[addr - 0x04000000u];
+    if (addr >= 0x02000000u && addr + size <= 0x02040000u)
+        return &gEwram[addr - 0x02000000u];
+    if (addr >= 0x03000000u && addr + size <= 0x03008000u)
+        return &gIwram[addr - 0x03000000u];
+    return NULL;
+}
+#define NATIVE_WRITE(type, addr, v)                                                                               \
+    do {                                                                                                          \
+        u8* n_ = NativeRegion((addr), sizeof(type));                                                              \
+        if (n_) {                                                                                                 \
+            type t_ = (type)(v);                                                                                  \
+            memcpy(n_, &t_, sizeof(type));                                                                        \
+            return;                                                                                               \
+        }                                                                                                         \
+    } while (0)
+#define NATIVE_READ(type, addr)                                                                                   \
+    do {                                                                                                          \
+        u8* n_ = NativeRegion((addr), sizeof(type));                                                              \
+        if (n_) {                                                                                                 \
+            type t_;                                                                                              \
+            memcpy(&t_, n_, sizeof(type));                                                                        \
+            return t_;                                                                                            \
+        }                                                                                                         \
+    } while (0)
+#else
+#define NATIVE_WRITE(type, addr, v) ((void)0)
+#define NATIVE_READ(type, addr) ((void)0)
+#endif
+
 void gba_write8(uint32_t addr, uint8_t v) {
     if (addr >= 0x02000000u && addr < 0x02040000u) {
         gEwram[addr - 0x02000000u] = v;
@@ -56,6 +95,7 @@ u8 gba_read8(uint32_t addr) {
 }
 
 void gba_write16(uint32_t addr, uint16_t v) {
+    NATIVE_WRITE(u16, addr, v);
     if (addr >= 0x04000000u && addr < 0x040003FFu) {
         gIoMem[addr - 0x04000000u] = v & 0xFF;
         gIoMem[addr - 0x04000000u + 1] = (v >> 8) & 0xFF;
@@ -97,6 +137,7 @@ void gba_write16(uint32_t addr, uint16_t v) {
 }
 
 u16 gba_read16(uint32_t addr) {
+    NATIVE_READ(u16, addr);
     if (addr >= 0x04000000u && addr < 0x040003FFu)
         return gIoMem[addr - 0x04000000u] | (gIoMem[addr - 0x04000000u + 1] << 8);
     if (addr >= 0x05000000u && addr < 0x050001FFu)
@@ -126,6 +167,16 @@ u16 gba_read16(uint32_t addr) {
 }
 
 void gba_write32(uint32_t addr, uint32_t v) {
+#ifdef TMC_BE
+    /* I/O is 16-bit registers kept as host-order halfwords: low half first. */
+    if (addr >= 0x04000000u && addr + 4 <= 0x04000400u) {
+        u16 lo = (u16)v, hi = (u16)(v >> 16);
+        memcpy(&gIoMem[addr - 0x04000000u], &lo, 2);
+        memcpy(&gIoMem[addr - 0x04000000u + 2], &hi, 2);
+        return;
+    }
+#endif
+    NATIVE_WRITE(u32, addr, v);
     if (addr >= 0x04000000u && addr < 0x040003FDu) {
         gIoMem[addr - 0x04000000u] = v & 0xFF;
         gIoMem[addr - 0x04000000u + 1] = (v >> 8) & 0xFF;
@@ -184,6 +235,15 @@ void gba_write32(uint32_t addr, uint32_t v) {
 }
 
 u32 gba_read32(uint32_t addr) {
+#ifdef TMC_BE
+    if (addr >= 0x04000000u && addr + 4 <= 0x04000400u) {
+        u16 lo, hi;
+        memcpy(&lo, &gIoMem[addr - 0x04000000u], 2);
+        memcpy(&hi, &gIoMem[addr - 0x04000000u + 2], 2);
+        return (u32)lo | ((u32)hi << 16);
+    }
+#endif
+    NATIVE_READ(u32, addr);
     if (addr >= 0x04000000u && addr < 0x040003FDu)
         return gIoMem[addr - 0x04000000u] | (gIoMem[addr - 0x04000000u + 1] << 8) |
                (gIoMem[addr - 0x04000000u + 2] << 16) | (gIoMem[addr - 0x04000000u + 3] << 24);

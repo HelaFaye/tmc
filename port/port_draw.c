@@ -49,10 +49,12 @@ static int sShoesOverlayTableLoaded;
 static void LoadShoesOverlayTableFromRom(void);
 extern u32 gFrameObjLists[50016];
 
+/* gFrameObjLists and the frame data it points to are byte copies of the
+ * GBA ROM: little-endian. Assemble from bytes so big-endian targets
+ * (TMC_BE, the fx-CG50) read the same values as the PC. */
 static inline u32 ReadU32Unaligned(const void* p) {
-    u32 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
+    const u8* b = (const u8*)p;
+    return (u32)b[0] | ((u32)b[1] << 8) | ((u32)b[2] << 16) | ((u32)b[3] << 24);
 }
 
 /* ---- Struct layout invariant (compile-time) ----
@@ -310,7 +312,7 @@ static const u8* LookupFrameData(u16 spriteIndex, u8 frameIndex) {
         return NULL;
     }
 
-    u32 off1 = gFrameObjLists[spriteIndex];
+    u32 off1 = ReadU32Unaligned(&gFrameObjLists[spriteIndex]);
     if ((size_t)off1 > frameObjSize - sizeof(u32)) {
         return NULL;
     }
@@ -484,7 +486,13 @@ static void RenderSpritePieces(const u8* data, /* pointer to frame data (count b
         oamWord |= (u32)(shapeInfo & 0xC0) << 8;  /* shape → attr0 bits 14-15 */
         oamWord ^= (u32)(shapeInfo & 0x3C) << 26; /* flip/size → attr1 bits 12-15 */
 
-        memcpy(ip, &oamWord, sizeof(oamWord));
+        /* attr0 (low half) then attr1, as host-order halfwords: OAM is read
+         * as u16 entries, so this layout holds on big-endian targets too. */
+        {
+            u16 attr0 = (u16)oamWord, attr1 = (u16)(oamWord >> 16);
+            memcpy(ip, &attr0, 2);
+            memcpy(ip + 2, &attr1, 2);
+        }
         ip += 4;
 
         /* Build attr2: tile number + priority + palette */
@@ -539,7 +547,7 @@ void ram_DrawDirect(OAMCommand* cmd, u32 spriteIndex, u32 frameIndex) {
     s16 baseX = cmd->x;
     s16 baseY = cmd->y;
     u32 cmdFlags = 0;
-    memcpy(&cmdFlags, &cmd->_4, sizeof(cmdFlags)); /* _4 | (_6 << 16) */
+    cmdFlags = (u32)cmd->_4 | ((u32)cmd->_6 << 16); /* as the GBA reads it, any byte order */
     u16 cmdExtra = cmd->_8;
 
     RenderSpritePieces(frameData, baseX, baseY, cmdFlags, cmdExtra);
@@ -565,7 +573,7 @@ void ram_sub_080ADA04(OAMCommand* cmd, void* frameDataPtr) {
     s16 baseX = cmd->x;
     s16 baseY = cmd->y;
     u32 cmdFlags = 0;
-    memcpy(&cmdFlags, &cmd->_4, sizeof(cmdFlags));
+    cmdFlags = (u32)cmd->_4 | ((u32)cmd->_6 << 16); /* as the GBA reads it, any byte order */
     u16 cmdExtra = cmd->_8;
 
     RenderSpritePieces(frameData, baseX, baseY, cmdFlags, cmdExtra);
@@ -740,8 +748,9 @@ static void ResolveEntitySpriteParams(Entity* entity, s32* outX, s32* outY, u32*
     }
 
     /* Load 32-bit word at offset 0x18: spriteSettings|spriteRendering|palette|spriteOrientation */
-    u32 ip = 0;
-    memcpy(&ip, &entity->spriteSettings, sizeof(ip));
+    /* The GBA loads these four u8 fields as one little-endian word. */
+    const u8* ipb = (const u8*)&entity->spriteSettings;
+    u32 ip = (u32)ipb[0] | ((u32)ipb[1] << 8) | ((u32)ipb[2] << 16) | ((u32)ipb[3] << 24);
 
     /* Build attr2 base (extra): tile + priority + palette */
     u16 sb = entity->spriteVramOffset;

@@ -167,10 +167,10 @@ static inline void* Port_ResolveEntityScript(const void* entityData, u32 spriteP
  * Use this helper at PC call sites to manually unpack the 4-byte entry and
  * resolve to a native pointer via the ROM mmap. (#16, #19 root cause.)
  */
+static inline u32 Port_ReadU32(const void* data);
 static inline void* Port_PackedRomEntry(const void* base, u32 idx) {
-    u32 raw;
-    memcpy(&raw, (const u8*)base + idx * 4, 4);
-    return Port_ResolveRomData(raw);
+    /* Little-endian ROM word, byte-assembled (big-endian targets too). */
+    return Port_ResolveRomData(Port_ReadU32((const u8*)base + idx * 4));
 }
 
 static inline u16 Port_ReadU16(const void* data) {

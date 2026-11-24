@@ -1579,6 +1579,11 @@ void Port_LoadRom(const char* path) {
 
     if (R->fixedTypeGfx + R->fixedTypeGfxCount * 4 <= gRomSize) {
         memcpy(gFixedTypeGfxData, &gRomData[R->fixedTypeGfx], R->fixedTypeGfxCount * 4);
+#ifdef TMC_BE
+        /* src/vram.c reads these u32 entries natively. */
+        for (u32 i = 0; i < R->fixedTypeGfxCount; i++)
+            gFixedTypeGfxData[i] = __builtin_bswap32(gFixedTypeGfxData[i]);
+#endif
         fprintf(stderr, "gFixedTypeGfxData loaded (%u entries from ROM 0x%X).\n", R->fixedTypeGfxCount,
                 R->fixedTypeGfx);
     } else {

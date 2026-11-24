@@ -32,10 +32,21 @@ typedef struct {
     u16 dmx;
     u16 dy;
     u16 dmy;
+    /* BG2X/BG2Y as 32-bit values split in halves. BgAffineSet() stores them
+     * as native s32 (title.c passes this struct as BgAffineDstData), so on a
+     * big-endian CPU the most significant half comes first, as in
+     * union SplitWord. */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    u16 xPointMostSig;
+    u16 xPointLeastSig;
+    u16 yPointMostSig;
+    u16 yPointLeastSig;
+#else
     u16 xPointLeastSig;
     u16 xPointMostSig;
     u16 yPointLeastSig;
     u16 yPointMostSig;
+#endif
 } BgTransformationSettings;
 
 typedef struct {

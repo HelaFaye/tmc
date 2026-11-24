@@ -81,7 +81,39 @@ static void SavePpm(void) {
     fclose(f);
 }
 
+/* HOST_DUMP_FRAME=n: write the GBA memories after frame n in a byte-order
+ * independent form (u16 arrays as little-endian values, I/O as halfwords,
+ * VRAM as bytes), so the two builds' dumps can be compared with cmp. */
+extern unsigned char gIoMem[], gVram[];
+extern unsigned short gBgPltt[], gObjPltt[], gOamMem[];
+static void DumpU16(FILE* f, const unsigned short* p, unsigned count) {
+    for (unsigned i = 0; i < count; i++) {
+        unsigned char b[2] = { (unsigned char)p[i], (unsigned char)(p[i] >> 8) };
+        fwrite(b, 2, 1, f);
+    }
+}
+static void DumpMemories(void) {
+    char name[64];
+    snprintf(name, sizeof(name), "dump-%05u.bin", sFrame);
+    FILE* f = fopen(name, "wb");
+    if (!f)
+        return;
+    DumpU16(f, gBgPltt, 256);             /* 0x00000 */
+    DumpU16(f, gObjPltt, 256);            /* 0x00200 */
+    DumpU16(f, gOamMem, 0x200);           /* 0x00400 */
+    DumpU16(f, (const unsigned short*)gIoMem, 0x200); /* 0x00800: I/O, host-order halfwords */
+    fwrite(gVram, 1, 0x18000, f);         /* 0x00C00 */
+    fclose(f);
+}
+
 void Fxcg_Update(void) {
+    static long sDumpFrame = -2;
+    if (sDumpFrame == -2) {
+        const char* e = getenv("HOST_DUMP_FRAME");
+        sDumpFrame = e ? strtol(e, NULL, 0) : -1;
+    }
+    if ((long)sFrame == sDumpFrame)
+        DumpMemories();
     uint32_t h = 2166136261u;
     for (int i = 0; i < FXCG_SCREEN_W * FXCG_SCREEN_H; i++) {
         h = (h ^ (sVram[i] & 0xFF)) * 16777619u;

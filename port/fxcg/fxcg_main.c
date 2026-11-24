@@ -50,7 +50,8 @@ static void Present(void) {
 #ifdef TMC_FXCG_PPU_BENCH
     FxcgPpuBench_FrameBegin();
 #endif
-    u16 dispcnt = (u16)(gIoMem[0x00] | (gIoMem[0x01] << 8));
+    /* Through the PPU's reader: I/O is host-order halfwords on TMC_BE. */
+    u16 dispcnt = virtuappu_mode1_io_read16(0x00);
     virtuappu_registers.frame_width = MODE1_GBA_WIDTH;
     virtuappu_registers.frame_pitch = MODE1_GBA_WIDTH;
     /* Same routing as Port_PPU_PresentFrame: GBA mode 0 -> VPPU mode 1
