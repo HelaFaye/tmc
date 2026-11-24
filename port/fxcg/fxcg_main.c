@@ -35,6 +35,11 @@ static void InitScaler(void) {
     for (int y = 0; y < OUT_H; y++)
         sSrcY[y] = (u8)(y * 5 / 7);
     Fxcg_Clear();
+    /* Point the PPU at the game's GBA memories, as Port_PPU_Init does on the
+     * PC; without this it renders its own empty defaults (a black screen).
+     * Found by the host byte-order check (tests/fxcg50-bigendian). */
+    VirtuaPPUMode1GbaMemory memory = { gIoMem, gVram, gBgPltt, gObjPltt, gOamMem };
+    virtuappu_mode1_bind_gba_memory(&memory);
 }
 
 static inline u16 ToRgb565(u32 abgr) {
