@@ -8,6 +8,7 @@
  */
 
 #include "port_target.h"
+#include <stddef.h>
 #include "port_rom.h"
 #include "port_rom_touch.h"
 #include "area.h"
@@ -1127,9 +1128,12 @@ void* Port_ResolveEwramPtr(u32 gba_addr) {
             /*
              * GBA layout:  bgSettings(4)  mapData(0x2000)  collisionData(0x1000) ...
              * PC  layout:  bgSettings(8)  mapData(0x2000)  collisionData(0x1000) ...
-             * All fields after bgSettings are shifted by +4 on PC.
+             * All fields after bgSettings are shifted by +4 on 64-bit PCs (and
+             * not at all on 32-bit targets such as the fx-CG50).
              */
-            u32 pc_off = (gba_off < 4) ? gba_off : gba_off + 4;
+            /* Fields after the pointer move by however much wider than 4
+             * bytes it is: 4 on 64-bit PCs, 0 on 32-bit targets. */
+            u32 pc_off = (gba_off < 4) ? gba_off : gba_off - 4 + (u32)offsetof(MapLayer, mapData);
             return (u8*)&gMapBottom + pc_off;
         }
     }
@@ -1139,7 +1143,7 @@ void* Port_ResolveEwramPtr(u32 gba_addr) {
         const u32 GBA_SIZE = 0xC010u;
         if (gba_addr >= GBA_BASE && gba_addr < GBA_BASE + GBA_SIZE) {
             u32 gba_off = gba_addr - GBA_BASE;
-            u32 pc_off = (gba_off < 4) ? gba_off : gba_off + 4;
+            u32 pc_off = (gba_off < 4) ? gba_off : gba_off - 4 + (u32)offsetof(MapLayer, mapData);
             return (u8*)&gMapTop + pc_off;
         }
     }
