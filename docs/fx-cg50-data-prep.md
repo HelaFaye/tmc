@@ -89,3 +89,26 @@ through its uncached P2 alias on the target fx-CG50 running OS 3.20.0202
 (800 blocks, 12,001 checks, zero failures or restore failures). This confirms
 read/write access and restoration during that test session; it does not test
 Picori startup, runtime coexistence with the OS, or ROM paging.
+
+## Harness touch capture (2026-11-25)
+
+The PC ROM-touch sweeps under-record what the calculator build reads: on
+the 12,000-frame intro script (`tests/fxcg50-bigendian/input-intro.txt`)
+the calculator configuration touched 278 ROM pages, 65 of them missing
+from the 1,140-page pak (the first, page 2482 at 0x9B2000, is needed by
+the first save dialog). Capture the calculator's own touches with the host
+harness and add them to the baseline:
+
+```
+HOST_TOUCH=host-touch-intro.txt picori-host baserom.gba 12000 "$(cat input-intro.txt)"
+python3 scripts/fxcg/build_page_pak.py baserom.gba Picori.pak \
+    --boot=boot-touch.txt --boot=host-touch-intro.txt <room-sweep-dir>
+```
+
+`HOST_PAK=Picori.pak picori-host ...` then runs the game with the ROM
+window served only from the pak, through the pager's own reader and
+cache (`fxcg_rom.c`, `FXCG_ROM_HOST`); a page the pak lacks stops the run
+with `MISSING_PAGE <page>`. With the rebuilt pak (1,205 pages, 280 in the
+baseline, 2.68 MiB) all 12,000 frames match the full-ROM run. The baseline
+is now larger than the 264 frames the pager pins; the rest are fetched
+on demand.

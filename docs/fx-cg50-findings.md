@@ -41,6 +41,12 @@ emulation. Update with every finding.
 - Double swaps: LoadPalettes on data already in gPaletteBuffer.
 - be_bitfields.py skips enum-typed bit-fields (Dialog fixed by hand).
 
+## Pak coverage
+
+- PC ROM-touch sweeps miss pages the calculator build reads (65 of 278 on
+  the intro script). Capture touches with the harness (`HOST_TOUCH`) and
+  check a pak with `HOST_PAK` before copying it to the calculator.
+
 ## Audit of our 38 commits (2026-11-25)
 
 - CI: PC builds (Linux x86_64/arm64, Windows x86_64/arm64, Android) and the

@@ -33,6 +33,9 @@ def sources():
         elif line not in GINT_ONLY:
             files.append("port/fxcg/" + line)
     files.append("tests/fxcg50-bigendian/host_sys.c")
+    # The pager's pak reader and cache (FXCG_ROM_HOST), for HOST_PAK runs.
+    files.append("port/fxcg/fxcg_rom.c")
+    files.append("external/fxLauncher/lib/cglink/src/inflate.c")
     return files
 
 
@@ -48,8 +51,10 @@ def main(argv):
         cc, arch, extra = "i686-linux-gnu-gcc", [], []
     flags = arch + ["-O1", os.environ.get("HOST_G", "-g0"), "-ffunction-sections", "-fdata-sections", "-std=gnu11", "-w", "-fno-strict-aliasing",
                     "-DPC_PORT", "-DNON_MATCHING", "-DUSA", "-DENGLISH", "-DREVISION=0", "-DMULTI_REGION",
-                    "-DTMC_EMBEDDED=1", "-DTMC_ROM_WINDOW=1"] + extra + [
-        "-I" + os.path.join(ROOT, d) for d in ("include", "build/USA", "port", ".", "port/ppu/include", "port/fxcg")]
+                    "-DTMC_EMBEDDED=1", "-DTMC_ROM_WINDOW=1",
+                    "-DTMC_FXCG_D1_PAGER=1", "-DFXCG_ROM_HOST=1"] + extra + [
+        "-I" + os.path.join(ROOT, d) for d in ("include", "build/USA", "port", ".", "port/ppu/include", "port/fxcg",
+                                                   "external/fxLauncher/lib/cglink/include")]
     objs, jobs = [], []
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
         for src in sources():

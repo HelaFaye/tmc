@@ -13,6 +13,7 @@
 #include "fxcg_sys.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,8 @@ extern unsigned int gRomSize;
 
 static uint16_t sVram[FXCG_SCREEN_W * FXCG_SCREEN_H];
 static unsigned sFrame, sFrames, sPpmEvery;
+static unsigned sPakFaults;
+static int sTouchFd = -1, sRomFd = -1;
 static const char* sRomPath;
 
 static struct {
@@ -147,15 +150,80 @@ void Fxcg_StartVBlank(void) {}
 
 void Fxcg_WaitVBlank(void) {
     if (++sFrame >= sFrames) {
-        printf("DONE %u\n", sFrame);
+        printf("DONE %u pak_faults=%u\n", sFrame, sPakFaults);
         fflush(stdout);
         exit(0);
     }
 }
 
-/* The ROM window: the whole ROM mapped read-only at 0x20000000, where the
- * linker put the ROM-resident symbols (rom_symbols.ld). */
+/* The ROM window at 0x20000000, where the linker put the ROM-resident
+ * symbols (rom_symbols.ld). Two modes:
+ *  - default: the whole ROM file mapped read-only;
+ *  - HOST_PAK=<Picori.pak>: the calculator's D1 pager simulated. The window
+ *    starts unmapped; the first touch of a page faults (SIGSEGV here, a TLB
+ *    miss there), the page comes from the pak through fxcg_rom.c's reader and
+ *    cache (FXCG_ROM_HOST) and is entered read-only. A page the pak lacks
+ *    stops the run with "MISSING_PAGE", as the calculator would.
+ *  - HOST_TOUCH=<file>: the same faulting window, served from the ROM file;
+ *    every page's first touch is logged as "play <page>", the format
+ *    scripts/fxcg/build_page_pak.py takes with --boot=. */
+static void PakFault(int sig, siginfo_t* info, void* ctx) {
+    (void)sig;
+    (void)ctx;
+    uintptr_t a = (uintptr_t)info->si_addr;
+    if (a < WINDOW || a >= WINDOW + (16u << 20)) {
+        signal(SIGSEGV, SIG_DFL);
+        return; /* a real crash: fault again with the default action */
+    }
+    uint32_t page = (uint32_t)((a - WINDOW) >> 12);
+    void* va = (void*)(WINDOW + ((uintptr_t)page << 12));
+    if (sTouchFd >= 0) { /* HOST_TOUCH: serve from the ROM file, log the page */
+        char line[32];
+        int n = snprintf(line, sizeof(line), "play %u\n", (unsigned)page);
+        if (write(sTouchFd, line, (size_t)n) < 0) {}
+        mprotect(va, 4096, PROT_READ | PROT_WRITE);
+        if (pread(sRomFd, va, 4096, (off_t)page << 12) != 4096) {}
+        mprotect(va, 4096, PROT_READ);
+        sPakFaults++;
+        return;
+    }
+    const uint8_t* frame = Fxcg_RomFetch(page, false);
+    if (!frame) {
+        char msg[96];
+        int n = snprintf(msg, sizeof(msg), "MISSING_PAGE %u frame %u\n", (unsigned)page, sFrame);
+        if (write(1, msg, (size_t)n) < 0) {}
+        _exit(3);
+    }
+    mprotect(va, 4096, PROT_READ | PROT_WRITE);
+    memcpy(va, frame, 4096);
+    mprotect(va, 4096, PROT_READ);
+    sPakFaults++;
+}
+
 bool Fxcg_RomInit(void) {
+    const char* pak = getenv("HOST_PAK");
+    const char* touch = getenv("HOST_TOUCH");
+    if ((pak && *pak) || (touch && *touch)) {
+        if (touch && *touch) {
+            sTouchFd = open(touch, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            sRomFd = open(sRomPath, O_RDONLY);
+            if (sTouchFd < 0 || sRomFd < 0)
+                return false;
+        } else if (!Fxcg_RomInitHost(pak, 0)) {
+            return false;
+        }
+        void* p = mmap((void*)(uintptr_t)WINDOW, 16u << 20, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (p != (void*)(uintptr_t)WINDOW)
+            return false;
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = PakFault;
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigaction(SIGSEGV, &sa, NULL);
+        gRomData = (unsigned char*)p;
+        gRomSize = 16u << 20;
+        return true;
+    }
     int fd = open(sRomPath, O_RDONLY);
     if (fd < 0)
         return false;
@@ -168,9 +236,7 @@ bool Fxcg_RomInit(void) {
     return true;
 }
 
-const char* Fxcg_RomError(void) {
-    return "cannot map the ROM at 0x20000000";
-}
+/* Fxcg_RomError() comes from fxcg_rom.c. */
 
 int main(int argc, char** argv) {
     if (argc < 3) {
