@@ -72,6 +72,19 @@ typedef struct {
     u32 unk8;
 } GfxItem;
 
+/* sub_0801E31C stores u32s that sub_0801E290 reads back as s16 pairs (the
+ * value, then 0); and window tables are built byte by byte but copied to
+ * I/O as host-order halfwords. Keep both meaning what they do on the GBA. */
+#ifdef TMC_BE
+#define GBA_U32_LO16(v) ((u32)(u16)(v) << 16)
+#define WIN_BYTE_LO 1
+#define WIN_BYTE_HI 0
+#else
+#define GBA_U32_LO16(v) (v)
+#define WIN_BYTE_LO 0
+#define WIN_BYTE_HI 1
+#endif
+
 #ifdef TMC_BE
 /* GBA ROM structs are little-endian; on the big-endian N64 a native multi-byte
  * read byte-swaps them. Convert ROM-sourced u16/u32 struct fields to host order.
@@ -1196,12 +1209,14 @@ void sub_0801E290(u32 param_1, u32 param_2, u32 count) {
             iVar4 = 0xf0;
         }
         if (((u16)uVar5 & 0xffff) < 0xa0) {
-            base[uVar5 * 2] = iVar4;
-            base[uVar5 * 2 + 1] = iVar2;
+            /* One WIN0H halfword (left << 8 | right), host order for the
+             * HDMA copy into I/O: the GBA's two byte stores on any host. */
+            ((u16*)base)[uVar5] = (u16)(((iVar2 & 0xff) << 8) | (iVar4 & 0xff));
         }
         if (((u16)uVar7 & 0xffff) < 0xa0) {
-            base[uVar7 * 2] = iVar4;
-            base[uVar7 * 2 + 1] = iVar2;
+            /* One WIN0H halfword (left << 8 | right), host order for the
+             * HDMA copy into I/O: the GBA's two byte stores on any host. */
+            ((u16*)base)[uVar7] = (u16)(((iVar2 & 0xff) << 8) | (iVar4 & 0xff));
         }
         uVar5--;
         uVar7++;
@@ -1257,8 +1272,8 @@ void sub_0801E31C(u32 sp00, u32 sp04, s32 r10, s32 r9) {
             sp1c = Div(r9 * r6, r10);
             kk = Div(r9 * r7, r10);
             // TODO: Fix data type in declaration. There shouldn't be a need to cast this.
-            ((u32*)gUnk_02018EE0)[r6] = kk;
-            ((u32*)gUnk_02018EE0)[r7] = sp1c;
+            ((u32*)gUnk_02018EE0)[r6] = GBA_U32_LO16(kk);
+            ((u32*)gUnk_02018EE0)[r7] = GBA_U32_LO16(sp1c);
             if (r5 < 0) {
                 r5 += 6 + r6 * 4;
                 r6++;
@@ -1277,8 +1292,8 @@ void sub_0801E31C(u32 sp00, u32 sp04, s32 r10, s32 r9) {
             sp1c2 = Div(r10 * r6, r9);
             kk2 = Div(r10 * r7, r9);
             // TODO: Fix data type in declaration. There shouldn't be a need to cast this.
-            ((u32*)gUnk_02018EE0)[r6] = kk2;
-            ((u32*)gUnk_02018EE0)[r7] = sp1c2;
+            ((u32*)gUnk_02018EE0)[r6] = GBA_U32_LO16(kk2);
+            ((u32*)gUnk_02018EE0)[r7] = GBA_U32_LO16(sp1c2);
             if (r5 < 0) {
                 r5 += 6 + r6 * 4;
                 r6++;
@@ -1332,16 +1347,16 @@ void sub_0801E49C(s32 baseX, s32 baseY, s32 radius, u32 baseAngle) {
             SWAP(x2, x3, y2);
         }
         if (x1 != 0xffffffff) {
-            ptr2[0] = x3;
-            ptr2[1] = x1;
+            ptr2[WIN_BYTE_LO] = x3;
+            ptr2[WIN_BYTE_HI] = x1;
         } else {
             if (x2 != x1) {
-                ptr2[0] = x3;
-                ptr2[1] = x2;
+                ptr2[WIN_BYTE_LO] = x3;
+                ptr2[WIN_BYTE_HI] = x2;
             } else {
                 if (x3 != x1) {
-                    ptr2[1] = x1;
-                    ptr2[0] = x1;
+                    ptr2[WIN_BYTE_HI] = x1;
+                    ptr2[WIN_BYTE_LO] = x1;
                 }
             }
         }
