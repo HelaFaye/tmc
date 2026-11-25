@@ -85,7 +85,7 @@ typedef struct {
 PORT_STATIC_ASSERT_SIZE(Area, 0x894, 0xEC0, "Area size incorrect");
 extern Area gArea;
 
-typedef struct {
+typedef struct GBA_LE_STRUCT {
     u16 map_x;
     u16 map_y;
     u16 pixel_width;

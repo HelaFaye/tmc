@@ -163,7 +163,11 @@ Entity* LoadRoomEntity(const EntityData* dat) {
 #endif
         if ((dat->flags & 0xF0) != 16) {
             u8 kind2;
+#ifdef TMC_BE
+            entity->type2 = (u8)dat->type2;
+#else
             entity->type2 = *(u8*)&dat->type2;
+#endif
             entity->timer = (dat->type2 & 0xFF00) >> 8;
             if (kind == 9)
                 return entity;
@@ -675,7 +679,7 @@ static void LoadBombableWallTile(TileEntity* tileEntity) {
         mgr->base.kind = MANAGER;
         mgr->base.id = BOMBABLE_WALL_MANAGER;
         mgr->x = tileEntity->tilePos;
-        mgr->y = *(u16*)&tileEntity->_6;
+        mgr->y = GBA_U16_PAIR(tileEntity->_6, tileEntity->_7);
         mgr->layer = tileEntity->_2;
         mgr->flag = tileEntity->localFlag;
         AppendEntityToList((Entity*)mgr, 6);
@@ -687,8 +691,8 @@ static void LoadDarknessTile(TileEntity* tileEntity) {
 }
 
 static void LoadDestructibleTile(TileEntity* tileEntity) {
-    if (CheckLocalFlag(*(u16*)&tileEntity->_2)) {
-        SetTileType(*(u16*)&tileEntity->_6, tileEntity->tilePos, tileEntity->localFlag);
+    if (CheckLocalFlag(GBA_U16_PAIR(tileEntity->_2, tileEntity->_3))) {
+        SetTileType(GBA_U16_PAIR(tileEntity->_6, tileEntity->_7), tileEntity->tilePos, tileEntity->localFlag);
     } else if (!gRoomVars.destructableManagerLoaded) {
         Manager* mgr;
         gRoomVars.destructableManagerLoaded = TRUE;

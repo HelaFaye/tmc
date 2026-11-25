@@ -1519,8 +1519,13 @@ typedef struct {
 
 extern const u16 gUnk_080FC914[];
 
-const u16 gUnk_080FC914[] = { 0xf251, 0xf251, 0xf251, 0xf251, 0xf251, 0xf251, 0xf251, 0xf251, 0xf251, 0xf251,
-                              0xf24d, 0xf24d, 0xf24d, 0xf24d, 0xf24d, 0xf24d, 0xf24d, 0xf24d, 0xf24d, 0xf24d };
+/* Tilemap entries, DMA'd straight into the BG buffer: GBA byte order. */
+#define H(v) TILE_LE16(v)
+const u16 gUnk_080FC914[] = { H(0xf251), H(0xf251), H(0xf251), H(0xf251), H(0xf251),
+                              H(0xf251), H(0xf251), H(0xf251), H(0xf251), H(0xf251),
+                              H(0xf24d), H(0xf24d), H(0xf24d), H(0xf24d), H(0xf24d),
+                              H(0xf24d), H(0xf24d), H(0xf24d), H(0xf24d), H(0xf24d) };
+#undef H
 
 // Handles drawing of hearts
 void sub_08050B3C(u16* target) {
@@ -1568,11 +1573,11 @@ void sub_08050B3C(u16* target) {
     }
     maxHeartsSecondRow = maxHearts - 10;
     temp_target = target;
-    temp_target[0] = 0xF24C;
+    temp_target[0] = TILE_LE16(0xF24C);
     DmaCopy16(3, &gUnk_080FC914[10 - currentFullHeartsFirstRow], &temp_target[1], maxHeartsFirstRow * 2);
     if (maxHeartsSecondRow > 0) {
         temp_target += 0x20;
-        temp_target[0] = 0xF24C;
+        temp_target[0] = TILE_LE16(0xF24C);
         DmaCopy16(3, &gUnk_080FC914[10 - currentFullHeartsSecondRow], &temp_target[1], maxHeartsSecondRow * 2);
     }
 
@@ -1586,7 +1591,7 @@ void sub_08050B3C(u16* target) {
         temp_target += 0x20;
     }
 
-    temp_target[currentFullHearts + 1] = currentPartialHeartValue - 0xDB3;
+    temp_target[currentFullHearts + 1] = TILE_LE16(currentPartialHeartValue - 0xDB3);
 }
 
 void sub_08050C54(void);
@@ -2088,7 +2093,7 @@ void sub_080610B8(void) {
         case 6:
 #ifdef TMC_BE
             /* The keyboard tilemap came from the ROM: little-endian entries. */
-            tmp2 = ((u16)__builtin_bswap16(gBG3Buffer[gGenericMenu.unk10.a[0] * 2 + 0xc3 + gGenericMenu.unk10.a[1] * 0x40]) >> 1);
+            tmp2 = (TILE_LE16(gBG3Buffer[gGenericMenu.unk10.a[0] * 2 + 0xc3 + gGenericMenu.unk10.a[1] * 0x40]) >> 1);
 #else
             tmp2 = ((gBG3Buffer[gGenericMenu.unk10.a[0] * 2 + 0xc3 + gGenericMenu.unk10.a[1] * 0x40]) >> 1);
 #endif

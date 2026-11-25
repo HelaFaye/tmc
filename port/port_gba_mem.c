@@ -291,6 +291,16 @@ void* port_resolve_addr(uintptr_t val)
      * tilemap from random host memory — symptom #44 (grey blocks at
      * top of map + bouncing player marker), Windows-only on the bug
      * tracker. Linux's path was already correct, so unify on it. */
+#ifdef TMC_FXCG
+    /* The fx-CG50 add-in's static RAM and stack sit at 0x08100000-0x0817FFFF
+     * (permanent UTLB entries 55-62), inside the GBA ROM range. A native
+     * pointer there -- a stack buffer handed to DmaCopy, a .data array --
+     * must not be remapped to gRomData. Game ROM data never arrives as a raw
+     * GBA address on this build: it lives in the ROM window at 0x20000000. */
+    if (val >= 0x08100000u && val < 0x08180000u) {
+        return (void*)val;
+    }
+#endif
     if (val >= 0x02000000u && val < 0x0A000000u) {
         void* p = gba_TryMemPtr((uint32_t)val);
         if (p) {

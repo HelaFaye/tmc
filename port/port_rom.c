@@ -666,7 +666,7 @@ static void* ResolveActiveDataPointer(u32 table, u32 index, u32 bytes) {
     u32 address;
     if (!gRomData || table == 0 || table > gRomSize ||
         index >= (gRomSize - table) / 4) return NULL;
-    memcpy(&address, gRomData + table + index * 4, 4);
+    address = Port_ReadU32(gRomData + table + index * 4);
     if (address < 0x08000000u) return NULL;
     u32 offset = address - 0x08000000u;
     if (offset > gRomSize || bytes > gRomSize - offset) return NULL;
@@ -1644,8 +1644,7 @@ void Port_LoadRom(const char* path) {
                 const u8* animTable = (const u8*)sp322->animations;
                 u32 resolvedCount = 0;
                 for (u32 i = 0; i < SPRITE_ANIM_322_COUNT; i++) {
-                    u32 gbaPtr;
-                    memcpy(&gbaPtr, animTable + i * 4, 4);
+                    u32 gbaPtr = Port_ReadU32(animTable + i * 4); /* LE on any host */
                     if (gbaPtr == 0) {
                         break;
                     }
@@ -1802,7 +1801,7 @@ void Port_LoadRom(const char* path) {
         (out_count) = 0;                                                       \
         for (u32 _j = 0; _j < MAX_ROOMS; _j++) {                               \
             u32 _v;                                                            \
-            memcpy(&_v, _b + _j * 4, 4);                                       \
+            _v = Port_ReadU32(_b + _j * 4);                                    \
             if (_v == 0 || (_v >= 0x08000000u && _v < 0x08000000u + gRomSize)) \
                 (out_count) = _j + 1;                                          \
             else                                                               \
@@ -1924,7 +1923,7 @@ void Port_LoadRom(const char* path) {
             if (t == 1 && i >= R->areaTileSetsCount)
                 continue;
             u32 ptr;
-            memcpy(&ptr, &gRomData[tables[t] + i * 4], 4);
+            ptr = Port_ReadU32(&gRomData[tables[t] + i * 4]);
             if (ptr >= 0x08000000u && ptr < 0x08000000u + gRomSize) {
                 ExtractRegion(ptr - 0x08000000u, ROM_PAGE_SIZE);
             }

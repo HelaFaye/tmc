@@ -840,7 +840,7 @@ void DrawDungeonMap(u32 floor, DungeonMapObject* specialData, u32 size) {
                                         ((((tileEntity->tilePos >> 2 & 0x3f0) | 8) + (roomHeader->map_y % 0x800)) >> 4);
                                 } else {
                                     specialData->x = (((roomHeader->map_x % 0x800) + tileEntity->tilePos) >> 4);
-                                    specialData->y = (((roomHeader->map_y % 0x800) + (*(u16*)&tileEntity->_6)) >> 4);
+                                    specialData->y = (((roomHeader->map_y % 0x800) + GBA_U16_PAIR(tileEntity->_6, tileEntity->_7)) >> 4);
                                 }
                                 specialData++;
                             }

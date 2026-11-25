@@ -98,7 +98,7 @@ extern RoomMemory* gCurrentRoomMemory;
 extern RoomMemory gRoomMemory[];
 
 // Packets used to store which entities to load in a room
-typedef struct {
+typedef struct GBA_LE_STRUCT {
     u8 kind;
     u8 flags;
     u8 id;
@@ -203,7 +203,7 @@ typedef struct {
     u16 transitionSFX;
 } ScreenTransitionData;
 
-typedef struct {
+typedef struct GBA_LE_STRUCT {
     u8 type;
     u8 localFlag;
     u8 _2;

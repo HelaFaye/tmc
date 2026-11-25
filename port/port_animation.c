@@ -80,7 +80,8 @@ static void UpdateSpriteGfxSlot(Entity* entity, u8 frameIdx, u16 spriteIdx) {
     slot->paletteIndex = f->numTiles;
     int countDiff = (int)oldTileCount - (int)f->numTiles;
 
-    const void* newSrc = (const u8*)spr->ptr + (u32)f->firstTileIndex * 32;
+    /* ROM frame table: little-endian halfword on any host. */
+    const void* newSrc = (const u8*)spr->ptr + (u32)Port_ReadU16(&f->firstTileIndex) * 32;
     const void* oldSrc = slot->palettePointer;
     slot->palettePointer = newSrc;
 

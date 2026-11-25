@@ -48,7 +48,7 @@ typedef enum {
     TRANSITION_SHAPE_BORDER_WEST = 0xc0,
 } TransitionShape;
 
-typedef struct Transition {
+typedef struct GBA_LE_STRUCT Transition {
     u16 warp_type; /**< @see WarpType */
     u16 startX;
     u16 startY;

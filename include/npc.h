@@ -23,18 +23,20 @@ typedef enum {
 } DialogType;
 
 typedef struct {
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u16 : 4; /* BE: padding above the GBA fields */
-    u16 flag : 12;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    /* Written by hand: be_bitfields.py does not follow enum-typed fields.
+     * The GBA layout of the first word (flag 0-11, flagType 12-15, type
+     * 16-19, fromSelf 20), which ROM dialog tables are copied into. */
+    struct __attribute__((scalar_storage_order("little-endian"))) {
+        u32 flag : 12;
+        u32 flagType : 4;
+        u32 type : 4;
+        u32 fromSelf : 1;
+    };
 #else
     u32 flag : 12;
-#endif
     DialogFlagType flagType : 4;
     DialogType type : 4;
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ /* be_bitfields.py: GBA bit layout */
-    u16 : 15; /* BE: padding above the GBA fields */
-    u16 fromSelf : 1;
-#else
     u32 fromSelf : 1;
 #endif
     union {

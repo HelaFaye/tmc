@@ -89,7 +89,7 @@ void OpenSmallChest(u32 pos, u32 layer) {
     u32 found = 0;
     u32 i;
     for (i = 0; i < 8; ++i, ++t) {
-        if (*(u16*)&t->tilePos == pos) {
+        if (t->tilePos == pos) {
             found = 1;
             break;
         }
@@ -135,11 +135,11 @@ u32 sub_080A7CFC(u32 a1) {
                 switch (t->type) {
                     case SIGN:
                         hint = FALSE;
-                        msg = *(u16*)&t->_6;
+                        msg = GBA_U16_PAIR(t->_6, t->_7);
                         break;
                     case TILE_EZLO_HINT:
                         hint = TRUE;
-                        msg = *(u16*)&t->_6;
+                        msg = GBA_U16_PAIR(t->_6, t->_7);
                         break;
                 }
                 break;

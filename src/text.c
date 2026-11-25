@@ -156,11 +156,21 @@ void sub_0805EEB4(Token* token, u32 textIndex) {
         langIndex = 3;
     }
     puVar2 = gTranslations[langIndex];
+#ifdef PC_PORT
+    /* The offset tables are GBA bytes (ROM or extracted asset): read them
+     * little-endian, so big-endian targets (fx-CG50) get the same values. */
+    iVar3 = (s32)Port_ReadU32(&puVar2[(u8)(textIndex >> 8)]);
+    puVar2 = (u32*)((uintptr_t)puVar2 + iVar3);
+    iVar3 = (s32)Port_ReadU32(&puVar2[(u8)textIndex]);
+    uVar6 = Port_ReadU32(gTranslations[langIndex]) >> 2;
+    uVar7 = Port_ReadU32(puVar2) >> 2;
+#else
     iVar3 = puVar2[(u8)(textIndex >> 8)];
     puVar2 = (u32*)((uintptr_t)puVar2 + iVar3);
     iVar3 = puVar2[(u8)textIndex];
     uVar6 = *(gTranslations[langIndex]) >> 2;
     uVar7 = *puVar2 >> 2;
+#endif
     uVar4 = 0;
     if (((token->textIndex >> 8) >= uVar6) || ((u8)token->textIndex >= uVar7)) {
         uVar4 = 1;
@@ -544,11 +554,20 @@ u32 GetFontStrWith(Token* param_1, u32 param_2) {
                 default:
                     if (uVar5 == 0) {
                         puVar2 = (u32*)sub_0805F25C(character);
+#ifdef PC_PORT
+                        /* Glyph ROM words: little-endian on any host. */
+                        if (4 < character >> 8) {
+                            uVar3 = sub_0805F7A0(Port_ReadU32(&puVar2[0x10]));
+                            uVar4 += (uVar3 >> 8);
+                        }
+                        uVar3 = sub_0805F7A0(Port_ReadU32(puVar2));
+#else
                         if (4 < character >> 8) {
                             uVar3 = sub_0805F7A0(puVar2[0x10]);
                             uVar4 += (uVar3 >> 8);
                         }
                         uVar3 = sub_0805F7A0(*puVar2);
+#endif
                         uVar4 += (uVar3 >> 8);
                     } else if (character >> 8 >= 5) {
                         uVar4 += 0x10;
@@ -671,7 +690,7 @@ u32 ShowTextBox(uintptr_t textIndexOrPtr, const Font* paramFont) {
                 puVar9 += 0x20;
                 puVar6 = puVar9;
                 for (uVar5 = uVar8; (s32)uVar5-- > 0;) {
-                    *puVar6++ = textIndexOrPtr;
+                    *puVar6++ = TILE_LE16(textIndexOrPtr);
                 }
             }
         }
@@ -715,8 +734,8 @@ bool32 sub_0805F5CC(Font* param_1, Token* param_2, WStruct* param_3) {
 
 s32 sub_0805F67C(short* param_1, s32 param_2, s32 param_3) {
     for (param_3--; param_3 != -1; param_3--) {
-        param_1[0] = param_2++;
-        param_1[0x20] = param_2++;
+        param_1[0] = TILE_LE16(param_2++);
+        param_1[0x20] = TILE_LE16(param_2++);
         param_1++;
     }
     return param_2;

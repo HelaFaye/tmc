@@ -665,7 +665,12 @@ void sub_0801CB20(UIElement* element, UIElementDefinition* definition) {
         const SpritePtr* ptr = &gSpritePtrs[definition->spriteIndex];
 #endif
         SpriteFrame* frame = &ptr->frames[element->frameIndex];
+#ifdef PC_PORT
+        /* ROM frame table: little-endian halfword on any host. */
+        u32* firstTile = (u32*)(ptr->ptr + Port_ReadU16(&frame->firstTileIndex) * 0x20);
+#else
         u32* firstTile = (u32*)(ptr->ptr + frame->firstTileIndex * 0x20);
+#endif
         u8 numTiles = frame->numTiles;
         if (numTiles == 0) {
             element->unk_0_2 = 0;

@@ -945,42 +945,42 @@ void DispMessageFrame(u16* buffer, s32 width, s32 height, u32 flags) {
     u16* ptr2 = &buffer[(height << 5) + 0x20];
     u32 flags1;
     u32 i;
-    *ptr++ = flags;
-    *ptr2++ = flags | 0x800;
+    *ptr++ = TILE_LE16(flags);
+    *ptr2++ = TILE_LE16(flags | 0x800);
     if (width > 0) {
-        *ptr++ = flags + 1;
-        *ptr2++ = (flags + 1) | 0x800;
+        *ptr++ = TILE_LE16(flags + 1);
+        *ptr2++ = TILE_LE16((flags + 1) | 0x800);
         width -= 2;
         while (width-- > 0) {
-            *ptr++ = flags + 2;
-            *ptr2++ = (flags + 2) | 0x800;
+            *ptr++ = TILE_LE16(flags + 2);
+            *ptr2++ = TILE_LE16((flags + 2) | 0x800);
         }
 
-        *ptr++ = (flags + 1) | (0x80 << 3);
-        *ptr2++ = (flags + 1) | (0xc0 << 4);
+        *ptr++ = TILE_LE16((flags + 1) | (0x80 << 3));
+        *ptr2++ = TILE_LE16((flags + 1) | (0xc0 << 4));
     }
 
-    *ptr = flags | 0x400;
-    *ptr2 = flags | 0xc00;
+    *ptr = TILE_LE16(flags | 0x400);
+    *ptr2 = TILE_LE16(flags | 0xc00);
     buffer += 0x20;
     ptr += 0x20;
 
     if (height > 0) {
-        *buffer = flags + 3;
-        *ptr = (flags + 3) | 0x400;
+        *buffer = TILE_LE16(flags + 3);
+        *ptr = TILE_LE16((flags + 3) | 0x400);
         buffer += 0x20;
         ptr += 0x20;
 
         height -= 2;
         while (height-- > 0) {
-            *buffer = flags + 4;
-            *ptr = (flags + 4) | 0x400;
+            *buffer = TILE_LE16(flags + 4);
+            *ptr = TILE_LE16((flags + 4) | 0x400);
             buffer += 0x20;
             ptr += 0x20;
         }
 
-        *buffer = (flags + 3) | 0x800;
-        *ptr++ = (flags + 3) | 0xc00;
+        *buffer = TILE_LE16((flags + 3) | 0x800);
+        *ptr++ = TILE_LE16((flags + 3) | 0xc00);
     }
 }
 
@@ -1019,7 +1019,7 @@ static void DispString(void) {
                 h--;
                 line = buf;
                 do {
-                    *line = tileAttr;
+                    *line = TILE_LE16(tileAttr);
                     line++;
                     tileAttr += 2;
                     w--;
@@ -1034,12 +1034,18 @@ static void DispCursor(void) {
     u32 offset;
     u16* ptr;
 
+#ifdef PC_PORT
+    /* The GBA test on the little-endian word, (word & 0x10ff00) == 0x100200,
+     * through the bytes so big-endian hosts agree. */
+    if (gTextRender._98.bytes.b1 == 2 && (gTextRender._98.bytes.b2 & 0x10)) {
+#else
     if ((gTextRender._98.word & 0x10ff00) == 0x100200) {
+#endif
         ptr = &gBG0Buffer[MESSAGE_POSITION_INDEX(gNewWindow)];
         offset = (((gNewWindow.height + 1) * MESSAGE_WIDTH) - 2);
         offset += gNewWindow.width;
         ptr += offset;
-        *ptr = 0xf080;
+        *ptr = TILE_LE16(0xf080);
     }
 }
 
