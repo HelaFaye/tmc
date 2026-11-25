@@ -475,8 +475,11 @@ void LoadPalettes(const u8* src, s32 destPaletteNum, s32 numPalettes) {
     /* DmaCopy32 byte-preserves the GBA little-endian colors; a native u16 read
      * on the big-endian N64 would byte-swap each BGR555 color. Swap in place so
      * the engine and ViruaPPU see correct colors. */
-    for (u32 i = 0; i < size / 2u; i++)
-        dest[i] = (u16)__builtin_bswap16(dest[i]);
+    /* A source inside gPaletteBuffer itself (LoadObjPaletteAtIndex copies
+     * one palette row to another) is already in host order. */
+    if (!(src >= (const u8*)gPaletteBuffer && src < (const u8*)gPaletteBuffer + 0x400))
+        for (u32 i = 0; i < size / 2u; i++)
+            dest[i] = (u16)__builtin_bswap16(dest[i]);
 #endif
 }
 
