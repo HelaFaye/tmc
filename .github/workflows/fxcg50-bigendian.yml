@@ -1,0 +1,69 @@
+name: fx-CG50 big-endian check
+
+on:
+  push:
+    branches: [master, fx-cg50]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "port/port_*.c"
+      - "port/ppu/**"
+      - "port/fxcg/**"
+      - "tests/fxcg50-bigendian/**"
+      - ".github/workflows/fxcg50-bigendian.yml"
+  workflow_dispatch:
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install cross compilers and qemu-user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-powerpc-linux-gnu gcc-i686-linux-gnu qemu-user
+
+      # Builds the calculator configuration both ways; catches compile
+      # errors on big-endian even without a ROM.
+      - name: Build big- and little-endian programs
+        run: |
+          python3 tests/fxcg50-bigendian/build_host.py be work/host-be &
+          python3 tests/fxcg50-bigendian/build_host.py le work/host-le &
+          wait %1 && wait %2
+
+      - name: Probe for ASSETS_TOKEN
+        id: assets
+        env:
+          T: ${{ secrets.ASSETS_TOKEN }}
+        run: |
+          if [ -n "$T" ] && [ -n "${{ vars.ASSETS_REPO }}" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ROM available (ASSETS_TOKEN / ASSETS_REPO unset); frame comparison skipped."
+          fi
+
+      - name: Checkout private assets repository
+        if: steps.assets.outputs.have == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ vars.ASSETS_REPO }}
+          token: ${{ secrets.ASSETS_TOKEN }}
+          path: _assets
+          persist-credentials: false
+
+      - name: Compare frames (title script, must match)
+        if: steps.assets.outputs.have == 'true'
+        run: |
+          NO_BUILD=1 tests/fxcg50-bigendian/run_compare.sh _assets/baserom.gba 3000 \
+            tests/fxcg50-bigendian/input-title.txt work 100000
+
+      - name: Compare frames (intro script)
+        if: steps.assets.outputs.have == 'true'
+        run: |
+          NO_BUILD=1 tests/fxcg50-bigendian/run_compare.sh _assets/baserom.gba 12000 \
+            tests/fxcg50-bigendian/input-intro.txt work 100000
