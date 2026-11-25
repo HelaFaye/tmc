@@ -267,17 +267,17 @@ void DrawRupees(void) {
             gHUD.unk_a = 2;
             row1 = &gBG0Buffer[0x258];
             row2 = &gBG0Buffer[0x278];
-            row1[0] = temp2 = gWalletSizes[gSave.stats.walletType].iconStartTile;
-            row1[1] = temp2 + 1;
-            row2[0] = temp2 + 2;
-            row2[1] = temp2 + 3;
+            row1[0] = TILE_LE16(temp2 = gWalletSizes[gSave.stats.walletType].iconStartTile);
+            row1[1] = TILE_LE16(temp2 + 1);
+            row2[0] = TILE_LE16(temp2 + 2);
+            row2[1] = TILE_LE16(temp2 + 3);
             temp2 = 0xf070;
-            row1[2] = temp2;
-            row2[2] = temp2 + 1;
-            row1[3] = temp2 + 2;
-            row2[3] = temp2 + 3;
-            row1[4] = temp2 + 4;
-            row2[4] = temp2 + 5;
+            row1[2] = TILE_LE16(temp2);
+            row2[2] = TILE_LE16(temp2 + 1);
+            row1[3] = TILE_LE16(temp2 + 2);
+            row2[3] = TILE_LE16(temp2 + 3);
+            row1[4] = TILE_LE16(temp2 + 4);
+            row2[4] = TILE_LE16(temp2 + 5);
             gScreen.bg0.updated = 1;
             cVar1 = 1;
         } else {
@@ -452,11 +452,11 @@ void DrawHearts(void) {
 
         if (uVar1 - 10 > 0) {
             ptr = &gBG0Buffer[0x40];
-            *ptr = 0xf010;
+            *ptr = TILE_LE16(0xf010);
             DmaSet(3, gUnk_080C8F2C + (10 - uVar6), ptr + 1, (uVar1 - 10) | 0x80000000);
         }
         ptr = &gBG0Buffer[0x20];
-        *ptr = 0xf010;
+        *ptr = TILE_LE16(0xf010);
 
         DmaSet(3, gUnk_080C8F2C + (10 - tmp1), ptr + 1, maxHealth | 0x80000000);
 
@@ -465,7 +465,7 @@ void DrawHearts(void) {
                 uVar2 -= 10;
                 ptr += 0x20;
             }
-            ptr[uVar2 + 1] = ((gHUD.health & 3) + 0x11) | 0xf000;
+            ptr[uVar2 + 1] = TILE_LE16(((gHUD.health & 3) + 0x11) | 0xf000);
         }
         gScreen.bg0.updated = 1;
     }
@@ -524,11 +524,11 @@ void DrawChargeBar(void) {
         chargeState = divRem.HALF_U.LO;
         chargeFrame = divRem.HALF_U.HI;
 
-        BufferPos[0] = 0xf016;
-        BufferPos[11] = 0xf416;
+        BufferPos[0] = TILE_LE16(0xf016);
+        BufferPos[11] = TILE_LE16(0xf416);
         DmaSet(3, &gUnk_080C8F54[10 - chargeState], BufferPos + 1, 0x8000000a);
         if (chargeFrame != 0)
-            BufferPos[chargeState + 1] = ((chargeFrame + 0x17U) & 0x3ff) | 0xf000;
+            BufferPos[chargeState + 1] = TILE_LE16(((chargeFrame + 0x17U) & 0x3ff) | 0xf000);
         gScreen.bg0.updated = 1;
     }
 
@@ -585,15 +585,15 @@ void DrawKeys(void) {
             row1 = &gBG0Buffer[0x219];
             row2 = &gBG0Buffer[0x239];
             temp = 0xf01c;
-            row1[0] = temp;
-            row1[1] = temp + 1;
-            row2[0] = temp + 2;
-            row2[1] = temp + 3;
+            row1[0] = TILE_LE16(temp);
+            row1[1] = TILE_LE16(temp + 1);
+            row2[0] = TILE_LE16(temp + 2);
+            row2[1] = TILE_LE16(temp + 3);
             temp = 0xf076;
-            row1[2] = temp;
-            row2[2] = temp + 1;
-            row1[3] = temp + 2;
-            row2[3] = temp + 3;
+            row1[2] = TILE_LE16(temp);
+            row2[2] = TILE_LE16(temp + 1);
+            row1[3] = TILE_LE16(temp + 2);
+            row2[3] = TILE_LE16(temp + 3);
             gScreen.bg0.updated = 1;
         }
         if ((gHUD.dungeonKeys != gSave.dungeonKeys[gArea.dungeon_idx]) || (gHUD.unk_10 == 0)) {
