@@ -11,7 +11,7 @@ with every step that changes what is known.
 | Phase | State |
 |---|---|
 | 0. Measure and set up | ROM working set measured (590 validated rooms); SH-4 toolchain and 623/623 source compile verified; code size measured (about 1.0 MB); upper 3,200 KiB DRAM passed RAMCheck v2 on OS 3.20.0202. Device I/O/baud measurements and the D7 RAM-loader spike remain open; corrected PCPK rebuild remains pending |
-| 1. The game on the calculator | **Current focus.** D1 pager implemented (`TMC_FXCG_D1_PAGER=ON`; see `fx-cg50-d1-pager.md`), host-tested, passing `D1-PAGER-PROBE` in the emulator MMU extension (CI); **not yet run on hardware**. Default build stays fail-closed. ROM-only page pak (1,140 pages, 2.63 MiB) built. Next: run the probe, then the pager build. Open: byte order of in-place ROM reads (no big-endian validation yet); room `0x8a:0x02` hangs in ROM-only mode on the PC |
+| 1. The game on the calculator | **Current focus.** D1 pager implemented (`TMC_FXCG_D1_PAGER=ON`; see `fx-cg50-d1-pager.md`), host-tested, passing `D1-PAGER-PROBE` in the emulator MMU extension (CI); **not yet run on hardware**. Default build stays fail-closed. ROM-only page pak (1,140 pages, 2.63 MiB) built. Next: run the probe, then the pager build. Big-endian validation under way (`tests/fxcg50-bigendian`, see the 2026-11-25 entry); room `0x8a:0x02` hangs in ROM-only mode on the PC |
 | 2. Launcher and ESP32 preloading | Link library and preload simulation done (fxLauncher `lib/cglink`); firmware and launcher not started, deliberately deferred until Phase 1 is playable |
 | 3-6 | Not started |
 
@@ -113,6 +113,42 @@ separate P2 instruction-execution probe. No UTLB entries have been written,
 no `URB`/`URC` policy has been selected, and `Fxcg_RomInit()` remains fail-closed.
 
 ## Log
+
+### 2026-11-25: big-endian validation of the calculator configuration
+
+`tests/fxcg50-bigendian` builds the calculator configuration of the game
+(`TMC_EMBEDDED`, `TMC_ROM_WINDOW`, the fx-CG50 frontend with a host stand-in
+for gint) twice: big-endian 32-bit PowerPC run under `qemu-ppc`, and
+little-endian 32-bit x86. Only byte order differs, so a frame hash that
+differs points at a byte-order bug in code the calculator runs.
+`run_compare.sh` builds both, runs an input script and prints the first
+differing frame; `HOST_DUMP_FRAME` dumps palettes, OAM, I/O and VRAM for
+a frame.
+
+- **Input scripts:** `input-title.txt` (3,000 frames: title, file select,
+  name entry) matches on every frame. `input-intro.txt` (12,000 frames:
+  new file, save, file view, the intro) matches through frame 4522: the
+  intro cutscene plays and the game reaches its first room. The next
+  difference, at frame 4523, is being worked on.
+- **Fixed so far:** the PPU was never bound to the GBA memories on the
+  calculator (black screen); bit-fields get the GBA layout on big-endian
+  (`scripts/fxcg/be_bitfields.py`, 47 runs; `Dialog` by hand); I/O, EWRAM
+  and IWRAM hold host-order values; text tables, glyph words, sprite frame
+  tables, script operands and several ROM pointer tables are read
+  little-endian; tilemap entries keep GBA byte order (`TILE_LE16`);
+  ROM records read in place (`RoomHeader`, `EntityData`, `TileEntity`,
+  `Transition`) are declared with GCC's little-endian scalar storage order
+  (`GBA_LE_STRUCT`).
+- **32-bit (not byte-order) bugs found on the way:** a native `Font` misread
+  as a GBA blob, and room map data landing 4 bytes off; both are now
+  fixed, so the 32-bit little-endian build renders Link's house like the
+  PC build.
+- **Calculator address clash:** the add-in's RAM and stack
+  (`0x08100000-0x0817FFFF`) lie inside the GBA ROM range, so
+  `port_resolve_addr` would have turned a stack buffer handed to
+  `DmaCopy` into a ROM address. That range is now treated as native on
+  `TMC_FXCG`. The host harness cannot reproduce this one (its program is
+  linked at `0x40000000`).
 
 ### 2026-11-23: D1 pager passes in the emulator; CI runs it
 

@@ -53,7 +53,7 @@ u32 GetNextScriptCommandHalfword(u16* ptr) {
         }
     }
 #endif
-    return ptr[0];
+    return Port_ReadU16(&ptr[0]);
 }
 
 u32 GetNextScriptCommandHalfwordAfterCommandMetadata(u16* ptr) {
@@ -61,7 +61,7 @@ u32 GetNextScriptCommandHalfwordAfterCommandMetadata(u16* ptr) {
     if (!ptr)
         return 0xFFFF;
 #endif
-    return ptr[1];
+    return Port_ReadU16(&ptr[1]);
 }
 
 u32 GetNextScriptCommandWord(u16* ptr) {
@@ -69,7 +69,7 @@ u32 GetNextScriptCommandWord(u16* ptr) {
     if (!ptr)
         return 0xFFFFFFFF;
 #endif
-    return (u32)ptr[0] | ((u32)ptr[1] << 16);
+    return (u32)Port_ReadU16(&ptr[0]) | ((u32)Port_ReadU16(&ptr[1]) << 16);
 }
 
 u32 GetNextScriptCommandWordAfterCommandMetadata(u16* ptr) {
@@ -77,7 +77,7 @@ u32 GetNextScriptCommandWordAfterCommandMetadata(u16* ptr) {
     if (!ptr)
         return 0xFFFFFFFF;
 #endif
-    return (u32)ptr[1] | ((u32)ptr[2] << 16);
+    return (u32)Port_ReadU16(&ptr[1]) | ((u32)Port_ReadU16(&ptr[2]) << 16);
 }
 
 /*
