@@ -127,9 +127,9 @@ a frame.
 
 - **Input scripts:** `input-title.txt` (3,000 frames: title, file select,
   name entry) matches on every frame. `input-intro.txt` (12,000 frames:
-  new file, save, file view, the intro) matches through frame 4522: the
-  intro cutscene plays and the game reaches its first room. The next
-  difference, at frame 4523, is being worked on.
+  new file, save, file view, the intro cutscene and the first rooms)
+  differs on 63 of 12,000 frames (8609-8671) and matches before and after
+  them. Being worked on.
 - **Fixed so far:** the PPU was never bound to the GBA memories on the
   calculator (black screen); bit-fields get the GBA layout on big-endian
   (`scripts/fxcg/be_bitfields.py`, 47 runs; `Dialog` by hand); I/O, EWRAM
@@ -138,7 +138,9 @@ a frame.
   little-endian; tilemap entries keep GBA byte order (`TILE_LE16`);
   ROM records read in place (`RoomHeader`, `EntityData`, `TileEntity`,
   `Transition`) are declared with GCC's little-endian scalar storage order
-  (`GBA_LE_STRUCT`).
+  (`GBA_LE_STRUCT`); room map, tile-type and tile-index arrays are swapped
+  to host order as they load, while `subTiles` (copied into tilemaps)
+  keeps GBA order; window HDMA tables are built as host halfwords.
 - **32-bit (not byte-order) bugs found on the way:** a native `Font` misread
   as a GBA blob, and room map data landing 4 bytes off; both are now
   fixed, so the 32-bit little-endian build renders Link's house like the
