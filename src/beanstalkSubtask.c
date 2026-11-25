@@ -192,6 +192,42 @@ void LoadMapDataB(const MapDataDefinition* dataDefinition) {
 }
 #endif
 
+#ifdef PC_PORT
+/* Room data arrives as GBA little-endian bytes. Game code reads the map,
+ * tile-type and tile-index arrays and the palette buffer as numbers, so on
+ * big-endian hosts the part of a load that lands in them is swapped to host
+ * order. subTiles and VRAM keep GBA order: they are only copied into
+ * tilemaps. Nothing to do on little-endian hosts. */
+void Port_MapLoadHostOrder(void* dest, u32 bytes) {
+#ifdef TMC_BE
+    static const struct { MapLayer* layer; } layers[] = { { &gMapBottom }, { &gMapTop } };
+    struct { u8* lo; u8* hi; } regions[9];
+    u32 n = 0;
+    for (u32 i = 0; i < 2; i++) {
+        MapLayer* l = layers[i].layer;
+        regions[n].lo = (u8*)l->mapData;         regions[n++].hi = (u8*)l->mapData + sizeof(l->mapData);
+        regions[n].lo = (u8*)l->mapDataOriginal; regions[n++].hi = (u8*)l->mapDataOriginal + sizeof(l->mapDataOriginal);
+        regions[n].lo = (u8*)l->tileTypes;       regions[n++].hi = (u8*)l->tileTypes + sizeof(l->tileTypes);
+        regions[n].lo = (u8*)l->tileIndices;     regions[n++].hi = (u8*)l->tileIndices + sizeof(l->tileIndices);
+    }
+    regions[n].lo = (u8*)gPaletteBuffer;
+    regions[n++].hi = (u8*)gPaletteBuffer + 0x400;
+    u8* a = (u8*)dest;
+    u8* b = a + bytes;
+    for (u32 i = 0; i < n; i++) {
+        u8* lo = a > regions[i].lo ? a : regions[i].lo;
+        u8* hi = b < regions[i].hi ? b : regions[i].hi;
+        lo = regions[i].lo + (((lo - regions[i].lo) + 1) & ~1);
+        for (u16* h = (u16*)lo; (u8*)(h + 1) <= hi; h++)
+            *h = __builtin_bswap16(*h);
+    }
+#else
+    (void)dest;
+    (void)bytes;
+#endif
+}
+#endif
+
 void LoadMapData(MapDataDefinition* dataDefinition) {
     u32 uVar1;
     u8* src;
@@ -237,8 +273,10 @@ void LoadMapData(MapDataDefinition* dataDefinition) {
                     } else {
                         LZ77UnCompWram(src, dest);
                     }
+                    Port_MapLoadHostOrder(dest, Port_ReadU32(src) >> 8);
                 } else {
                     MemCopy(src, dest, field_size);
+                    Port_MapLoadHostOrder(dest, field_size);
                 }
             } else {
                 LoadPaletteGroup(Port_ReadU16(raw));
@@ -284,6 +322,7 @@ void LoadMapData(MapDataDefinition* dataDefinition) {
                     } else {
                         LZ77UnCompWram(src, dest);
                     }
+                    Port_MapLoadHostOrder(dest, Port_ReadU32(src) >> 8);
                 } else {
                     /* The copy length is the JSON 'size' field; the real asset
                        byte count is assetSize. If a packed/extracted .bin is
@@ -298,6 +337,7 @@ void LoadMapData(MapDataDefinition* dataDefinition) {
                         copyLen = assetSize;
                     }
                     MemCopy(src, dest, copyLen);
+                    Port_MapLoadHostOrder(dest, copyLen);
                 }
             } else {
                 LoadPaletteGroup(*(u16*)dataDefinition);

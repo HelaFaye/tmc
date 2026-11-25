@@ -80,6 +80,9 @@ typedef struct {
 
 extern MapLayer gMapTop;
 extern MapLayer gMapBottom;
+#ifdef PC_PORT
+void Port_MapLoadHostOrder(void* dest, u32 bytes);
+#endif
 
 typedef enum {
     LAYER_BOTTOM = 1,

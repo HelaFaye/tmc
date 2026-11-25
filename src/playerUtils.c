@@ -4644,6 +4644,9 @@ void LoadCompressedMapData(void* dest, u32 offset) {
         } else {
             LZ77UnCompWram(src, (void*)dest);
         }
+#ifdef PC_PORT
+        Port_MapLoadHostOrder(dest, Port_ReadU32(src) >> 8);
+#endif
     }
 }
 
