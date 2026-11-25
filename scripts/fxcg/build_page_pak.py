@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Build a compact, page-addressable ROM pak for the fx-CG50.
 
-usage: build_page_pak.py <USA-baserom.gba> <out.pak> [--boot=<touch.txt> ...] <touch-dir> [<touch-dir> ...]
+usage: build_page_pak.py <USA-baserom.gba> <out.pak> [--all] [--boot=<touch.txt> ...] [<touch-dir> ...]
+
+--all stores every ROM page (about 7.7 MiB for the USA ROM), so the game can
+never stop on a page missing from the pak; room sweeps are then optional and
+only add room manifests, and the boot captures still form the baseline.
 
 --boot adds every page of a boot capture (a ROM-touch log of a run from
 power-on through the title screen and file select, recorded with
@@ -106,9 +110,10 @@ def main(argv):
         raise SystemExit("ROM SHA-1 mismatch: this fx-CG50 build's linker symbols target the supported USA ROM; got %s" % rom_sha1)
 
     boot_files = [a[len("--boot="):] for a in argv[3:] if a.startswith("--boot=")]
-    directories = [a for a in argv[3:] if not a.startswith("--boot=")]
+    whole_rom = "--all" in argv[3:]
+    directories = [a for a in argv[3:] if not a.startswith("--")]
     rooms, load_pages = load_rooms(directories)
-    if not rooms:
+    if not rooms and not whole_rom:
         raise SystemExit("no completed room runs found; run rom_touch_sweep.sh first")
     boot_pages = set()
     for path in boot_files:
@@ -126,8 +131,13 @@ def main(argv):
     for pages in rooms.values():
         pages.update(boot_pages)
 
-    all_pages = sorted(set().union(*rooms.values()))
-    baseline = set.intersection(*rooms.values())
+    if rooms:
+        all_pages = sorted(set().union(*rooms.values()))
+        baseline = set.intersection(*rooms.values())
+    else:
+        all_pages, baseline = sorted(boot_pages), set(boot_pages)
+    if whole_rom:
+        all_pages = list(range(ROM_SIZE // PAGE))
     if not all_pages:
         raise SystemExit("room sweeps contained no ROM pages")
     if len(all_pages) > 0xFFFF:

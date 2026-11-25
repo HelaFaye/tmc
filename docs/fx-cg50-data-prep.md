@@ -112,3 +112,19 @@ with `MISSING_PAGE <page>`. With the rebuilt pak (1,205 pages, 280 in the
 baseline, 2.68 MiB) all 12,000 frames match the full-ROM run. The baseline
 is now larger than the 264 frames the pager pins; the rest are fetched
 on demand.
+
+### Whole-ROM pak (recommended for first hardware runs)
+
+`build_page_pak.py ... --all` stores all 4,096 ROM pages: 7.7 MiB, well
+inside the fx-CG50's storage memory, so no room can stop on a missing
+page. Room sweeps become optional; the boot captures still decide which
+pages are pinned at start:
+
+```
+python3 scripts/fxcg/build_page_pak.py baserom.gba Picori.pak --all \
+    --boot=boot-touch.txt --boot=host-touch-intro.txt
+```
+
+Checked with `HOST_PAK`: all 12,000 intro frames match the full-ROM run.
+The per-room pak stays the target for the ESP32 link, where transfer size
+matters.
