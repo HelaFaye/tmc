@@ -26,7 +26,9 @@ emulation. Update with every finding.
   parity bugs in frame placement would pass in emulation.
 - sysram ranges the OS uses are not modelled: writes to 0x8c200000 work in
   emulation but crash hardware.
-- Fault-context file I/O through gint world switches is not exercised.
+- No OS file system: the extension's `--fs DIR` now serves the BFile
+  syscalls gint uses (read-only), so the pager's pak reads run in CI. Real
+  storage timing, fragmented files and write paths are still not modelled.
 
 ## Port pitfalls found (big-endian / 32-bit)
 

@@ -71,3 +71,20 @@ caches, ITLB, the real OS mapper, P2-only access rules or timing. CI then
 builds the hardware variants of the probe and of `Picori.g3a` with
 `TMC_FXCG_D1_PAGER=ON`, and uploads them as `fxcg50-d1-pager-hardware`;
 CI does not run them.
+
+## D1 pager against a real pak (`--fs`)
+
+`D1-PAK-PROBE.g3a` runs the D1 pager probe's eight stages with pages read
+from a PCPK pak instead of generated ones. CI writes a synthetic pak
+(`tests/fxcg50-d1-pager-probe/make_test_pak.py`: 512 pages, every seventh
+stored raw, two baseline pages; no ROM involved) and runs
+
+    casio-emu-headless D1-PAK-PROBE.g3a --d1-pager --fs <dir with D1TEST.pak>
+
+`--fs DIR` makes the test-only extension answer the OS file syscalls gint's
+`fopen`/`fread`/`fseek` use (BFile FindFirst/FindClose, Open, Close, Size,
+Seek, GetPos, Read), read-only from `DIR`. This covers the pager's real
+page source: the pak index, baseline pinning, DEFLATE and raw pages, and
+page reads from inside the fault upcall. First run (2026-11-26): all stages
+PASS, 3,124 page fetches, 3,116 evictions, 14,201 file reads (7.3 MB).
+A second CI step checks the probe fails closed when the pak is absent.
