@@ -143,6 +143,10 @@ jobs:
           mkdir -p build/emulator-addins
           cp "$D1_PAGER_EMU_G3A" build/emulator-addins/D1-PAGER-PROBE-EMULATOR.g3a
           printf 'D1_PAGER_EMU_G3A=%s\n' build/emulator-addins/D1-PAGER-PROBE-EMULATOR.g3a >> "$GITHUB_ENV"
+          D1_PAK_EMU_G3A="$(find port/fxcg -type f -name 'D1-PAK-PROBE.g3a' -print -quit)"
+          test -n "$D1_PAK_EMU_G3A"
+          cp "$D1_PAK_EMU_G3A" build/emulator-addins/D1-PAK-PROBE-EMULATOR.g3a
+          printf 'D1_PAK_EMU_G3A=%s\n' build/emulator-addins/D1-PAK-PROBE-EMULATOR.g3a >> "$GITHUB_ENV"
 
       - name: Upload read-only OS paging-state probe add-in
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -248,6 +252,44 @@ jobs:
         with:
           name: fxcg50-d1-pager-emulator-report
           path: d1-pager-emulator.txt
+          if-no-files-found: ignore
+
+      # The same stages against a real PCPK pak (synthetic pages, no ROM),
+      # read through gint's stdio and the OS file syscalls, which the
+      # extension serves from a host directory (--fs). Covers the pager's
+      # real page source: pak index, baseline pinning, DEFLATE and raw pages.
+      - name: Run D1 pak probe in Casio emulator (MMU extension + file syscalls)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/d1-pak-fs
+          python3 tests/fxcg50-d1-pager-probe/make_test_pak.py build/d1-pak-fs/D1TEST.pak
+          timeout 600 build/casio-emu-headless/casio-emu-headless \
+            "$D1_PAK_EMU_G3A" --d1-pager --fs build/d1-pak-fs | tee d1-pak-emulator.txt
+          grep -q '^SOURCE=pak /D1TEST.pak' d1-pak-emulator.txt
+          grep -q '^INIT=PASS' d1-pak-emulator.txt
+          grep -q '^RESULT=PASS' d1-pak-emulator.txt
+          grep -q '^REGS_MISMATCH_MASK=0000' d1-pak-emulator.txt
+          test "$(grep -c '^STAGE .* PASS ' d1-pak-emulator.txt)" -eq 8
+          grep -Eq 'fs_reads=[1-9]' d1-pak-emulator.txt
+
+      # Negative check: without the pak the pager must fail closed.
+      - name: D1 pak probe fails closed without the pak
+        shell: bash
+        run: |
+          mkdir -p build/d1-empty-fs
+          timeout 120 build/casio-emu-headless/casio-emu-headless \
+            "$D1_PAK_EMU_G3A" --d1-pager --fs build/d1-empty-fs | tee d1-nopak-emulator.txt || true
+          grep -q 'RESULT=FAIL init: Picori.pak not found' d1-nopak-emulator.txt
+
+      - name: Upload D1 pak emulator reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxcg50-d1-pak-emulator-report
+          path: |
+            d1-pak-emulator.txt
+            d1-nopak-emulator.txt
           if-no-files-found: ignore
 
       - name: Build hardware D1 pager probe and Picori with the D1 pager

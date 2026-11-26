@@ -25,8 +25,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "cpu.h"
+#include "memory/memory.h"
 
 extern CpuState cpu;
 
@@ -77,7 +79,138 @@ void mmuRaiseMiss(void) {
     cpu.reg.PC = cpu.reg.VBR + 0x400;
 }
 
+/* ---- --fs DIR: the OS file syscalls gint's fopen/fread/fseek use ----
+ * Paths arrive as UTF-16 "\\\\fls0\\NAME"; NAME is opened in DIR on the
+ * host, read-only. Enough for the D1 pak test; writes are refused. */
+const char* mmuFsDir;
+#define FS_MAX 8
+static FILE* sFsFile[FS_MAX];
+static u32 sFsReads, sFsBytes;
+
+static int FsHostPath(u32 guest, char* out, size_t cap) {
+    char name[256];
+    size_t n = 0;
+    for (u32 a = guest; n + 1 < sizeof(name); a += 2) {
+        u32 c = readMemory(a, 2);
+        if (!c)
+            break;
+        name[n++] = c < 0x80 ? (char)c : '?';
+    }
+    name[n] = 0;
+    const char* base = strrchr(name, '\\');
+    base = base ? base + 1 : name;
+    if (!*base || strchr(base, '/') || strstr(base, ".."))
+        return 0;
+    snprintf(out, cap, "%s/%s", mmuFsDir, base);
+    return 1;
+}
+
+static long FsSize(FILE* f) {
+    long pos = ftell(f), size;
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, pos, SEEK_SET);
+    return size;
+}
+
+static int FsSyscall(u32 id, u32* result) {
+    char path[512];
+    int fd = (int)cpu.reg.r4;
+    FILE* f = (fd >= 0 && fd < FS_MAX) ? sFsFile[fd] : NULL;
+    switch (id) {
+    case 0x1db6: { /* FindFirst(path, int* handle, u16* found, info*) */
+        writeMemory(cpu.reg.r5, 4, 0);
+        FILE* t = FsHostPath(cpu.reg.r4, path, sizeof(path)) ? fopen(path, "rb") : NULL;
+        if (!t) {
+            *result = (u32)-1; /* BFile_EntryNotFound */
+            return 1;
+        }
+        long size = FsSize(t);
+        fclose(t);
+        writeMemory(cpu.reg.r6, 2, 0);
+        u32 info = cpu.reg.r7;
+        writeMemory(info + 0, 2, 0);
+        writeMemory(info + 2, 2, 1); /* BFile_Type_File */
+        writeMemory(info + 4, 4, (u32)size);
+        writeMemory(info + 8, 4, (u32)size);
+        writeMemory(info + 12, 4, 0);
+        writeMemory(info + 16, 4, 0);
+        *result = 0;
+        return 1;
+    }
+    case 0x1dba: /* FindClose */
+        *result = 0;
+        return 1;
+    case 0x1da3: { /* Open(path, mode) */
+        if ((cpu.reg.r5 & 0x02) || !FsHostPath(cpu.reg.r4, path, sizeof(path))) {
+            *result = (u32)-1;
+            return 1;
+        }
+        for (int i = 0; i < FS_MAX; i++)
+            if (!sFsFile[i]) {
+                sFsFile[i] = fopen(path, "rb");
+                *result = sFsFile[i] ? (u32)i : (u32)-1;
+                return 1;
+            }
+        *result = (u32)-1;
+        return 1;
+    }
+    case 0x1da4: /* Close(fd) */
+        if (f)
+            fclose(f), sFsFile[fd] = NULL;
+        *result = f ? 0 : (u32)-1;
+        return 1;
+    case 0x1da6: /* Size(fd) */
+        *result = f ? (u32)FsSize(f) : (u32)-1;
+        return 1;
+    case 0x1da9: { /* Seek(fd, absolute offset) -> bytes left */
+        if (!f) {
+            *result = (u32)-1;
+            return 1;
+        }
+        long size = FsSize(f), off = (long)(int)cpu.reg.r5;
+        if (off > size)
+            off = size;
+        fseek(f, off, SEEK_SET);
+        *result = (u32)(size - off);
+        return 1;
+    }
+    case 0x1dab: /* GetPos(fd) */
+        *result = f ? (u32)ftell(f) : (u32)-1;
+        return 1;
+    case 0x1dac: { /* Read(fd, buf, size, whence: -1 = current, else absolute) */
+        if (!f) {
+            *result = (u32)-1;
+            return 1;
+        }
+        int whence = (int)cpu.reg.r7;
+        if (whence >= 0)
+            fseek(f, whence, SEEK_SET);
+        u32 buf = cpu.reg.r5, size = cpu.reg.r6, done = 0;
+        int c;
+        while (done < size && (c = fgetc(f)) != EOF)
+            writeMemory(buf + done++, 1, (u32)c);
+        sFsReads++;
+        sFsBytes += done;
+        *result = done;
+        return 1;
+    }
+    default:
+        if (id >= 0x1da0 && id <= 0x1dc0) {
+            printf("D1_EMU: unsupported file syscall %#x\n", id);
+            exit(5);
+        }
+        return 0;
+    }
+}
+
 bool mmuSyscall(void) {
+    u32 result;
+    if (mmuFsDir && FsSyscall(cpu.reg.r0, &result)) {
+        cpu.reg.r0 = result;
+        cpu.reg.PC = cpu.reg.PR;
+        return true;
+    }
     if (cpu.reg.r0 != 0x09)
         return false;
     u32 va = cpu.reg.r4 & 0xFFFFF000u, pa = cpu.reg.r5 & 0x1FFFF000u, flags = cpu.reg.r6 & 0xFFu;
@@ -98,7 +231,7 @@ bool mmuSpecialWrite(u32 address, u32 value) {
     }
     if (address == 0xfffff004u) { /* test done port */
         mmuDone = 0x100u | (value & 0xFFu);
-        printf("D1_EMU_STATS misses=%u os_maps=%u\n", sMisses, sMaps);
+        printf("D1_EMU_STATS misses=%u os_maps=%u fs_reads=%u fs_bytes=%u\n", sMisses, sMaps, sFsReads, sFsBytes);
         return true;
     }
     return false;

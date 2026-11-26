@@ -5,7 +5,12 @@
  * instead of Picori.pak (FXCG_ROM_SYNTHETIC: every word of ROM page p at
  * offset o is (p << 16) ^ o ^ 0x5A000000) and an 8-frame cache so eviction
  * starts early. Writes /D1-PAGER.TXT after every stage, so after a crash the
- * file shows the last stage that completed. See docs/fx-cg50-d1-pager.md. */
+ * file shows the last stage that completed. See docs/fx-cg50-d1-pager.md.
+ *
+ * Built with D1_PAK_TEST (D1-PAK-PROBE), the pages come instead from a real
+ * PCPK pak, /D1TEST.pak, written by make_test_pak.py with the same word
+ * pattern: the stages then also cover stdio/BFile reads, the pak index,
+ * baseline pinning and DEFLATE decoding of the pager's real page source. */
 #include "fxcg_rom.h"
 
 #include <gint/display.h>
@@ -121,6 +126,11 @@ static void Run(void) {
     __asm__ volatile("stc vbr, %0" : "=r"(vbr));
     size_t tlbhSize = (size_t)(uintptr_t)gint_tlbh_size;
     int installed = memcmp((const void*)(uintptr_t)(vbr + 0x400), gint_tlbh_start, tlbhSize) == 0;
+#ifdef D1_PAK_TEST
+    Report("SOURCE=pak %s\n", FXCG_ROM_PAK);
+#else
+    Report("SOURCE=synthetic\n");
+#endif
     Report("VBR=%08X TLBH_SIZE=%u TLBH_INSTALLED=%d FRAMES=%d\n", (unsigned)vbr, (unsigned)tlbhSize, installed,
            FRAMES);
     if (!installed || tlbhSize > 0x200) {

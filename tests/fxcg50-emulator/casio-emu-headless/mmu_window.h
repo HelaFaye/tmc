@@ -10,7 +10,8 @@ extern int mmuWindowActive;
 extern jmp_buf mmuFaultJmp;
 extern u32 mmuInstrPC;
 extern bool mmuInSlot;
-extern u32 mmuDone; /* nonzero once the add-in wrote the done port */
+extern u32 mmuDone;
+extern const char* mmuFsDir; /* --fs DIR: OS file syscalls served from DIR */ /* nonzero once the add-in wrote the done port */
 
 /* Translate a ROM-window address through the UTLB model; longjmp on miss. */
 u32 mmuWindowTranslate(u32 address, bool write);

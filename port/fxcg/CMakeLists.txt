@@ -331,4 +331,29 @@ if(TMC_FXCG_D1_PAGER_PROBE)
         OUTPUT "D1-PAGER-PROBE.g3a"
         NAME "D1 Pager Probe"
         ICONS assets/icon-uns.png assets/icon-sel.png)
+
+    # The same stages against a real PCPK pak (/D1TEST.pak from
+    # tests/fxcg50-d1-pager-probe/make_test_pak.py): stdio and BFile reads,
+    # the pak index, baseline pinning and DEFLATE decoding.
+    add_executable(fxcg_d1_pak_probe
+        ${TMC_ROOT}/tests/fxcg50-d1-pager-probe/d1_pager_probe.c
+        ${TMC_ROOT}/tests/fxcg50-d1-pager-probe/d1_pager_regs.S
+        fxcg_rom.c fxcg_tlbh.S fxcg_p2_tlb.S ${CGLINK_DIR}/src/inflate.c)
+    target_compile_options(fxcg_d1_pak_probe PRIVATE
+        -Os -m4a-nofpu -std=gnu11 -fno-freestanding
+        -ffunction-sections -fdata-sections -w)
+    target_compile_definitions(fxcg_d1_pak_probe PRIVATE
+        TMC_FXCG_D1_PAGER=1 D1_PAK_TEST=1 FXCG_ROM_FRAMES=64 FXCG_ROM_PAK="/D1TEST.pak")
+    if(TMC_FXCG_EMULATOR_TEST)
+        target_compile_definitions(fxcg_d1_pak_probe PRIVATE TMC_FXCG_EMULATOR_TEST=1)
+    endif()
+    target_include_directories(fxcg_d1_pak_probe PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CGLINK_DIR}/include)
+    target_link_libraries(fxcg_d1_pak_probe PRIVATE Gint::Gint)
+    target_link_options(fxcg_d1_pak_probe PRIVATE
+        -Wl,--gc-sections -Wl,-u,_errno)
+    generate_g3a(TARGET fxcg_d1_pak_probe
+        OUTPUT "D1-PAK-PROBE.g3a"
+        NAME "D1 Pak Probe"
+        ICONS assets/icon-uns.png assets/icon-sel.png)
 endif()

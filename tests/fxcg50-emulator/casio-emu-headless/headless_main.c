@@ -8,14 +8,21 @@ extern CpuState cpu;
 int headless_p2_flag_mode;
 int headless_d1_pager_mode;
 extern int mmuWindowActive;
+extern const char* mmuFsDir;
 
 int startInterpreter(const char *filename);
 
 int main(int argc, char **argv)
 {
+    /* --fs DIR (with --d1-pager): serve the OS file syscalls from DIR. */
+    if (argc == 5 && strcmp(argv[3], "--fs") == 0)
+    {
+        mmuFsDir = argv[4];
+        argc = 3;
+    }
     if (argc != 2 && argc != 3)
     {
-        fprintf(stderr, "usage: casio-emu-headless path/to/addin.g3a [--p2-flags|--d1-pager]\n");
+        fprintf(stderr, "usage: casio-emu-headless path/to/addin.g3a [--p2-flags|--d1-pager [--fs DIR]]\n");
         return 2;
     }
 
